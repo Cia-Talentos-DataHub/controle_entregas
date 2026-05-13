@@ -923,6 +923,8 @@ async function createSPItem(token, siteUrl, listName, payload) {
 // Item Title='__alocacao_dist__' acts as a container; JSON stored as attachment.
 // No field-length limits, no new columns, no Documents folder needed.
 const DIST_MARKER     = '__alocacao_dist__';
+const ANALYTICS_ADMIN = 'lucas.moreira@ciadetalentos.com'; // único com acesso ao painel
+const ANALYTICS_MAX   = 500; // máximo de eventos guardados (rolling window)
 const PENDING_LABEL   = 'Alocação pendente'; // card virtual para analistas/heads não cadastrados
 const DIST_ATT_NAME = 'dist.json';
 // Busca o item marcador sem $filter (mais confiável — SP às vezes não retorna resultado
@@ -1220,6 +1222,8 @@ function App() {
   const [kaMembers,        setKaMembers]        = useState([]);
   const [entityView,       setEntityView]       = useState('analyst'); // 'analyst' | 'head'
   const [spChoices,        setSpChoices]        = useState({});        // campos Choice do SP
+  // Analytics — rastreia eventos da sessão para evitar duplicatas
+  const sessionLoggedRef  = useRef(new Set()); // 'login', 'module:pulse', 'save:project', etc.
 
   // ── projectsRef: sempre aponta para o projects mais recente ─────────────────
   // Evita stale closure em saveProject: sem isso, maxIndice sempre seria 0
@@ -1357,6 +1361,30 @@ function App() {
     await saveDistFile(authState.token, SP_SITE_URL, newDist);
   },[authState.token]);
 
+  // ── Analytics event logger ────────────────────────────────────────────────
+  // Grava no dist.json (fire-and-forget). Cada tipo de evento é logado uma vez por sessão.
+  const logEvent = useCallback(async(action, detail='')=>{
+    if (!authState.isAuth || !authState.token) return;
+    const key = detail ? `${action}:${detail}` : action;
+    if (sessionLoggedRef.current.has(key)) return; // já logado nesta sessão
+    sessionLoggedRef.current.add(key);
+    try {
+      const entry = {
+        email:  authState.email||'',
+        name:   authState.user||'',
+        action,
+        detail, // módulo acessado, tipo de save, etc.
+        ts:     new Date().toISOString(),
+      };
+      const cur  = distDataRef.current;
+      const logs = [...(cur.analytics||[]), entry].slice(-ANALYTICS_MAX);
+      const newDist = {...cur, analytics: logs};
+      distDataRef.current = newDist;
+      setDistData(newDist);
+      await saveDistFile(authState.token, SP_SITE_URL, newDist);
+    } catch { /* falha silenciosa — não interrompe o fluxo */ }
+  },[authState]);
+
   const signInAndFetch = useCallback(async()=>{
     if (!clientId) { setError('⚙️ Client ID não configurado. Edite APP_CONFIG no início do arquivo.'); return; }
     setLoading(true); setError('');
@@ -1367,6 +1395,8 @@ function App() {
       setAuthState({isAuth:true,user,token,email});
       setAccessLevel(access);
       await loadAll(token);
+      // Log de acesso — após loadAll para ter distDataRef atualizado
+      setTimeout(()=>logEvent('login','app'), 2000);
     } catch(e) { setError('Erro: '+e.message); }
     finally { setLoading(false); }
   },[clientId,tenantId,loadAll]);
@@ -1448,6 +1478,7 @@ function App() {
         PHASES.forEach(ph=>{ headDist[ph.key]=project.headPhases?.[ph.key]?.pcts||[]; });
         newDist.headDistributions[String(project.spId)] = headDist;
         setSaveMsg({type:'success', text:'✓ Salvo no SharePoint.'});
+        logEvent('save','projeto');
 
       } else {
         // ── Local / tool-only project → stored entirely in dist file ──
@@ -1563,6 +1594,7 @@ function App() {
       } else {
         setSaveMsg({type:'success', text:'✓ Salvo no SharePoint.'});
       }
+      logEvent('save','pulse');
     } catch(e) {
       setSaveMsg({type:'error', text:'Erro ao salvar: '+e.message});
     } finally {
@@ -1623,7 +1655,7 @@ function App() {
   if (!module) {
     return (
       <HomeScreen
-        onSelect={setModule}
+        onSelect={m=>{ setModule(m); logEvent('module_view', m); }}
         authState={authState}
         onSignOut={signOut}
         loading={loading}
@@ -1678,6 +1710,20 @@ function App() {
           token={authState.token}
           spChoices={spChoices}
         />
+      </div>
+    );
+  }
+
+  // ── Analytics module (admin only) ──
+  if (module==='analytics' && (authState.email||'').toLowerCase()===ANALYTICS_ADMIN) {
+    const logs = distDataRef.current?.analytics||[];
+    return (
+      <div className="min-h-screen bg-slate-50">
+        <AppHeader view={view} setView={setView} authState={authState}
+          onSignOut={signOut} projectCount={projects.length} loading={loading}
+          onRefresh={()=>loadAll(authState.token)} module={module} onHome={()=>setModule(null)}
+          entityView={entityView} setEntityView={setEntityView}/>
+        <AnalyticsView logs={logs}/>
       </div>
     );
   }
@@ -1796,7 +1842,7 @@ function AppHeader({view,setView,authState,onSignOut,projectCount,loading,onRefr
           )}
           <div className="w-7 h-7 bg-indigo-600 rounded-lg flex items-center justify-center text-white text-xs font-bold">CT</div>
           <span className="text-base font-bold text-slate-800">
-            {module==='pulse'?'Pulse':module==='gestao'?'Gestão':module==='calendar'?'Calendário':'Alocação'}
+            {module==='pulse'?'Pulse':module==='gestao'?'Gestão':module==='calendar'?'Calendário':module==='analytics'?'Analytics':'Alocação'}
           </span>
           {module==='gestao'&&projectCount>0&&<span className="bg-indigo-100 text-indigo-700 text-xs px-2 py-0.5 rounded-full">{projectCount} proj.</span>}
         </div>
@@ -1820,7 +1866,7 @@ function AppHeader({view,setView,authState,onSignOut,projectCount,loading,onRefr
           )}
         </nav>
         )}
-        {(module==='pulse'||module==='calendar')&&<div className="flex-1"/>}
+        {(module==='pulse'||module==='calendar'||module==='analytics')&&<div className="flex-1"/>}
         <div className="flex items-center gap-2 ml-auto shrink-0">
           <button onClick={onRefresh} disabled={loading} title="Atualizar dados do SharePoint"
             className="text-xs text-slate-400 hover:text-indigo-600 border border-slate-200 hover:border-indigo-200 px-2.5 py-1.5 rounded-lg transition disabled:opacity-40">
@@ -1845,7 +1891,8 @@ function AppHeader({view,setView,authState,onSignOut,projectCount,loading,onRefr
 // ─── Home Screen (module selector, shown after login) ────────────────────────
 function HomeScreen({onSelect,authState,onSignOut,loading,onRefresh,error,onClearError,accessLevel}) {
   const firstName  = (authState.user||'').split(' ')[0]||'Usuário';
-  const fullAccess = accessLevel===null || accessLevel<=2; // 1 ou 2 = acesso completo
+  const fullAccess = accessLevel===null || accessLevel<=2;
+  const isAdmin    = (authState.email||'').toLowerCase()===ANALYTICS_ADMIN;
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-indigo-50 flex flex-col">
       {/* Top bar */}
@@ -1922,6 +1969,23 @@ function HomeScreen({onSelect,authState,onSignOut,loading,onRefresh,error,onClea
               Abrir Calendário <span className="ml-1.5">→</span>
             </div>
           </button>
+
+          {/* Analytics card — somente para o admin */}
+          {isAdmin&&(
+          <button onClick={()=>onSelect('analytics')}
+            className="group bg-white rounded-2xl border-2 border-slate-200 hover:border-slate-400 hover:shadow-xl transition-all p-8 text-left">
+            <div className="w-14 h-14 bg-slate-100 rounded-2xl flex items-center justify-center text-3xl mb-5 group-hover:bg-slate-200 transition-colors">
+              📊
+            </div>
+            <h2 className="text-xl font-bold text-slate-900 mb-2">Analytics</h2>
+            <p className="text-sm text-slate-500 leading-relaxed">
+              Utilização do app: usuários, módulos acessados e alterações realizadas.
+            </p>
+            <div className="mt-6 flex items-center text-sm font-semibold text-slate-600 group-hover:text-slate-700">
+              Abrir Analytics <span className="ml-1.5">→</span>
+            </div>
+          </button>
+          )}
 
           {/* Gestão card — apenas para Acesso 1 ou 2 */}
           {fullAccess&&(
@@ -4710,6 +4774,156 @@ function CalDayView({ events, navDate, today }) {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// ─── Analytics View ───────────────────────────────────────────────────────────
+function AnalyticsView({logs}) {
+  const [period, setPeriod] = useState(30); // dias
+
+  const cutoff = useMemo(()=>{
+    const d=new Date(); d.setDate(d.getDate()-period); return d.toISOString();
+  },[period]);
+
+  const filtered = useMemo(()=>logs.filter(e=>e.ts>=cutoff),[logs,cutoff]);
+
+  // Usuários únicos
+  const byUser = useMemo(()=>{
+    const map={};
+    filtered.forEach(e=>{
+      if (!e.email) return;
+      if (!map[e.email]) map[e.email]={email:e.email,name:e.name,count:0,modules:new Set(),saved:false,last:''};
+      map[e.email].count++;
+      if (e.detail&&e.action==='module_view') map[e.email].modules.add(e.detail);
+      if (e.action==='save') map[e.email].saved=true;
+      if (e.ts>map[e.email].last) map[e.email].last=e.ts;
+    });
+    return Object.values(map).sort((a,b)=>b.last.localeCompare(a.last));
+  },[filtered]);
+
+  // Acessos por módulo
+  const byModule = useMemo(()=>{
+    const map={};
+    filtered.filter(e=>e.action==='module_view').forEach(e=>{
+      if (!map[e.detail]) map[e.detail]={module:e.detail,count:0,users:new Set()};
+      map[e.detail].count++;
+      map[e.detail].users.add(e.email);
+    });
+    return Object.values(map).sort((a,b)=>b.count-a.count);
+  },[filtered]);
+
+  const MODULE_LABELS = {pulse:'Pulse',gestao:'Gestão',calendar:'Calendário',analytics:'Analytics'};
+  const fmtDate = ts=>{ if(!ts) return '—'; const d=new Date(ts); return `${d.toLocaleDateString('pt-BR')} ${d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}`; };
+  const maxCount = Math.max(...byUser.map(u=>u.count),1);
+
+  return (
+    <div className="max-w-screen-xl mx-auto px-4 pb-10 mt-6 space-y-6">
+
+      {/* Header + filtro */}
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h2 className="text-lg font-bold text-slate-800">Analytics de Utilização</h2>
+          <p className="text-xs text-slate-400 mt-0.5">{filtered.length} eventos · {byUser.length} usuários únicos nos últimos {period} dias</p>
+        </div>
+        <select value={period} onChange={e=>setPeriod(Number(e.target.value))}
+          className="border border-slate-200 rounded-xl px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-indigo-300">
+          <option value={7}>Últimos 7 dias</option>
+          <option value={30}>Últimos 30 dias</option>
+          <option value={90}>Últimos 90 dias</option>
+          <option value={9999}>Tudo</option>
+        </select>
+      </div>
+
+      {/* Módulos */}
+      {byModule.length>0&&(
+        <div className="bg-white rounded-2xl border border-slate-200 p-5">
+          <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">Acessos por Módulo</h3>
+          <div className="space-y-3">
+            {byModule.map(m=>(
+              <div key={m.module} className="flex items-center gap-3">
+                <span className="text-sm font-medium text-slate-700 w-28 shrink-0">{MODULE_LABELS[m.module]||m.module}</span>
+                <div className="flex-1 bg-slate-100 rounded-full h-2 overflow-hidden">
+                  <div className="h-full bg-indigo-500 rounded-full" style={{width:`${Math.min(100,(m.count/Math.max(...byModule.map(x=>x.count),1))*100)}%`}}/>
+                </div>
+                <span className="text-xs text-slate-500 w-24 text-right">{m.count}x · {m.users.size} pessoa{m.users.size!==1?'s':''}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Usuários */}
+      <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+        <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+          <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Usuários</h3>
+          <span className="text-xs text-slate-400">{byUser.length} pessoa{byUser.length!==1?'s':''}</span>
+        </div>
+        {byUser.length===0?(
+          <p className="text-center text-slate-400 py-10 text-sm">Nenhum acesso registrado no período.</p>
+        ):(
+          <div className="overflow-auto">
+            <table className="min-w-full text-sm border-collapse">
+              <thead className="bg-slate-50">
+                <tr>
+                  {['Pessoa','E-mail','Último acesso','Módulos visitados','Atividade','Alterações'].map(h=>(
+                    <th key={h} className="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 whitespace-nowrap">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-50">
+                {byUser.map(u=>(
+                  <tr key={u.email} className="hover:bg-slate-50 transition">
+                    <td className="px-4 py-3 font-semibold text-slate-800 whitespace-nowrap">{u.name||'—'}</td>
+                    <td className="px-4 py-3 text-slate-500 whitespace-nowrap">{u.email}</td>
+                    <td className="px-4 py-3 text-slate-500 whitespace-nowrap text-xs">{fmtDate(u.last)}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex flex-wrap gap-1">
+                        {[...u.modules].map(m=>(
+                          <span key={m} className="text-xs bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-full">{MODULE_LABELS[m]||m}</span>
+                        ))}
+                        {u.modules.size===0&&<span className="text-xs text-slate-300">—</span>}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="w-24 bg-slate-100 rounded-full h-1.5 overflow-hidden">
+                        <div className="h-full bg-indigo-400 rounded-full" style={{width:`${(u.count/maxCount)*100}%`}}/>
+                      </div>
+                      <span className="text-xs text-slate-400 mt-0.5 block">{u.count} evento{u.count!==1?'s':''}</span>
+                    </td>
+                    <td className="px-4 py-3">
+                      {u.saved
+                        ? <span className="text-xs bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-full font-medium">✓ Sim</span>
+                        : <span className="text-xs text-slate-300">Não</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Timeline recente */}
+      {logs.length>0&&(
+        <div className="bg-white rounded-2xl border border-slate-200 p-5">
+          <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">Últimos 20 eventos</h3>
+          <div className="space-y-2">
+            {[...logs].reverse().slice(0,20).map((e,i)=>{
+              const icon = e.action==='login'?'🔑':e.action==='module_view'?'👁':e.action==='save'?'💾':'•';
+              const desc = e.action==='login'?'entrou no app':e.action==='module_view'?`acessou ${MODULE_LABELS[e.detail]||e.detail}`:`salvou em ${e.detail}`;
+              return (
+                <div key={i} className="flex items-center gap-3 text-xs text-slate-600">
+                  <span className="text-base leading-none shrink-0">{icon}</span>
+                  <span className="font-medium text-slate-700 shrink-0">{e.name||e.email}</span>
+                  <span className="text-slate-400 flex-1">{desc}</span>
+                  <span className="text-slate-300 shrink-0 whitespace-nowrap">{fmtDate(e.ts)}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
