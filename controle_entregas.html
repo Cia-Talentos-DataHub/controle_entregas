@@ -841,21 +841,30 @@ async function fetchSPItemFull(token, siteUrl, listName, spId) {
   const base = _spListBase(siteUrl, listName);
   return await spFetch(token, `${base}/items(${spId})`);
 }
+// Retorna {members: string[], descriptivos: {[name]: string}}
 async function fetchTeamMembers(token, siteUrl) {
   try {
     const base = _spListBase(siteUrl, SP_TEAM_LIST);
-    const url  = `${base}/items?$select=Title,Classificacao&$filter=Classificacao eq 'Analista'&$top=500`;
+    const url  = `${base}/items?$select=Title,Classificacao,Descritivo&$filter=Classificacao eq 'Analista'&$top=500`;
     const json = await spFetch(token, url);
-    return (json.value||[]).map(i=>( i.Title||'' ).trim()).filter(Boolean).sort();
-  } catch { return []; }
+    const items = json.value||[];
+    const members = items.map(i=>(i.Title||'').trim()).filter(Boolean).sort();
+    const descriptivos = {};
+    items.forEach(i=>{ if(i.Title) descriptivos[i.Title.trim()]=(i.Descritivo||'').trim(); });
+    return {members, descriptivos};
+  } catch { return {members:[],descriptivos:{}}; }
 }
 async function fetchHeadMembers(token, siteUrl) {
   try {
     const base = _spListBase(siteUrl, SP_TEAM_LIST);
-    const url  = `${base}/items?$select=Title,Classificacao&$filter=Classificacao eq 'Consultor'&$top=500`;
+    const url  = `${base}/items?$select=Title,Classificacao,Descritivo&$filter=Classificacao eq 'Consultor'&$top=500`;
     const json = await spFetch(token, url);
-    return (json.value||[]).map(i=>( i.Title||'' ).trim()).filter(Boolean).sort();
-  } catch { return []; }
+    const items = json.value||[];
+    const members = items.map(i=>(i.Title||'').trim()).filter(Boolean).sort();
+    const descriptivos = {};
+    items.forEach(i=>{ if(i.Title) descriptivos[i.Title.trim()]=(i.Descritivo||'').trim(); });
+    return {members, descriptivos};
+  } catch { return {members:[],descriptivos:{}}; }
 }
 async function fetchKAMembers(token, siteUrl) {
   try {
@@ -1206,6 +1215,8 @@ function App() {
   const [extraAllocations, setExtraAllocations] = useState([]);
   const [vacations,        setVacations]        = useState([]);
   const [headMembers,      setHeadMembers]      = useState([]);
+  const [teamDescriptivos, setTeamDescriptivos] = useState({});
+  const [headDescriptivos, setHeadDescriptivos] = useState({});
   const [kaMembers,        setKaMembers]        = useState([]);
   const [entityView,       setEntityView]       = useState('analyst'); // 'analyst' | 'head'
   const [spChoices,        setSpChoices]        = useState({});        // campos Choice do SP
@@ -1300,8 +1311,10 @@ function App() {
       ]);
       setSpChoices(choices||{});
       setDistData(dist);
-      setTeamMembers(team);
-      setHeadMembers(hteam);
+      setTeamMembers(team.members);
+      setTeamDescriptivos(team.descriptivos||{});
+      setHeadMembers(hteam.members);
+      setHeadDescriptivos(hteam.descriptivos||{});
       setKaMembers(kateam);
       setProjects(mergeProjectsWithDist(spItems, dist));
       setExtraAllocations(dist.extraAllocations||[]);  // shared via dist.json in SP
@@ -1718,7 +1731,8 @@ function App() {
         {view==='dashboard'&&(
           <DashboardView analysts={activeNames} allocations={activeAllocsWithExtras} months={months}
             monthRange={monthRange} setMonthRange={setMonthRange} onAnalystClick={setShowAnalystDetail}
-            vacations={vacations} entityView={entityView}/>
+            vacations={vacations} entityView={entityView}
+            descriptivos={entityView==='head'?headDescriptivos:teamDescriptivos}/>
         )}
         {view==='monthly'&&(
           <MonthlyGrid analysts={activeNames} allocations={activeAllocs} months={months}
@@ -2087,7 +2101,7 @@ function MonthRangePicker({monthRange,setMonthRange}) {
 }
 
 // ─── Dashboard View ───────────────────────────────────────────────────────────
-function DashboardView({analysts,allocations,months,monthRange,setMonthRange,onAnalystClick,vacations,entityView}) {
+function DashboardView({analysts,allocations,months,monthRange,setMonthRange,onAnalystClick,vacations,entityView,descriptivos}) {
   if (analysts.length===0) return (
     <div className="mt-10 text-center text-slate-400">
       <p className="text-4xl mb-3">📊</p>
@@ -2096,58 +2110,97 @@ function DashboardView({analysts,allocations,months,monthRange,setMonthRange,onA
     </div>
   );
 
-  // Build vacation map for months (month granularity)
   const vacMap = useMemo(()=>buildVacationMap(vacations, months, 'month'),[vacations,months]);
+
+  // Separar analistas/heads em grupo principal e grupo secundário (CX / Apoio/Foco interno)
+  const SECONDARY_DESCRIPTIVOS = new Set(['cx','apoio/foco interno']);
+  const desc = descriptivos||{};
+  const mainAnalysts = analysts.filter(a=>!SECONDARY_DESCRIPTIVOS.has((desc[a]||'').toLowerCase()));
+  const secAnalysts  = analysts.filter(a=> SECONDARY_DESCRIPTIVOS.has((desc[a]||'').toLowerCase()));
+
+  function renderCard(analyst) {
+    const vals = months.map(m=>{
+      const vacPct=vacMap[analyst]?.[m]||0;
+      const allocPct=allocations[analyst]?.[m]||0;
+      return vacPct>0 ? Math.min(100,Math.round(vacPct+allocPct*(1-vacPct/100))) : allocPct;
+    });
+    const max = Math.max(...vals,0);
+    const hasVacation = months.some(m=>(vacMap[analyst]?.[m]||0)>0);
+    return (
+      <button key={analyst} onClick={()=>onAnalystClick(analyst)}
+        className="bg-white rounded-xl border border-slate-200 p-4 text-left hover:border-indigo-300 hover:shadow-md transition group">
+        <div className="flex items-center justify-between mb-2">
+          <span className={`text-sm font-semibold truncate ${analyst===PENDING_LABEL?'text-amber-700 group-hover:text-amber-800':'text-slate-800 group-hover:text-indigo-700'}`}>{analyst}</span>
+          <TrafficDot pct={max} vacation={hasVacation&&max===100}/>
+        </div>
+        <p className={`text-2xl font-bold ${hasVacation&&max===100?'text-blue-600':max>100?'text-red-600':max>90?'text-yellow-600':'text-green-600'}`}>{max}%</p>
+        <p className="text-xs text-slate-400 mt-0.5">pico no período</p>
+        <div className="mt-3 flex gap-0.5">
+          {months.slice(0,12).map((m,mi)=>{
+            const vacPct=vacMap[analyst]?.[m]||0;
+            const v=vals[mi];
+            const fullVac=vacPct===100;
+            const [y,mo]=m.split('-').map(Number);
+            const abbr=new Date(y,mo-1,1).toLocaleDateString('pt-BR',{month:'short'}).replace('.','');
+            const color=vacPct>0?'#3b82f6':v>100?'#ef4444':v>90?'#ca8a04':v>0?'#16a34a':'#cbd5e1';
+            return (
+              <div key={m} className="flex-1 flex flex-col items-center" style={{minWidth:0}}>
+                <div className="w-full rounded-sm mb-0.5" style={{height:'6px',backgroundColor:color}}/>
+                <span className="text-slate-400 truncate w-full text-center leading-none" style={{fontSize:'11px'}}>{abbr}</span>
+                <span className="font-semibold truncate w-full text-center leading-none" style={{fontSize:'10px',color:vacPct>0?'#3b82f6':v>0?color:'transparent'}}>
+                  {fullVac?'🏖':vacPct>0?`🏖${v}%`:v>0?v+'%':''}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </button>
+    );
+  }
 
   return (
     <div className="fade-in mt-4 space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <h2 className="text-lg font-bold text-slate-800">
-          {entityView==='head'?'Dashboard de Alocação — Heads':'Dashboard de Alocação — Analistas'}
+          {entityView==='head'?'Dashboard de alocação em cliente - Heads':'Dashboard de alocação em cliente - Analistas'}
         </h2>
         <MonthRangePicker monthRange={monthRange} setMonthRange={setMonthRange}/>
       </div>
+
+      {/* Grupo principal */}
       <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
-        {analysts.map(analyst=>{
-          const vals = months.map(m=>{
-            const vacPct=vacMap[analyst]?.[m]||0;
-            const allocPct=allocations[analyst]?.[m]||0;
-            return vacPct>0 ? Math.min(100,Math.round(vacPct+allocPct*(1-vacPct/100))) : allocPct;
-          });
-          const max  = Math.max(...vals,0);
-          const hasVacation = months.some(m=>(vacMap[analyst]?.[m]||0)>0);
-          return (
-            <button key={analyst} onClick={()=>onAnalystClick(analyst)}
-              className="bg-white rounded-xl border border-slate-200 p-4 text-left hover:border-indigo-300 hover:shadow-md transition group">
-              <div className="flex items-center justify-between mb-2">
-                <span className={`text-sm font-semibold truncate ${analyst===PENDING_LABEL?'text-amber-700 group-hover:text-amber-800':'text-slate-800 group-hover:text-indigo-700'}`}>{analyst}</span>
-                <TrafficDot pct={max} vacation={hasVacation&&max===100}/>
-              </div>
-              <p className={`text-2xl font-bold ${hasVacation&&max===100?'text-blue-600':max>100?'text-red-600':max>90?'text-yellow-600':'text-green-600'}`}>{max}%</p>
-              <p className="text-xs text-slate-400 mt-0.5">pico no período</p>
-              <div className="mt-3 flex gap-0.5">
-                {months.slice(0,12).map((m,mi)=>{
-                  const vacPct=vacMap[analyst]?.[m]||0;
-                  const allocPct=allocations[analyst]?.[m]||0;
-                  const v=vals[mi];
-                  const fullVac=vacPct===100;
-                  const [y,mo] = m.split('-').map(Number);
-                  const abbr = new Date(y,mo-1,1).toLocaleDateString('pt-BR',{month:'short'}).replace('.','');
-                  const color = vacPct>0?'#3b82f6':v>100?'#ef4444':v>90?'#ca8a04':v>0?'#16a34a':'#cbd5e1';
-                  return (
-                    <div key={m} className="flex-1 flex flex-col items-center" style={{minWidth:0}}>
-                      <div className="w-full rounded-sm mb-0.5" style={{height:'5px',backgroundColor:color}}/>
-                      <span className="text-slate-400 truncate w-full text-center leading-none" style={{fontSize:'9px'}}>{abbr}</span>
-                      <span className="font-semibold truncate w-full text-center leading-none" style={{fontSize:'8px',color:vacPct>0?'#3b82f6':v>0?color:'transparent'}}>
-                        {fullVac?'🏖':vacPct>0?`🏖${v}%`:v>0?v+'%':''}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            </button>
-          );
-        })}
+        {mainAnalysts.map(renderCard)}
+      </div>
+
+      {/* Grupo secundário (CX / Apoio/Foco interno) */}
+      {secAnalysts.length>0&&(
+        <>
+          <div className="flex items-center gap-3 pt-2">
+            <hr className="flex-1 border-slate-200"/>
+            <span className="text-xs text-slate-400 font-medium shrink-0">CX · Apoio/Foco interno</span>
+            <hr className="flex-1 border-slate-200"/>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+            {secAnalysts.map(renderCard)}
+          </div>
+        </>
+      )}
+
+      {/* Legenda de cores */}
+      <div className="flex flex-wrap items-center gap-4 pt-2 border-t border-slate-100">
+        <span className="text-xs text-slate-400 font-medium shrink-0">Legenda:</span>
+        {[
+          {color:'#16a34a', label:'≤ 90% — dentro do limite'},
+          {color:'#ca8a04', label:'91–100% — atenção'},
+          {color:'#ef4444', label:'> 100% — sobrecarregado'},
+          {color:'#3b82f6', label:'🏖 Férias'},
+          {color:'#cbd5e1', label:'Sem alocação'},
+        ].map(({color,label})=>(
+          <div key={label} className="flex items-center gap-1.5 text-xs text-slate-500">
+            <div className="w-3 h-3 rounded-sm shrink-0" style={{backgroundColor:color}}/>
+            {label}
+          </div>
+        ))}
       </div>
     </div>
   );
