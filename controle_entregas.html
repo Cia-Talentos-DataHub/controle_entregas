@@ -3738,12 +3738,18 @@ function PulseView({projects, ciclos, allAnalysts, allKAs, onSave, saving, token
   // Only SP projects are editable via Pulse
   const spProjects = projects.filter(p=>p.source==='sharepoint');
 
-  // Frentes únicas dos projetos (excluindo [NÃO USAR]) — equivalente ao Moskit pois o campo vem de lá
-  const frenteOptions = useMemo(()=>[...new Set(spProjects.map(p=>p.solucao).filter(v=>v&&!v.includes('[NÃO USAR]')))].sort(),[spProjects]);
+  // Frentes únicas dos projetos — lê pulseData.Solucao (mapeado para Frente_Negocio no SP)
+  // com fallback em p.solucao para projetos novos
+  const frenteOptions = useMemo(()=>[
+    ...new Set(spProjects.map(p=>(p.pulseData?.Solucao||p.solucao||'').trim()).filter(v=>v&&!v.includes('[NÃO USAR]')))
+  ].sort(),[spProjects]);
 
   const filtered = useMemo(()=>spProjects.filter(p=>{
     if (filters.ciclo   && p.ciclo!==filters.ciclo) return false;
-    if (filters.frente  && p.solucao!==filters.frente) return false;
+    if (filters.frente) {
+      const pFrente=(p.pulseData?.Solucao||p.solucao||'').trim();
+      if (pFrente!==filters.frente) return false;
+    }
     if (filters.client  && !(p.client||'').toLowerCase().includes(filters.client.toLowerCase())) return false;
     if (filters.nome    && !(p.title||'').toLowerCase().includes(filters.nome.toLowerCase())) return false;
     if (filters.ka      && !(p.ka||'').toLowerCase().includes(filters.ka.toLowerCase())) return false;
@@ -4102,6 +4108,147 @@ function PulseEditModal({project, allAnalysts, allKAs, onSave, onClose, saving, 
   }
 
   const normalSections = PULSE_SECTIONS.filter(s=>s!=='Etapas de Avaliação');
+
+  // ── Detecção: projeto pertence a um dos novos módulos? ──
+  const ALL_MOD_FRENTES = Object.values(MODULE_CONFIGS).flatMap(c=>c.frentes).map(f=>f.toLowerCase());
+  const FI_FRENTES      = new Set(MODULE_CONFIGS.fi.frentes.map(f=>f.toLowerCase()));
+  const projFrente      = (project?.solucao||project?.pulseData?.Solucao||'').trim().toLowerCase();
+  const isModuleProj    = ALL_MOD_FRENTES.includes(projFrente);
+  const isFIProj        = FI_FRENTES.has(projFrente);
+
+  // ── Vista simplificada para projetos dos novos módulos ──
+  if (isModuleProj) {
+    const cls2 = 'w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-200';
+    const modLabel = Object.values(MODULE_CONFIGS).find(c=>c.frentes.map(f=>f.toLowerCase()).includes(projFrente))?.label||'';
+    return (
+      <div className="modal-overlay" onClick={onClose}>
+        <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[95vh] flex flex-col mx-4" onClick={e=>e.stopPropagation()}>
+          {/* Header */}
+          <div className="sticky top-0 bg-white border-b border-slate-100 px-6 py-4 flex items-center justify-between rounded-t-2xl z-10">
+            <div>
+              <h2 className="text-lg font-bold text-slate-800">Editar — {modLabel}</h2>
+              <p className="text-xs text-slate-400 mt-0.5">#{project?.indice} · {project?.title}</p>
+            </div>
+            <button onClick={onClose} className="text-slate-400 hover:text-red-500 text-xl w-8 h-8 flex items-center justify-center rounded-full hover:bg-slate-100">✕</button>
+          </div>
+          <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+
+            {/* Campos do cadastro */}
+            <section className="border border-slate-200 rounded-xl p-4">
+              <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">Dados do Projeto</p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="sm:col-span-2">
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Nome do Projeto</label>
+                  <input value={title} onChange={e=>setTitle(e.target.value)} className={cls2}/>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Cliente</label>
+                  <input value={client} onChange={e=>setClient(e.target.value)} className={cls2}/>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Status</label>
+                  <select value={status} onChange={e=>setStatus(e.target.value)} className={cls2}>
+                    <option value="">—</option>
+                    {(spChoices?.Status_Programa||[]).map(o=><option key={o} value={o}>{o}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Frente de Negócio</label>
+                  <input value={solucao} onChange={e=>setSolucao(e.target.value)} className={cls2}/>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Produto</label>
+                  <input value={pulseData['Produto_Principal']||''} onChange={e=>updatePulse('Produto_Principal',e.target.value)} className={cls2}/>
+                </div>
+                {[
+                  {l:'Ciclo Orçamentário', v:ciclo,                  s:setCiclo,    t:'sel', opts:spChoices?.Ciclo_Orcamentario},
+                  {l:'Trimestre Orç.',     v:pulseData['Trimestre_Orcamentario']||'', s:v=>updatePulse('Trimestre_Orcamentario',v), t:'sel', opts:spChoices?.Trimestre_Orcamentario||['Q1','Q2','Q3','Q4']},
+                  {l:'Semestre Orç.',      v:pulseData['Semestre_Orcamentario']||'', s:v=>updatePulse('Semestre_Orcamentario',v),  t:'sel', opts:spChoices?.Periodo||['1S','2S']},
+                  {l:'Código Proposta',    v:pulseData['Codigo_Proposta']||'',       s:v=>updatePulse('Codigo_Proposta',v),         t:'txt'},
+                  {l:'Pedra',              v:pulseData['Pedra']||'',                 s:v=>updatePulse('Pedra',v),                   t:'sel', opts:spChoices?.Pedra||_pedra},
+                  {l:'Responsável Pedra',  v:pulseData['Responsavel_Pedra']||'',    s:v=>updatePulse('Responsavel_Pedra',v),       t:'sel', opts:spChoices?.Responsavel_Pedra||_respPedra},
+                ].map(({l,v,s,t,opts})=>(
+                  <div key={l}>
+                    <label className="block text-xs font-medium text-slate-600 mb-1">{l}</label>
+                    {t==='sel'
+                      ? <select value={v} onChange={e=>s(e.target.value)} className={cls2}>
+                          <option value="">—</option>
+                          {(opts||[]).map(o=><option key={o} value={o}>{o}</option>)}
+                        </select>
+                      : <input value={v} onChange={e=>s(e.target.value)} className={cls2}/>}
+                  </div>
+                ))}
+              </div>
+            </section>
+
+            {/* Acompanhamento */}
+            <section className="border border-slate-200 rounded-xl overflow-hidden">
+              <div className="bg-slate-50 px-4 py-2.5 border-b border-slate-200">
+                <SecHeader id="Acompanhamento" label="Acompanhamento" icon="📋"/>
+              </div>
+              {!collapsed['Acompanhamento']&&(
+                <div className="px-4 py-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {PULSE_FIELDS.filter(f=>f.s==='Acompanhamento').map(f=>(
+                    <div key={f.k} className={f.w?'sm:col-span-2':''}>
+                      <label className="block text-xs font-medium text-slate-600 mb-1">{f.l}</label>
+                      {renderPulseField(f)}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            {/* Pesquisas */}
+            <section className="border border-slate-200 rounded-xl overflow-hidden">
+              <div className="bg-slate-50 px-4 py-2.5 border-b border-slate-200">
+                <SecHeader id="Pesquisas" label="Pesquisas" icon="📊"/>
+              </div>
+              {!collapsed['Pesquisas']&&(
+                <div className="px-4 py-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {PULSE_FIELDS.filter(f=>f.s==='Pesquisas').map(f=>(
+                    <div key={f.k} className={f.w?'sm:col-span-2':''}>
+                      <label className="block text-xs font-medium text-slate-600 mb-1">{f.l}</label>
+                      {renderPulseField(f)}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            {/* Datas das Etapas — somente Frentes Internacionais */}
+            {isFIProj&&(
+              <section className="border border-slate-200 rounded-xl overflow-hidden">
+                <div className="bg-slate-50 px-4 py-2.5 border-b border-slate-200">
+                  <SecHeader id="_etapas_fi" label="Datas das Etapas" icon="📅"/>
+                </div>
+                {!collapsed['_etapas_fi']&&(
+                  <div className="px-4 py-4 space-y-2">
+                    {PHASES.map(ph=>(
+                      <div key={ph.key} className="flex items-center gap-3">
+                        <span className="text-sm text-slate-600 w-36 shrink-0">{ph.label}</span>
+                        <input type="date" value={phases[ph.key]?.start||''} onChange={e=>updPhaseField(ph.key,'start',e.target.value)}
+                          className="border border-slate-200 rounded-lg px-2 py-1 text-xs focus:ring-1 focus:ring-indigo-300"/>
+                        <span className="text-slate-300 text-xs">→</span>
+                        <input type="date" value={phases[ph.key]?.end||''} onChange={e=>updPhaseField(ph.key,'end',e.target.value)}
+                          className="border border-slate-200 rounded-lg px-2 py-1 text-xs focus:ring-1 focus:ring-indigo-300"/>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+            )}
+          </div>
+          <div className="px-6 py-4 border-t border-slate-200 flex justify-end gap-3 shrink-0 bg-white rounded-b-2xl">
+            <button onClick={onClose} className="border border-slate-300 text-slate-600 px-4 py-2 rounded-lg text-sm hover:bg-slate-50">Cancelar</button>
+            <button onClick={handleSave} disabled={!title.trim()||saving}
+              className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white px-5 py-2 rounded-lg text-sm font-semibold">
+              {saving?'⏳ Salvando...':'💾 Salvar'}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="modal-overlay" onClick={onClose}>
