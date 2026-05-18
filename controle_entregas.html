@@ -932,9 +932,11 @@ const ANALYTICS_ADMIN = 'lucas.moreira@ciadetalentos.com'; // único com acesso 
 
 // Configuração dos módulos simples (C&D, EB, Frentes Internacionais)
 const MODULE_CONFIGS = {
-  cd: { key:'cd', label:'C&D',                   frente:'C&D',                   phases:false, vagas:false, gsc:false, color:'blue'   },
-  eb: { key:'eb', label:'EB',                    frente:'EB',                    phases:false, vagas:false, gsc:false, color:'teal'   },
-  fi: { key:'fi', label:'Frentes Internacionais',frente:'Frentes Internacionais',phases:true,  vagas:true,  gsc:true,  color:'violet' },
+  // frentes: lista de valores de Frente de Negócio que pertencem a este módulo
+  // defaultFrente: valor pré-preenchido ao criar novo projeto (pode ser alterado)
+  cd: { key:'cd', label:'C&D',                   frentes:['Desenvolvimento','Ferramentas de Assessments'], defaultFrente:'Desenvolvimento',    phases:false, vagas:false, gsc:false, color:'blue'   },
+  eb: { key:'eb', label:'EB',                    frentes:['Employer Branding'],                            defaultFrente:'Employer Branding',  phases:false, vagas:false, gsc:false, color:'teal'   },
+  fi: { key:'fi', label:'Frentes Internacionais',frentes:['Latam'],                                        defaultFrente:'Latam',              phases:true,  vagas:true,  gsc:true,  color:'violet' },
 };
 const ANALYTICS_MAX   = 500; // máximo de eventos guardados (rolling window)
 const PENDING_LABEL   = 'Alocação pendente'; // card virtual para analistas/heads não cadastrados
@@ -1737,7 +1739,7 @@ function App() {
           entityView={entityView} setEntityView={setEntityView}/>
         {saveMsgBanner}
         <ModuleProjectsView
-          projects={filteredProjects}
+          projects={projects}
           moduleConfig={simpleModuleConfig}
           allAnalysts={analysts}
           allHeads={heads}
@@ -3736,7 +3738,7 @@ function PulseView({projects, ciclos, allAnalysts, allKAs, onSave, saving, token
   // Only SP projects are editable via Pulse
   const spProjects = projects.filter(p=>p.source==='sharepoint');
 
-  // Frentes únicas para o filtro (excluindo [NÃO USAR])
+  // Frentes únicas dos projetos (excluindo [NÃO USAR]) — equivalente ao Moskit pois o campo vem de lá
   const frenteOptions = useMemo(()=>[...new Set(spProjects.map(p=>p.solucao).filter(v=>v&&!v.includes('[NÃO USAR]')))].sort(),[spProjects]);
 
   const filtered = useMemo(()=>spProjects.filter(p=>{
@@ -4891,9 +4893,10 @@ function ModuleProjectsView({projects, moduleConfig, allAnalysts, allHeads, allK
   const [showEdit, setShowEdit] = useState(null);
   const [search,   setSearch]   = useState('');
 
-  // Filtra somente os projetos desta frente
+  // Filtra somente os projetos das frentes deste módulo
+  const frenteSet = new Set((moduleConfig.frentes||[]).map(f=>f.toLowerCase()));
   const moduleProjects = projects.filter(p=>
-    !moduleConfig.frente || (p.solucao||'').toLowerCase()===(moduleConfig.frente||'').toLowerCase()
+    !frenteSet.size || frenteSet.has((p.solucao||'').toLowerCase())
   );
   const filtered = moduleProjects.filter(p=>
     !search ||
@@ -4960,9 +4963,10 @@ function ModuleProjectsView({projects, moduleConfig, allAnalysts, allHeads, allK
 
 function ModuleProjectModal({project, moduleConfig, allKAs, spChoices, onSave, onClose, saving, isSpConnected, clientId, tenantId}) {
   const isNew = !project?.spId;
+  const [showMoskit, setShowMoskit] = useState(false);
   const [title,    setTitle]    = useState(project?.title||'');
   const [client,   setClient]   = useState(project?.client||'');
-  const [solucao,  setSolucao]  = useState(project?.solucao||moduleConfig?.frente||'');
+  const [solucao,  setSolucao]  = useState(project?.solucao||moduleConfig?.defaultFrente||'');
   const [produto,  setProduto]  = useState(project?.produto||'');
   const [status,   setStatus]   = useState(project?.status||'');
   const [ciclo,    setCiclo]    = useState(project?.ciclo||'');
@@ -5021,9 +5025,28 @@ function ModuleProjectModal({project, moduleConfig, allKAs, spChoices, onSave, o
     <div className="modal-overlay" onClick={onClose}>
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col mx-4" onClick={e=>e.stopPropagation()}>
         <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between shrink-0">
-          <h2 className="text-lg font-bold text-slate-800">{isNew?'Novo Projeto':'Editar Projeto'} — {moduleConfig?.label}</h2>
-          <button onClick={onClose} className="text-slate-400 hover:text-red-500 text-xl w-8 h-8 flex items-center justify-center rounded-full hover:bg-slate-100">✕</button>
+          <div>
+            <h2 className="text-lg font-bold text-slate-800">{isNew?'Novo Projeto':'Editar Projeto'} — {moduleConfig?.label}</h2>
+          </div>
+          <div className="flex items-center gap-2">
+            {isNew&&<button type="button" onClick={()=>setShowMoskit(true)}
+              className="text-xs text-indigo-600 hover:text-indigo-800 font-semibold border border-indigo-200 px-2.5 py-1 rounded-lg hover:bg-indigo-50 transition flex items-center gap-1">
+              🔍 Buscar no Moskit
+            </button>}
+            <button onClick={onClose} className="text-slate-400 hover:text-red-500 text-xl w-8 h-8 flex items-center justify-center rounded-full hover:bg-slate-100">✕</button>
+          </div>
         </div>
+        {showMoskit&&(
+          <MoskitPickerModal clientId={clientId} tenantId={tenantId}
+            onClose={()=>setShowMoskit(false)}
+            onSelect={row=>{
+              setTitle(row['Nome']||'');
+              setCiclo(row['Ciclo Orçamentário']||'');
+              if (row['Frente de Negócio']) setSolucao(row['Frente de Negócio']);
+              if (row['Produto Principal'])    setProduto(row['Produto Principal']);
+              setShowMoskit(false);
+            }}/>
+        )}
         <div className="flex-1 overflow-y-auto px-6 py-5">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="sm:col-span-2">
@@ -5037,7 +5060,13 @@ function ModuleProjectModal({project, moduleConfig, allKAs, spChoices, onSave, o
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-600 mb-1">Frente de Negócio</label>
-              <input value={solucao} onChange={e=>setSolucao(e.target.value)} className={cls}/>
+              {(moduleConfig?.frentes||[]).length>1
+                ? <select value={solucao} onChange={e=>setSolucao(e.target.value)} className={cls}>
+                    <option value="">—</option>
+                    {moduleConfig.frentes.map(f=><option key={f} value={f}>{f}</option>)}
+                  </select>
+                : <input value={solucao} onChange={e=>setSolucao(e.target.value)} className={cls} readOnly={!!(moduleConfig?.frentes?.length===1)}/>
+              }
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-600 mb-1">Produto</label>
