@@ -5111,7 +5111,7 @@ function ClientesFrentesView({projects, ciclos}) {
   const [filterPedra,   setFilterPedra]   = useState('');
   const [filterFarol,   setFilterFarol]   = useState('');
   const [topN,          setTopN]          = useState(60);
-  const [viewMode,      setViewMode]      = useState('frentes'); // 'frentes'|'pedra'
+  const [viewMode,      setViewMode]      = useState('frentes'); // 'frentes'|'pedra'|'produto'
   const [selected,      setSelected]      = useState(null); // cliente selecionado
 
   const spProjects = useMemo(()=>projects.filter(p=>p.source==='sharepoint'),[projects]);
@@ -5132,12 +5132,16 @@ function ClientesFrentesView({projects, ciclos}) {
   const farolOpts   = useMemo(()=>[...new Set(spProjects.map(p=>p.farol).filter(Boolean))].sort(),[spProjects]);
   const clienteOpts = useMemo(()=>[...new Set(spProjects.map(p=>p.client).filter(Boolean))].sort(),[spProjects]);
 
-  // Stats por cliente
+  // Hierarquia de valor da Pedra
+  const PEDRA_RANK={'Diamante':4,'Safira':3,'Rubi':2};
+  const PEDRA_COLOR={'Diamante':'#1d4ed8','Safira':'#6d28d9','Rubi':'#be185d','':' #cbd5e1'};
+
+  // Stats por cliente — inclui nProdutos
   const clientStats = useMemo(()=>{
     const map={};
     filtered.forEach(p=>{
       const c=p.client||'(sem cliente)';
-      if (!map[c]) map[c]={client:c,projects:[],nFrentes:0,nProjetos:0,pedra:p.pedra||''};
+      if (!map[c]) map[c]={client:c,projects:[],nFrentes:0,nProjetos:0,nProdutos:0,pedra:''};
       map[c].projects.push(p);
     });
     Object.values(map).forEach(s=>{
@@ -5145,32 +5149,58 @@ function ClientesFrentesView({projects, ciclos}) {
       const frentesSet=new Set(s.projects.map(p=>getClientFrente(p.solucao)).filter(Boolean));
       s.nFrentes=frentesSet.size;
       s.frentesLabels=[...frentesSet];
+      const produtosSet=new Set(s.projects.map(p=>p.produto).filter(Boolean));
+      s.nProdutos=produtosSet.size;
+      // Pedra de maior hierarquia do cliente
+      const bestPedra=s.projects.reduce((best,p)=>(PEDRA_RANK[p.pedra]||0)>(PEDRA_RANK[best]||0)?p.pedra:best,'');
+      s.pedra=bestPedra;
+      s.pedraRank=PEDRA_RANK[bestPedra]||0;
     });
+    // Ordenação e valor do bloco mudam conforme viewMode
+    const sortKey=viewMode==='frentes'?'nFrentes':viewMode==='pedra'?'pedraRank':'nProdutos';
     return Object.values(map)
       .filter(s=>s.nProjetos>0)
-      .sort((a,b)=>b.nProjetos-a.nProjetos)
+      .sort((a,b)=>b[sortKey]-a[sortKey]||b.nProjetos-a.nProjetos)
       .slice(0,topN);
-  },[filtered,topN]);
+  },[filtered,topN,viewMode]);
 
   // KPIs
   const totalClients  = clientStats.length;
   const totalProjects = clientStats.reduce((s,c)=>s+c.nProjetos,0);
-  const maxFrentes    = Math.max(...clientStats.map(s=>s.nFrentes),1);
   const frentesDist   = useMemo(()=>{
-    const d={};
-    FRENTES_CATS.forEach(f=>{d[f.label]=0;});
+    const d={}; FRENTES_CATS.forEach(f=>{d[f.label]=0;});
     filtered.forEach(p=>{const cat=getClientFrente(p.solucao);if(cat)d[cat]=(d[cat]||0)+1;});
     return d;
   },[filtered]);
 
-  // Cores baseadas em N_frentes (azul claro → escuro)
-  const BLUE_SCALE=['#e0f2fe','#7dd3fc','#38bdf8','#0ea5e9','#0369a1'];
-  function getColor(nFrentes){return BLUE_SCALE[Math.min(nFrentes,BLUE_SCALE.length-1)]||'#cbd5e1';}
-  function getTextColor(nFrentes){return nFrentes>=3?'#fff':'#0c4a6e';}
+  // Cores e escala por viewMode
+  const BLUE_SCALE  =['#e0f2fe','#7dd3fc','#38bdf8','#0ea5e9','#0369a1'];
+  const GREEN_SCALE =['#d1fae5','#6ee7b7','#34d399','#10b981','#047857'];
+  function getCellColor(stat){
+    if (viewMode==='frentes') return BLUE_SCALE[Math.min(stat.nFrentes, BLUE_SCALE.length-1)]||'#cbd5e1';
+    if (viewMode==='pedra')   return PEDRA_COLOR[stat.pedra]||'#cbd5e1';
+    // produto
+    const maxP=Math.max(...clientStats.map(s=>s.nProdutos),1);
+    const idx=Math.round((stat.nProdutos/maxP)*(GREEN_SCALE.length-1));
+    return GREEN_SCALE[Math.min(idx,GREEN_SCALE.length-1)];
+  }
+  function getCellTextColor(stat){
+    if (viewMode==='frentes') return stat.nFrentes>=3?'#fff':'#0c4a6e';
+    if (viewMode==='pedra')   return stat.pedraRank>=2?'#fff':'#1e293b';
+    const maxP=Math.max(...clientStats.map(s=>s.nProdutos),1);
+    return (stat.nProdutos/maxP)>=0.6?'#fff':'#064e3b';
+  }
 
-  // Treemap layout (600×360 virtual canvas → %
+  // Valor do bloco no treemap muda conforme viewMode
+  function getCellValue(stat){
+    if (viewMode==='frentes') return Math.max(stat.nFrentes,1);
+    if (viewMode==='pedra')   return Math.max(stat.pedraRank,0.5)*stat.nProjetos;
+    return Math.max(stat.nProdutos,1);
+  }
+
+  // Treemap layout
   const tmW=600, tmH=360;
-  const tmData=clientStats.map(s=>({...s,value:s.nProjetos}));
+  const tmData=useMemo(()=>clientStats.map(s=>({...s,value:getCellValue(s)})),[clientStats,viewMode]);
   const layout=useMemo(()=>squarifyLayout(tmData,{x:0,y:0,w:tmW,h:tmH}),[tmData]);
 
   // Tabela: projetos filtrados ou do cliente selecionado
@@ -5239,9 +5269,13 @@ function ClientesFrentesView({projects, ciclos}) {
         )}
         <div className="ml-auto self-end flex items-center gap-3">
           <div className="flex bg-slate-100 rounded-xl p-1 gap-0.5">
-            {[{k:'frentes',l:'Frentes'},{ k:'pedra',l:'Pedra'}].map(v=>(
-              <button key={v.k} onClick={()=>setViewMode(v.k)}
-                className={`px-3 py-1 rounded-lg text-xs font-semibold transition ${viewMode===v.k?'bg-white shadow text-sky-600':'text-slate-500'}`}>
+            {[
+              {k:'frentes', l:'Frentes', title:'Organiza por maior nº de frentes envolvidas'},
+              {k:'pedra',   l:'Pedra',   title:'Organiza pelo valor da Pedra (Diamante > Safira > Rubi)'},
+              {k:'produto', l:'Produto', title:'Organiza por maior nº de produtos distintos por cliente'},
+            ].map(v=>(
+              <button key={v.k} onClick={()=>setViewMode(v.k)} title={v.title}
+                className={`px-3 py-1 rounded-lg text-xs font-semibold transition ${viewMode===v.k?'bg-white shadow text-sky-600':'text-slate-500 hover:text-slate-700'}`}>
                 {v.l}
               </button>
             ))}
@@ -5268,14 +5302,10 @@ function ClientesFrentesView({projects, ciclos}) {
       <div className="bg-white rounded-2xl border border-slate-200 p-5">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-sm font-bold text-slate-700">Visual principal</h3>
-          <div className="flex items-center gap-2 text-xs text-slate-400">
-            <span>N_frentes:</span>
-            {BLUE_SCALE.map((c,i)=>(
-              <span key={i} className="flex items-center gap-0.5">
-                <span style={{background:c,width:12,height:12,display:'inline-block',borderRadius:2,border:'1px solid #e2e8f0'}}/>
-                <span>{i+1}</span>
-              </span>
-            ))}
+          <div className="flex items-center gap-3 text-xs text-slate-400 flex-wrap">
+            {viewMode==='frentes'&&<><span className="font-medium">N_frentes:</span>{BLUE_SCALE.map((c,i)=><span key={i} className="flex items-center gap-0.5"><span style={{background:c,width:12,height:12,display:'inline-block',borderRadius:2,border:'1px solid #e2e8f0'}}/><span>{i+1}</span></span>)}</>}
+            {viewMode==='pedra'&&Object.entries(PEDRA_COLOR).filter(([k])=>k).map(([k,c])=><span key={k} className="flex items-center gap-1"><span style={{background:c,width:12,height:12,display:'inline-block',borderRadius:2}}/><span>{k}</span></span>)}
+            {viewMode==='produto'&&<><span className="font-medium">N_produtos:</span>{GREEN_SCALE.map((c,i)=><span key={i} className="flex items-center gap-0.5"><span style={{background:c,width:12,height:12,display:'inline-block',borderRadius:2,border:'1px solid #e2e8f0'}}/><span>{i+1}+</span></span>)}</>}
           </div>
         </div>
         {clientStats.length===0?(
@@ -5286,12 +5316,12 @@ function ClientesFrentesView({projects, ciclos}) {
               {layout.map(cell=>{
                 const stat=cell;
                 const isSelected=selected===stat.client;
-                const color=viewMode==='frentes'?getColor(stat.nFrentes):'#6366f1';
-                const textColor=viewMode==='frentes'?getTextColor(stat.nFrentes):'#fff';
+                const color=getCellColor(stat);
+                const textColor=getCellTextColor(stat);
                 return (
                   <div key={stat.client}
                     onClick={()=>setSelected(isSelected?null:stat.client)}
-                    title={`${stat.client}\n${stat.nProjetos} projeto(s)\n${stat.nFrentes} frente(s): ${stat.frentesLabels.join(', ')}`}
+                    title={`${stat.client}\n${stat.nProjetos} projeto(s)\n${viewMode==='frentes'?`${stat.nFrentes} frente(s): ${stat.frentesLabels.join(', ')}`:viewMode==='pedra'?`Pedra: ${stat.pedra||'—'}`:`${stat.nProdutos} produto(s) distintos`}`}
                     style={{
                       position:'absolute',
                       left:`${(cell.x/tmW)*100}%`,
