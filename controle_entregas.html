@@ -294,7 +294,7 @@ const SP_SELECT      = [
   'KA','Quantidade_Vagas_Prevista',
   'Trimestre_Orcamentario','Periodo','Codigo_Proposta',
   'Publico','Pedra','Responsavel_Pedra','Tipo_Programa',
-  'Frente_Negocio','Produto_Principal',
+  'Frente_Negocio','Produto_Principal','Farol_Vermelho',
   ...HEAD_KEYS,...ANALYST_KEYS,
   ...PHASES.flatMap(ph=>[
     `Inicio_${ph.key}`,
@@ -441,8 +441,9 @@ function parseSPItem(item) {
     respPedra:    item.Responsavel_Pedra||'',
     tipoProg:     item.Tipo_Programa||'',
     qtdVagas:     Number(item.Quantidade_Vagas_Prevista)||0,
-    solucao:      item.Frente_Negocio||'',        // Frente de Negócio (SP: Frente_Negocio)
+    solucao:      item.Frente_Negocio||'',
     produto:      item.Produto_Principal||'',
+    farol:        item.Farol_Vermelho||'',
     head1:      item.Head_1||'',
     head2:      item.Head_2||'',
     head3:      item.Head_3||'',
@@ -929,6 +930,20 @@ async function createSPItem(token, siteUrl, listName, payload) {
 // No field-length limits, no new columns, no Documents folder needed.
 const DIST_MARKER     = '__alocacao_dist__';
 const ANALYTICS_ADMIN = 'lucas.moreira@ciadetalentos.com'; // único com acesso ao painel
+
+// Frentes válidas para o cálculo de N_frentes no dashboard Clientes × Frentes
+const FRENTES_CATS = [
+  { label:'Atração e Seleção',                 test: s=>s.includes('atra') && s.includes('sele') },
+  { label:'Desenvolvimento/Ferramentas de Assessments', test: s=>s.includes('desenvolvimento') || s.includes('ferramentas') },
+  { label:'Latam',                              test: s=>s.includes('latam') },
+  { label:'Employer Branding',                  test: s=>s.includes('employer') },
+];
+function getClientFrente(solucao) {
+  if (!solucao) return null;
+  const s = (solucao||'').toLowerCase();
+  for (const cat of FRENTES_CATS) { if (cat.test(s)) return cat.label; }
+  return null;
+}
 
 // Configuração dos módulos simples (C&D, EB, Frentes Internacionais)
 const MODULE_CONFIGS = {
@@ -1768,6 +1783,20 @@ function App() {
     );
   }
 
+  // ── Clientes × Frentes module ──
+  if (module==='clientes') {
+    return (
+      <div className="min-h-screen bg-slate-50">
+        <AppHeader view={view} setView={setView} authState={authState}
+          onSignOut={signOut} projectCount={projects.length} loading={loading}
+          onRefresh={()=>loadAll(authState.token)} module={module} onHome={()=>setModule(null)}
+          entityView={entityView} setEntityView={setEntityView}/>
+        {saveMsgBanner}
+        <ClientesFrentesView projects={projects} ciclos={ciclos}/>
+      </div>
+    );
+  }
+
   // ── Calendar module ──
   if (module==='calendar') {
     return (
@@ -1882,7 +1911,7 @@ function AppHeader({view,setView,authState,onSignOut,projectCount,loading,onRefr
           )}
           <div className="w-7 h-7 bg-indigo-600 rounded-lg flex items-center justify-center text-white text-xs font-bold">CT</div>
           <span className="text-base font-bold text-slate-800">
-            {module==='pulse'?'Pulse':module==='gestao'?'Gestão A&S':module==='calendar'?'Calendário':module==='analytics'?'Analytics':MODULE_CONFIGS[module]?.label||'Alocação'}
+            {module==='pulse'?'Pulse':module==='gestao'?'Gestão A&S':module==='calendar'?'Calendário':module==='analytics'?'Analytics':module==='clientes'?'Clientes × Frentes':MODULE_CONFIGS[module]?.label||'Alocação'}
           </span>
           {module==='gestao'&&projectCount>0&&<span className="bg-indigo-100 text-indigo-700 text-xs px-2 py-0.5 rounded-full">{projectCount} proj.</span>}
         </div>
@@ -1993,6 +2022,15 @@ function HomeScreen({onSelect,authState,onSignOut,loading,onRefresh,error,onClea
             <div className="mt-6 flex items-center text-sm font-semibold text-indigo-600 group-hover:text-indigo-700">
               Abrir Pulse <span className="ml-1.5">→</span>
             </div>
+          </button>
+
+          {/* Clientes × Frentes card — sempre visível */}
+          <button onClick={()=>onSelect('clientes')}
+            className="group bg-white rounded-2xl border-2 border-slate-200 hover:border-sky-400 hover:shadow-xl transition-all p-8 text-left">
+            <div className="w-14 h-14 bg-sky-100 rounded-2xl flex items-center justify-center text-3xl mb-5 group-hover:bg-sky-200 transition-colors">🗺️</div>
+            <h2 className="text-xl font-bold text-slate-900 mb-2">Clientes × Frentes</h2>
+            <p className="text-sm text-slate-500 leading-relaxed">Treemap de clientes por frentes/produtos com KPIs e tabela detalhada.</p>
+            <div className="mt-6 flex items-center text-sm font-semibold text-sky-600 group-hover:text-sky-700">Abrir <span className="ml-1.5">→</span></div>
           </button>
 
           {/* Calendário card — sempre visível */}
@@ -5039,6 +5077,296 @@ function CalDayView({ events, navDate, today }) {
             })}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Clientes × Frentes View ──────────────────────────────────────────────────
+// Algoritmo squarified treemap (binary split recursivo)
+function squarifyLayout(data, rect) {
+  if (!data.length) return [];
+  if (data.length === 1) return [{...data[0], ...rect}];
+  const total = data.reduce((s,d)=>s+d.value,0);
+  let accum=0, splitIdx=1;
+  const half = total/2;
+  for (let i=0;i<data.length-1;i++) { accum+=data[i].value; if(accum>=half){splitIdx=i+1;break;} }
+  const firstHalf=data.slice(0,splitIdx), secondHalf=data.slice(splitIdx);
+  const ratio=firstHalf.reduce((s,d)=>s+d.value,0)/total;
+  let r1,r2;
+  if (rect.w>=rect.h) {
+    r1={x:rect.x,y:rect.y,w:rect.w*ratio,h:rect.h};
+    r2={x:rect.x+rect.w*ratio,y:rect.y,w:rect.w*(1-ratio),h:rect.h};
+  } else {
+    r1={x:rect.x,y:rect.y,w:rect.w,h:rect.h*ratio};
+    r2={x:rect.x,y:rect.y+rect.h*ratio,w:rect.w,h:rect.h*(1-ratio)};
+  }
+  return [...squarifyLayout(firstHalf,r1),...squarifyLayout(secondHalf,r2)];
+}
+
+function ClientesFrentesView({projects, ciclos}) {
+  const [filterCiclo,   setFilterCiclo]   = useState('');
+  const [filterFrente,  setFilterFrente]  = useState('');
+  const [filterCliente, setFilterCliente] = useState('');
+  const [filterPedra,   setFilterPedra]   = useState('');
+  const [filterFarol,   setFilterFarol]   = useState('');
+  const [topN,          setTopN]          = useState(60);
+  const [viewMode,      setViewMode]      = useState('frentes'); // 'frentes'|'pedra'
+  const [selected,      setSelected]      = useState(null); // cliente selecionado
+
+  const spProjects = useMemo(()=>projects.filter(p=>p.source==='sharepoint'),[projects]);
+
+  // Filtros
+  const filtered = useMemo(()=>spProjects.filter(p=>{
+    if (filterCiclo   && p.ciclo!==filterCiclo) return false;
+    if (filterFrente  && (p.solucao||'')!==filterFrente) return false;
+    if (filterCliente && p.client!==filterCliente) return false;
+    if (filterPedra   && (p.pedra||'')!==filterPedra) return false;
+    if (filterFarol   && (p.farol||'')!==filterFarol) return false;
+    return true;
+  }),[spProjects,filterCiclo,filterFrente,filterCliente,filterPedra,filterFarol]);
+
+  // Opções únicas para os filtros
+  const frenteOpts  = useMemo(()=>[...new Set(spProjects.map(p=>p.solucao).filter(Boolean))].sort(),[spProjects]);
+  const pedraOpts   = useMemo(()=>[...new Set(spProjects.map(p=>p.pedra).filter(Boolean))].sort(),[spProjects]);
+  const farolOpts   = useMemo(()=>[...new Set(spProjects.map(p=>p.farol).filter(Boolean))].sort(),[spProjects]);
+  const clienteOpts = useMemo(()=>[...new Set(spProjects.map(p=>p.client).filter(Boolean))].sort(),[spProjects]);
+
+  // Stats por cliente
+  const clientStats = useMemo(()=>{
+    const map={};
+    filtered.forEach(p=>{
+      const c=p.client||'(sem cliente)';
+      if (!map[c]) map[c]={client:c,projects:[],nFrentes:0,nProjetos:0,pedra:p.pedra||''};
+      map[c].projects.push(p);
+    });
+    Object.values(map).forEach(s=>{
+      s.nProjetos=s.projects.length;
+      const frentesSet=new Set(s.projects.map(p=>getClientFrente(p.solucao)).filter(Boolean));
+      s.nFrentes=frentesSet.size;
+      s.frentesLabels=[...frentesSet];
+    });
+    return Object.values(map)
+      .filter(s=>s.nProjetos>0)
+      .sort((a,b)=>b.nProjetos-a.nProjetos)
+      .slice(0,topN);
+  },[filtered,topN]);
+
+  // KPIs
+  const totalClients  = clientStats.length;
+  const totalProjects = clientStats.reduce((s,c)=>s+c.nProjetos,0);
+  const maxFrentes    = Math.max(...clientStats.map(s=>s.nFrentes),1);
+  const frentesDist   = useMemo(()=>{
+    const d={};
+    FRENTES_CATS.forEach(f=>{d[f.label]=0;});
+    filtered.forEach(p=>{const cat=getClientFrente(p.solucao);if(cat)d[cat]=(d[cat]||0)+1;});
+    return d;
+  },[filtered]);
+
+  // Cores baseadas em N_frentes (azul claro → escuro)
+  const BLUE_SCALE=['#e0f2fe','#7dd3fc','#38bdf8','#0ea5e9','#0369a1'];
+  function getColor(nFrentes){return BLUE_SCALE[Math.min(nFrentes,BLUE_SCALE.length-1)]||'#cbd5e1';}
+  function getTextColor(nFrentes){return nFrentes>=3?'#fff':'#0c4a6e';}
+
+  // Treemap layout (600×360 virtual canvas → %
+  const tmW=600, tmH=360;
+  const tmData=clientStats.map(s=>({...s,value:s.nProjetos}));
+  const layout=useMemo(()=>squarifyLayout(tmData,{x:0,y:0,w:tmW,h:tmH}),[tmData]);
+
+  // Tabela: projetos filtrados ou do cliente selecionado
+  const tableRows = useMemo(()=>{
+    const base = selected ? filtered.filter(p=>p.client===selected) : filtered;
+    return base.sort((a,b)=>(a.client||'').localeCompare(b.client||''));
+  },[filtered,selected]);
+
+  const hasFilters=filterCiclo||filterFrente||filterCliente||filterPedra||filterFarol;
+
+  return (
+    <div className="max-w-screen-xl mx-auto px-4 pb-12 space-y-6 mt-4">
+
+      {/* Filtros */}
+      <div className="bg-white rounded-2xl border border-slate-200 px-5 py-4 flex flex-wrap gap-4 items-end">
+        <div>
+          <label className="text-xs font-semibold text-slate-400 uppercase tracking-wide block mb-1.5">Ciclo</label>
+          <select value={filterCiclo} onChange={e=>setFilterCiclo(e.target.value)}
+            className="text-sm border border-slate-200 rounded-xl px-3 py-2 bg-white min-w-[130px] focus:ring-2 focus:ring-sky-300">
+            <option value="">Todos</option>
+            {(ciclos||[]).map(c=><option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="text-xs font-semibold text-slate-400 uppercase tracking-wide block mb-1.5">Frente de Negócio</label>
+          <select value={filterFrente} onChange={e=>setFilterFrente(e.target.value)}
+            className="text-sm border border-slate-200 rounded-xl px-3 py-2 bg-white min-w-[170px] focus:ring-2 focus:ring-sky-300">
+            <option value="">Todas</option>
+            {frenteOpts.map(f=><option key={f} value={f}>{f}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="text-xs font-semibold text-slate-400 uppercase tracking-wide block mb-1.5">Cliente</label>
+          <select value={filterCliente} onChange={e=>{setFilterCliente(e.target.value);setSelected(e.target.value||null);}}
+            className="text-sm border border-slate-200 rounded-xl px-3 py-2 bg-white min-w-[160px] focus:ring-2 focus:ring-sky-300">
+            <option value="">Todos</option>
+            {clienteOpts.map(c=><option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="text-xs font-semibold text-slate-400 uppercase tracking-wide block mb-1.5">Pedra</label>
+          <select value={filterPedra} onChange={e=>setFilterPedra(e.target.value)}
+            className="text-sm border border-slate-200 rounded-xl px-3 py-2 bg-white focus:ring-2 focus:ring-sky-300">
+            <option value="">Todas</option>
+            {pedraOpts.map(p=><option key={p} value={p}>{p}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="text-xs font-semibold text-slate-400 uppercase tracking-wide block mb-1.5">Farol</label>
+          <select value={filterFarol} onChange={e=>setFilterFarol(e.target.value)}
+            className="text-sm border border-slate-200 rounded-xl px-3 py-2 bg-white focus:ring-2 focus:ring-sky-300">
+            <option value="">Todos</option>
+            {farolOpts.map(f=><option key={f} value={f}>{f}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="text-xs font-semibold text-slate-400 uppercase tracking-wide block mb-1.5">Top N clientes</label>
+          <input type="number" min="5" max="200" value={topN} onChange={e=>setTopN(Number(e.target.value)||60)}
+            className="text-sm border border-slate-200 rounded-xl px-3 py-2 w-20 focus:ring-2 focus:ring-sky-300"/>
+        </div>
+        {(hasFilters||selected)&&(
+          <button onClick={()=>{setFilterCiclo('');setFilterFrente('');setFilterCliente('');setFilterPedra('');setFilterFarol('');setSelected(null);}}
+            className="text-xs text-slate-400 hover:text-red-500 border border-slate-200 px-3 py-2 rounded-xl self-end transition">
+            ✕ Limpar
+          </button>
+        )}
+        <div className="ml-auto self-end flex items-center gap-3">
+          <div className="flex bg-slate-100 rounded-xl p-1 gap-0.5">
+            {[{k:'frentes',l:'Frentes'},{ k:'pedra',l:'Pedra'}].map(v=>(
+              <button key={v.k} onClick={()=>setViewMode(v.k)}
+                className={`px-3 py-1 rounded-lg text-xs font-semibold transition ${viewMode===v.k?'bg-white shadow text-sky-600':'text-slate-500'}`}>
+                {v.l}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* KPIs */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+        {[
+          {l:'Clientes',  v:totalClients,  sub:'únicos no período'},
+          {l:'Projetos',  v:totalProjects, sub:'processos filtrados'},
+          ...FRENTES_CATS.map(f=>({l:f.label.split('/')[0], v:frentesDist[f.label]||0, sub:'projetos', small:true})),
+        ].map(({l,v,sub,small})=>(
+          <div key={l} className="bg-white rounded-2xl border border-slate-200 p-4">
+            <p className={`font-bold text-slate-900 ${small?'text-xl':'text-2xl'}`}>{v}</p>
+            <p className={`font-semibold text-slate-700 mt-0.5 ${small?'text-xs':'text-sm'}`} title={l}>{l.length>22?l.slice(0,21)+'…':l}</p>
+            <p className="text-xs text-slate-400">{sub}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Treemap */}
+      <div className="bg-white rounded-2xl border border-slate-200 p-5">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-sm font-bold text-slate-700">Visual principal</h3>
+          <div className="flex items-center gap-2 text-xs text-slate-400">
+            <span>N_frentes:</span>
+            {BLUE_SCALE.map((c,i)=>(
+              <span key={i} className="flex items-center gap-0.5">
+                <span style={{background:c,width:12,height:12,display:'inline-block',borderRadius:2,border:'1px solid #e2e8f0'}}/>
+                <span>{i+1}</span>
+              </span>
+            ))}
+          </div>
+        </div>
+        {clientStats.length===0?(
+          <div className="text-center text-slate-400 py-12">Nenhum projeto encontrado com os filtros selecionados.</div>
+        ):(
+          <div style={{position:'relative',width:'100%',paddingBottom:`${(tmH/tmW)*100}%`}}>
+            <div style={{position:'absolute',inset:0}}>
+              {layout.map(cell=>{
+                const stat=cell;
+                const isSelected=selected===stat.client;
+                const color=viewMode==='frentes'?getColor(stat.nFrentes):'#6366f1';
+                const textColor=viewMode==='frentes'?getTextColor(stat.nFrentes):'#fff';
+                return (
+                  <div key={stat.client}
+                    onClick={()=>setSelected(isSelected?null:stat.client)}
+                    title={`${stat.client}\n${stat.nProjetos} projeto(s)\n${stat.nFrentes} frente(s): ${stat.frentesLabels.join(', ')}`}
+                    style={{
+                      position:'absolute',
+                      left:`${(cell.x/tmW)*100}%`,
+                      top:`${(cell.y/tmH)*100}%`,
+                      width:`${(cell.w/tmW)*100}%`,
+                      height:`${(cell.h/tmH)*100}%`,
+                      background:color,
+                      border:isSelected?'2px solid #0c4a6e':'1px solid rgba(255,255,255,0.5)',
+                      boxSizing:'border-box',
+                      cursor:'pointer',
+                      overflow:'hidden',
+                      display:'flex',
+                      flexDirection:'column',
+                      justifyContent:'center',
+                      alignItems:'center',
+                      padding:'2px',
+                    }}>
+                    {cell.w>40&&cell.h>20&&(
+                      <>
+                        <div style={{fontSize:Math.min(Math.max(cell.w/8,8),13),fontWeight:700,color:textColor,textAlign:'center',lineHeight:1.1,wordBreak:'break-word',maxWidth:'100%',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:cell.w>80?'nowrap':'normal'}}>
+                          {stat.client}
+                        </div>
+                        {cell.h>32&&<div style={{fontSize:Math.min(cell.w/10,11),color:textColor,opacity:0.85,marginTop:1}}>{stat.nProjetos}</div>}
+                      </>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+        {selected&&<p className="text-xs text-sky-600 mt-2 text-center">Clique em outro cliente para mudar seleção · clique novamente para desmarcar</p>}
+      </div>
+
+      {/* Tabela */}
+      <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+        <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+          <h3 className="text-sm font-bold text-slate-700">
+            Tabela {selected?`— ${selected}`:''}
+          </h3>
+          <span className="text-xs text-slate-400">{tableRows.length} registro(s)</span>
+        </div>
+        <div className="overflow-auto max-h-96">
+          <table className="min-w-full text-xs border-collapse">
+            <thead className="sticky top-0 bg-slate-50">
+              <tr>
+                {['Cliente','Nome do Projeto','Status','Farol','Frente de Negócio','Ciclo','Pedra'].map(h=>(
+                  <th key={h} className="px-3 py-2.5 text-left font-semibold text-slate-500 whitespace-nowrap border-b border-slate-100">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-50">
+              {tableRows.map((p,i)=>(
+                <tr key={p.id||i} className="hover:bg-sky-50/30 transition">
+                  <td className="px-3 py-2 font-semibold text-slate-800 whitespace-nowrap">{p.client||'—'}</td>
+                  <td className="px-3 py-2 text-slate-700 max-w-xs truncate" title={p.title}>{p.title}</td>
+                  <td className="px-3 py-2"><StatusBadge status={p.status}/></td>
+                  <td className="px-3 py-2">
+                    {p.farol&&(
+                      <span className={`font-semibold ${p.farol.toLowerCase().includes('verm')?'text-red-600':p.farol.toLowerCase().includes('amar')?'text-yellow-600':'text-slate-400'}`}>
+                        {p.farol}
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2 text-slate-500 whitespace-nowrap max-w-[180px] truncate" title={p.solucao}>{p.solucao||'—'}</td>
+                  <td className="px-3 py-2 text-slate-400 whitespace-nowrap">{p.ciclo||'—'}</td>
+                  <td className="px-3 py-2 text-slate-400 whitespace-nowrap">{p.pedra||'—'}</td>
+                </tr>
+              ))}
+              {tableRows.length===0&&(
+                <tr><td colSpan={7} className="text-center text-slate-400 py-8">Nenhum registro.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );
