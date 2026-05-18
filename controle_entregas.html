@@ -3738,18 +3738,14 @@ function PulseView({projects, ciclos, allAnalysts, allKAs, onSave, saving, token
   // Only SP projects are editable via Pulse
   const spProjects = projects.filter(p=>p.source==='sharepoint');
 
-  // Frentes únicas dos projetos — lê pulseData.Solucao (mapeado para Frente_Negocio no SP)
-  // com fallback em p.solucao para projetos novos
+  // Frentes únicas dos projetos — usa p.solucao (lido de Frente_Negocio no SP)
   const frenteOptions = useMemo(()=>[
-    ...new Set(spProjects.map(p=>(p.pulseData?.Solucao||p.solucao||'').trim()).filter(v=>v&&!v.includes('[NÃO USAR]')))
+    ...new Set(spProjects.map(p=>(p.solucao||'').trim()).filter(v=>v&&!v.includes('[NÃO USAR]')))
   ].sort(),[spProjects]);
 
   const filtered = useMemo(()=>spProjects.filter(p=>{
     if (filters.ciclo   && p.ciclo!==filters.ciclo) return false;
-    if (filters.frente) {
-      const pFrente=(p.pulseData?.Solucao||p.solucao||'').trim();
-      if (pFrente!==filters.frente) return false;
-    }
+    if (filters.frente && (p.solucao||'').trim()!==filters.frente) return false;
     if (filters.client  && !(p.client||'').toLowerCase().includes(filters.client.toLowerCase())) return false;
     if (filters.nome    && !(p.title||'').toLowerCase().includes(filters.nome.toLowerCase())) return false;
     if (filters.ka      && !(p.ka||'').toLowerCase().includes(filters.ka.toLowerCase())) return false;
@@ -4595,9 +4591,10 @@ function CalendarView({ projects, ciclos }) {
   const today = calSoD(new Date());
   const [viewMode, setViewMode]             = useState('month');
   const [navDate, setNavDate]               = useState(calSoD(today));
-  const [filterCiclo, setFilterCiclo]       = useState('');
-  const [filterProjeto, setFilterProjeto]   = useState('');
-  const [filterCliente, setFilterCliente]   = useState('');
+  const [filterCiclo,   setFilterCiclo]   = useState('');
+  const [filterFrente,  setFilterFrente]  = useState('');
+  const [filterProjeto, setFilterProjeto] = useState('');
+  const [filterCliente, setFilterCliente] = useState('');
   const [filterDateStart, setFilterDateStart] = useState('');
   const [filterDateEnd, setFilterDateEnd]   = useState('');
   const [selectedDay, setSelectedDay]       = useState(null);
@@ -4618,6 +4615,7 @@ function CalendarView({ projects, ciclos }) {
           projTitle:  proj.title,
           client:     proj.client||'',
           ciclo:      proj.ciclo||'',
+          frente:     proj.solucao||'',
           phaseKey:   ph.key,
           phaseLabel: ph.label,
           start:      calSoD(start),
@@ -4633,13 +4631,14 @@ function CalendarView({ projects, ciclos }) {
   const events = useMemo(() => {
     return allEvents.filter(e => {
       if (filterCiclo   && e.ciclo !== filterCiclo)                                          return false;
+      if (filterFrente  && (e.frente||'').trim() !== filterFrente)                           return false;
       if (filterProjeto && !e.projTitle.toLowerCase().includes(filterProjeto.toLowerCase())) return false;
       if (filterCliente && !e.client.toLowerCase().includes(filterCliente.toLowerCase()))    return false;
       if (filterDateStart) { const fs=parseSPDate(filterDateStart); if (fs&&e.end<fs)   return false; }
       if (filterDateEnd)   { const fe=parseSPDate(filterDateEnd);   if (fe&&e.start>fe) return false; }
       return true;
     });
-  }, [allEvents, filterCiclo, filterProjeto, filterCliente, filterDateStart, filterDateEnd]);
+  }, [allEvents, filterCiclo, filterFrente, filterProjeto, filterCliente, filterDateStart, filterDateEnd]);
 
   function navPrev() {
     const d=new Date(navDate);
@@ -4670,7 +4669,9 @@ function CalendarView({ projects, ciclos }) {
     ? events.filter(e=>e.start<=selectedDay&&e.end>=selectedDay).sort((a,b)=>a.start-b.start)
     : [];
 
-  const hasFilters = filterCiclo||filterProjeto||filterCliente||filterDateStart||filterDateEnd;
+  const hasFilters = filterCiclo||filterFrente||filterProjeto||filterCliente||filterDateStart||filterDateEnd;
+  // Frentes únicas dos projetos para o filtro do Calendário
+  const calFrenteOptions = useMemo(()=>[...new Set((projects||[]).map(p=>(p.solucao||'').trim()).filter(Boolean))].sort(),[projects]);
 
   return (
     <div className="max-w-screen-xl mx-auto px-4 pb-12">
@@ -4686,14 +4687,22 @@ function CalendarView({ projects, ciclos }) {
           </select>
         </div>
         <div>
+          <label className="text-xs font-semibold text-slate-400 uppercase tracking-wide block mb-1.5">Frente de Negócio</label>
+          <select value={filterFrente} onChange={e=>setFilterFrente(e.target.value)}
+            className="text-sm border border-slate-200 rounded-xl px-3 py-2 bg-white text-slate-700 min-w-[160px] focus:ring-2 focus:ring-emerald-300 focus:border-emerald-400">
+            <option value="">Todas</option>
+            {calFrenteOptions.map(f=><option key={f} value={f}>{f}</option>)}
+          </select>
+        </div>
+        <div>
           <label className="text-xs font-semibold text-slate-400 uppercase tracking-wide block mb-1.5">Projeto</label>
           <input value={filterProjeto} onChange={e=>setFilterProjeto(e.target.value)}
-            placeholder="buscar…" className="text-sm border border-slate-200 rounded-xl px-3 py-2 w-40 focus:ring-2 focus:ring-emerald-300 focus:border-emerald-400"/>
+            placeholder="buscar…" className="text-sm border border-slate-200 rounded-xl px-3 py-2 w-36 focus:ring-2 focus:ring-emerald-300 focus:border-emerald-400"/>
         </div>
         <div>
           <label className="text-xs font-semibold text-slate-400 uppercase tracking-wide block mb-1.5">Cliente</label>
           <input value={filterCliente} onChange={e=>setFilterCliente(e.target.value)}
-            placeholder="buscar…" className="text-sm border border-slate-200 rounded-xl px-3 py-2 w-40 focus:ring-2 focus:ring-emerald-300 focus:border-emerald-400"/>
+            placeholder="buscar…" className="text-sm border border-slate-200 rounded-xl px-3 py-2 w-36 focus:ring-2 focus:ring-emerald-300 focus:border-emerald-400"/>
         </div>
         <div>
           <label className="text-xs font-semibold text-slate-400 uppercase tracking-wide block mb-1.5">De</label>
@@ -4706,7 +4715,7 @@ function CalendarView({ projects, ciclos }) {
             className="text-sm border border-slate-200 rounded-xl px-3 py-2 focus:ring-2 focus:ring-emerald-300 focus:border-emerald-400"/>
         </div>
         {hasFilters&&(
-          <button onClick={()=>{setFilterCiclo('');setFilterProjeto('');setFilterCliente('');setFilterDateStart('');setFilterDateEnd('');}}
+          <button onClick={()=>{setFilterCiclo('');setFilterFrente('');setFilterProjeto('');setFilterCliente('');setFilterDateStart('');setFilterDateEnd('');}}
             className="text-xs text-slate-400 hover:text-red-500 border border-slate-200 hover:border-red-200 px-3 py-2 rounded-xl transition self-end">
             ✕ Limpar
           </button>
