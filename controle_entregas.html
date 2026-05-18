@@ -294,6 +294,7 @@ const SP_SELECT      = [
   'KA','Quantidade_Vagas_Prevista',
   'Trimestre_Orcamentario','Periodo','Codigo_Proposta',
   'Publico','Pedra','Responsavel_Pedra','Tipo_Programa',
+  'Frente_Negocio','Produto_Principal',
   ...HEAD_KEYS,...ANALYST_KEYS,
   ...PHASES.flatMap(ph=>[
     `Inicio_${ph.key}`,
@@ -433,13 +434,15 @@ function parseSPItem(item) {
     ciclo:        item.Ciclo_Orcamentario||'',
     ka:           item.KA||'',
     trimestre:    item.Trimestre_Orcamentario||'',
-    semestre:     item.Periodo||'',               // SP column: Periodo
+    semestre:     item.Periodo||'',
     codigoProposta: item.Codigo_Proposta||'',
     publico:      item.Publico||'',
     pedra:        item.Pedra||'',
     respPedra:    item.Responsavel_Pedra||'',
     tipoProg:     item.Tipo_Programa||'',
     qtdVagas:     Number(item.Quantidade_Vagas_Prevista)||0,
+    solucao:      item.Frente_Negocio||'',        // Frente de Negócio (SP: Frente_Negocio)
+    produto:      item.Produto_Principal||'',
     head1:      item.Head_1||'',
     head2:      item.Head_2||'',
     head3:      item.Head_3||'',
@@ -468,6 +471,8 @@ function buildSPPayload(project) {
   if (project.respPedra     !== undefined) payload['Responsavel_Pedra']        = project.respPedra||null;
   if (project.tipoProg      !== undefined) payload['Tipo_Programa']            = project.tipoProg||null;
   if (project.qtdVagas      !== undefined && project.qtdVagas>0) payload['Quantidade_Vagas_Prevista'] = project.qtdVagas;
+  if (project.solucao       !== undefined) payload['Frente_Negocio']   = project.solucao||null;
+  if (project.produto       !== undefined) payload['Produto_Principal'] = project.produto||null;
   if (project.head1         !== undefined) payload['Head_1']                   = project.head1||null;
   if (project.head2         !== undefined) payload['Head_2']                   = project.head2||null;
   if (project.head3         !== undefined) payload['Head_3']                   = project.head3||null;
@@ -924,6 +929,13 @@ async function createSPItem(token, siteUrl, listName, payload) {
 // No field-length limits, no new columns, no Documents folder needed.
 const DIST_MARKER     = '__alocacao_dist__';
 const ANALYTICS_ADMIN = 'lucas.moreira@ciadetalentos.com'; // único com acesso ao painel
+
+// Configuração dos módulos simples (C&D, EB, Frentes Internacionais)
+const MODULE_CONFIGS = {
+  cd: { key:'cd', label:'C&D',                   frente:'C&D',                   phases:false, vagas:false, gsc:false, color:'blue'   },
+  eb: { key:'eb', label:'EB',                    frente:'EB',                    phases:false, vagas:false, gsc:false, color:'teal'   },
+  fi: { key:'fi', label:'Frentes Internacionais',frente:'Frentes Internacionais',phases:true,  vagas:true,  gsc:true,  color:'violet' },
+};
 const ANALYTICS_MAX   = 500; // máximo de eventos guardados (rolling window)
 const PENDING_LABEL   = 'Alocação pendente'; // card virtual para analistas/heads não cadastrados
 const DIST_ATT_NAME = 'dist.json';
@@ -1714,6 +1726,32 @@ function App() {
     );
   }
 
+  // ── Módulos simples (C&D, EB, Frentes Internacionais) ──
+  const simpleModuleConfig = MODULE_CONFIGS[module];
+  if (simpleModuleConfig && accessLevel<=2) {
+    return (
+      <div className="min-h-screen bg-slate-50">
+        <AppHeader view={view} setView={setView} authState={authState}
+          onSignOut={signOut} projectCount={filteredProjects.filter(p=>p.solucao===simpleModuleConfig.frente).length}
+          loading={loading} onRefresh={()=>loadAll(authState.token)} module={module} onHome={()=>setModule(null)}
+          entityView={entityView} setEntityView={setEntityView}/>
+        {saveMsgBanner}
+        <ModuleProjectsView
+          projects={filteredProjects}
+          moduleConfig={simpleModuleConfig}
+          allAnalysts={analysts}
+          allHeads={heads}
+          allKAs={kaMembers}
+          spChoices={spChoices}
+          onSave={saveProject}
+          saving={saving}
+          isSpConnected={authState.isAuth}
+          clientId={clientId}
+          tenantId={tenantId}/>
+      </div>
+    );
+  }
+
   // ── Analytics module (admin only) ──
   if (module==='analytics' && (authState.email||'').toLowerCase()===ANALYTICS_ADMIN) {
     const logs = distDataRef.current?.analytics||[];
@@ -1842,7 +1880,7 @@ function AppHeader({view,setView,authState,onSignOut,projectCount,loading,onRefr
           )}
           <div className="w-7 h-7 bg-indigo-600 rounded-lg flex items-center justify-center text-white text-xs font-bold">CT</div>
           <span className="text-base font-bold text-slate-800">
-            {module==='pulse'?'Pulse':module==='gestao'?'Gestão':module==='calendar'?'Calendário':module==='analytics'?'Analytics':'Alocação'}
+            {module==='pulse'?'Pulse':module==='gestao'?'Gestão A&S':module==='calendar'?'Calendário':module==='analytics'?'Analytics':MODULE_CONFIGS[module]?.label||'Alocação'}
           </span>
           {module==='gestao'&&projectCount>0&&<span className="bg-indigo-100 text-indigo-700 text-xs px-2 py-0.5 rounded-full">{projectCount} proj.</span>}
         </div>
@@ -1970,6 +2008,28 @@ function HomeScreen({onSelect,authState,onSignOut,loading,onRefresh,error,onClea
             </div>
           </button>
 
+          {/* Módulos simples: C&D, EB, Frentes Internacionais */}
+          {fullAccess&&Object.values(MODULE_CONFIGS).map(cfg=>{
+            const colors = {
+              blue:   {border:'hover:border-blue-400',  icon:'bg-blue-100 group-hover:bg-blue-200',  text:'text-blue-600 group-hover:text-blue-700'},
+              teal:   {border:'hover:border-teal-400',  icon:'bg-teal-100 group-hover:bg-teal-200',  text:'text-teal-600 group-hover:text-teal-700'},
+              violet: {border:'hover:border-violet-400',icon:'bg-violet-100 group-hover:bg-violet-200',text:'text-violet-600 group-hover:text-violet-700'},
+            }[cfg.color];
+            return (
+              <button key={cfg.key} onClick={()=>onSelect(cfg.key)}
+                className={`group bg-white rounded-2xl border-2 border-slate-200 ${colors.border} hover:shadow-xl transition-all p-8 text-left`}>
+                <div className={`w-14 h-14 ${colors.icon} rounded-2xl flex items-center justify-center text-3xl mb-5 transition-colors`}>
+                  📁
+                </div>
+                <h2 className="text-xl font-bold text-slate-900 mb-2">{cfg.label}</h2>
+                <p className="text-sm text-slate-500 leading-relaxed">Cadastro e gestão de projetos {cfg.label}.</p>
+                <div className={`mt-6 flex items-center text-sm font-semibold ${colors.text}`}>
+                  Abrir {cfg.label} <span className="ml-1.5">→</span>
+                </div>
+              </button>
+            );
+          })}
+
           {/* Analytics card — somente para o admin */}
           {isAdmin&&(
           <button onClick={()=>onSelect('analytics')}
@@ -1994,12 +2054,12 @@ function HomeScreen({onSelect,authState,onSignOut,loading,onRefresh,error,onClea
             <div className="w-14 h-14 bg-violet-100 rounded-2xl flex items-center justify-center text-3xl mb-5 group-hover:bg-violet-200 transition-colors">
               📊
             </div>
-            <h2 className="text-xl font-bold text-slate-900 mb-2">Gestão</h2>
+            <h2 className="text-xl font-bold text-slate-900 mb-2">Gestão A&amp;S</h2>
             <p className="text-sm text-slate-500 leading-relaxed">
               Gerencie a alocação de analistas por projeto e fase. Dashboard, grade mensal, sugestões e edição de projetos.
             </p>
             <div className="mt-6 flex items-center text-sm font-semibold text-violet-600 group-hover:text-violet-700">
-              Abrir Gestão <span className="ml-1.5">→</span>
+              Abrir Gestão A&S <span className="ml-1.5">→</span>
             </div>
           </button>
           )}
@@ -2698,7 +2758,7 @@ function MoskitPickerModal({clientId, tenantId, onSelect, onClose}) {
 }
 
 // ─── Project Modal (redesigned — per-analyst % per phase) ─────────────────────
-function ProjectModal({project, allAnalysts, allHeads, allKAs, onSave, onClose, saving, isSpConnected, clientId, tenantId, spChoices}) {
+function ProjectModal({project, allAnalysts, allHeads, allKAs, onSave, onClose, saving, isSpConnected, clientId, tenantId, spChoices, moduleConfig}) {
   const isExistingSP = !!(project?.spId);
   const isExistingLocal = project && !project?.spId;
   const [syncToSP, setSyncToSP] = useState(isExistingSP ? true : (isSpConnected && !isExistingLocal));
@@ -2718,17 +2778,26 @@ function ProjectModal({project, allAnalysts, allHeads, allKAs, onSave, onClose, 
   const [respPedra,   setRespPedra]   = useState(project?.respPedra||'');
   const [tipoProg,    setTipoProg]    = useState(project?.tipoProg||'');
   const [qtdVagas,    setQtdVagas]    = useState(project?.qtdVagas||'');
-  // Moskit clients (lazy-loaded)
+  const [solucao,     setSolucao]     = useState(project?.solucao||moduleConfig?.frente||'');
+  const [produto,     setProduto]     = useState(project?.produto||'');
+  // Moskit clients + frentes (lazy-loaded)
   const [moskitClients, setMoskitClients] = useState([]);
+  const [moskitFrentes, setMoskitFrentes] = useState([]);
   useEffect(()=>{
     if (!clientId||!tenantId) return;
     fetchMoskitCSV(clientId, tenantId).then(text=>{
       const parsed = window.Papa?.parse(text,{header:true,skipEmptyLines:true});
-      if (!parsed?.data) return;
-      const col = Object.keys(parsed.data[0]||{}).find(k=>k.toLowerCase().includes('empresa'));
-      if (!col) return;
-      const unique=[...new Set(parsed.data.map(r=>(r[col]||'').trim()).filter(Boolean))].sort();
-      setMoskitClients(unique);
+      if (!parsed?.data||!parsed.data.length) return;
+      const keys = Object.keys(parsed.data[0]||{});
+      // Empresas (clientes)
+      const empCol = keys.find(k=>k.toLowerCase().includes('empresa'));
+      if (empCol) setMoskitClients([...new Set(parsed.data.map(r=>(r[empCol]||'').trim()).filter(Boolean))].sort());
+      // Frentes de Negócio (excluindo [NÃO USAR])
+      const frenteCol = keys.find(k=>k.toLowerCase().includes('frente'));
+      if (frenteCol) {
+        const frentes = [...new Set(parsed.data.map(r=>(r[frenteCol]||'').trim()).filter(v=>v&&!v.includes('[NÃO USAR]')))].sort();
+        setMoskitFrentes(frentes);
+      }
     }).catch(()=>{});
   },[clientId, tenantId]);
 
@@ -2828,6 +2897,8 @@ function ProjectModal({project, allAnalysts, allHeads, allKAs, onSave, onClose, 
       respPedra,
       tipoProg,
       qtdVagas:       Number(qtdVagas)||0,
+      solucao,
+      produto,
       source,
       analysts:       filteredA,
       phases:         filteredPhases,
@@ -2974,6 +3045,24 @@ function ProjectModal({project, allAnalysts, allHeads, allKAs, onSave, onClose, 
                 <input type="number" min="0" value={qtdVagas} onChange={e=>setQtdVagas(e.target.value)}
                   className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-200"/>
               </div>
+              {/* Frente de Negócio */}
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Frente de Negócio</label>
+                <input value={solucao} onChange={e=>setSolucao(e.target.value)}
+                  list="frenteDatalist"
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-200"
+                  placeholder="Ex: C&D, EB, Frentes Internacionais"/>
+                <datalist id="frenteDatalist">
+                  {moskitFrentes.map(f=><option key={f} value={f}/>)}
+                </datalist>
+              </div>
+              {/* Produto */}
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Produto</label>
+                <input value={produto} onChange={e=>setProduto(e.target.value)}
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-200"
+                  placeholder="Buscar no Moskit"/>
+              </div>
               {/* KA com datalist da List_Pulse_Equipe */}
               <div>
                 <label className="block text-xs font-medium text-slate-600 mb-1">GSC</label>
@@ -2993,6 +3082,8 @@ function ProjectModal({project, allAnalysts, allHeads, allKAs, onSave, onClose, 
               onSelect={row=>{
                 setTitle(row['Nome']||'');
                 setCiclo(row['Ciclo Or\u00e7ament\u00e1rio']||'');
+                if (row['Frente de Neg\u00f3cio']) setSolucao(row['Frente de Neg\u00f3cio']);
+                if (row['Produto Principal'])    setProduto(row['Produto Principal']);
                 setShowMoskit(false);
               }}/>
           )}
@@ -3625,7 +3716,7 @@ async function fetchFieldInspection(token, siteUrl, listName) {
 
 // ─── Pulse View ───────────────────────────────────────────────────────────────
 function PulseView({projects, ciclos, allAnalysts, allKAs, onSave, saving, token, spChoices}) {
-  const [filters,     setFilters]     = useState({ciclo:'', analista:'', head:'', ka:'', client:'', nome:''});
+  const [filters,     setFilters]     = useState({ciclo:'', analista:'', head:'', ka:'', client:'', nome:'', frente:''});
   const [editProject,   setEditProject]   = useState(null);
   const [editLoading,   setEditLoading]   = useState(false);
   const [editError,     setEditError]     = useState('');
@@ -3645,8 +3736,12 @@ function PulseView({projects, ciclos, allAnalysts, allKAs, onSave, saving, token
   // Only SP projects are editable via Pulse
   const spProjects = projects.filter(p=>p.source==='sharepoint');
 
+  // Frentes únicas para o filtro (excluindo [NÃO USAR])
+  const frenteOptions = useMemo(()=>[...new Set(spProjects.map(p=>p.solucao).filter(v=>v&&!v.includes('[NÃO USAR]')))].sort(),[spProjects]);
+
   const filtered = useMemo(()=>spProjects.filter(p=>{
     if (filters.ciclo   && p.ciclo!==filters.ciclo) return false;
+    if (filters.frente  && p.solucao!==filters.frente) return false;
     if (filters.client  && !(p.client||'').toLowerCase().includes(filters.client.toLowerCase())) return false;
     if (filters.nome    && !(p.title||'').toLowerCase().includes(filters.nome.toLowerCase())) return false;
     if (filters.ka      && !(p.ka||'').toLowerCase().includes(filters.ka.toLowerCase())) return false;
@@ -3761,13 +3856,22 @@ function PulseView({projects, ciclos, allAnalysts, allKAs, onSave, saving, token
 
       {/* Filter bar */}
       <div className="bg-white rounded-xl border border-slate-200 p-4">
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3">
           <div>
             <label className="block text-xs font-medium text-slate-500 mb-1">Ciclo Orç.</label>
             <select value={filters.ciclo} onChange={e=>setFilters(f=>({...f,ciclo:e.target.value}))}
               className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm focus:ring-2 focus:ring-indigo-200 bg-white">
               <option value="">Todos</option>
               {ciclos.map(c=><option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+          {/* Frente de Negócio */}
+          <div>
+            <label className="block text-xs font-medium text-slate-500 mb-1">Frente de Negócio</label>
+            <select value={filters.frente} onChange={e=>setFilters(f=>({...f,frente:e.target.value}))}
+              className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm focus:ring-2 focus:ring-indigo-200 bg-white">
+              <option value="">Todas</option>
+              {frenteOptions.map(v=><option key={v} value={v}>{v}</option>)}
             </select>
           </div>
           {[
@@ -3786,7 +3890,7 @@ function PulseView({projects, ciclos, allAnalysts, allKAs, onSave, saving, token
           ))}
         </div>
         {hasFilters&&(
-          <button onClick={()=>setFilters({ciclo:'',analista:'',head:'',ka:'',client:'',nome:''})}
+          <button onClick={()=>setFilters({ciclo:'',analista:'',head:'',ka:'',client:'',nome:'',frente:''})}
             className="mt-3 text-xs text-indigo-600 hover:text-indigo-800 font-medium">
             ✕ Limpar filtros
           </button>
@@ -3872,6 +3976,7 @@ function PulseEditModal({project, allAnalysts, allKAs, onSave, onClose, saving, 
   const [status,   setStatus]   = useState(project?.status||'');
   const [ciclo,    setCiclo]    = useState(project?.ciclo||'');
   const [ka,       setKa]       = useState(project?.ka||'');
+  const [solucao,  setSolucao]  = useState(project?.solucao||'');
   const [head1,    setHead1]    = useState(project?.head1||'');
   const [head2,    setHead2]    = useState(project?.head2||'');
   const [head3,    setHead3]    = useState(project?.head3||'');
@@ -3916,7 +4021,8 @@ function PulseEditModal({project, allAnalysts, allKAs, onSave, onClose, saving, 
     const fA=analysts.filter(a=>a.trim());
     const fPh={}; PHASES.forEach(ph=>{ const pc=analysts.map((a,i)=>a.trim()?phases[ph.key].pcts[i]||0:null).filter(p=>p!==null); fPh[ph.key]={...phases[ph.key],pcts:pc}; });
     onSave({...project, title:title.trim(), client:client.trim(), status, ciclo:ciclo.trim(),
-      ka:ka.trim(), head1:head1.trim(), head2:head2.trim(), head3:head3.trim(),
+      ka:ka.trim(), solucao:solucao.trim(),
+      head1:head1.trim(), head2:head2.trim(), head3:head3.trim(),
       analysts:fA, phases:fPh, pulseData});
   }
 
@@ -4068,6 +4174,8 @@ function PulseEditModal({project, allAnalysts, allKAs, onSave, onClose, saving, 
                   <input value={ka} onChange={e=>setKa(e.target.value)} list="pulseKADL" className={cls} placeholder="Nome do GSC"/>
                   <datalist id="pulseKADL">{(allKAs||[]).map(k=><option key={k} value={k}/>)}</datalist>
                 </div>
+                <div><label className="block text-xs font-medium text-slate-600 mb-1">Frente de Negócio</label>
+                  <input value={solucao} onChange={e=>setSolucao(e.target.value)} className={cls} placeholder="Ex: C&D, EB"/></div>
                 <div><label className="block text-xs font-medium text-slate-600 mb-1">Head 1</label>
                   <input value={head1} onChange={e=>setHead1(e.target.value)} className={cls}/></div>
                 <div><label className="block text-xs font-medium text-slate-600 mb-1">Head 2</label>
@@ -4778,6 +4886,261 @@ function CalDayView({ events, navDate, today }) {
   );
 }
 
+// ─── Module Projects View (C&D, EB, Frentes Internacionais) ──────────────────
+function ModuleProjectsView({projects, moduleConfig, allAnalysts, allHeads, allKAs, spChoices, onSave, saving, isSpConnected, clientId, tenantId}) {
+  const [showEdit, setShowEdit] = useState(null);
+  const [search,   setSearch]   = useState('');
+
+  // Filtra somente os projetos desta frente
+  const moduleProjects = projects.filter(p=>
+    !moduleConfig.frente || (p.solucao||'').toLowerCase()===(moduleConfig.frente||'').toLowerCase()
+  );
+  const filtered = moduleProjects.filter(p=>
+    !search ||
+    p.title.toLowerCase().includes(search.toLowerCase()) ||
+    (p.client||'').toLowerCase().includes(search.toLowerCase())
+  );
+
+  return (
+    <div className="fade-in max-w-screen-xl mx-auto px-4 pb-10 mt-4 space-y-4">
+      <div className="flex items-center gap-3 flex-wrap">
+        <h2 className="text-lg font-bold text-slate-800">Projetos — {moduleConfig.label}</h2>
+        <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Buscar..."
+          className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm flex-1 min-w-48 focus:ring-2 focus:ring-indigo-200"/>
+        <button onClick={()=>setShowEdit('new')}
+          className="bg-indigo-600 hover:bg-indigo-700 text-white text-sm px-4 py-2 rounded-lg font-medium">
+          + Novo Projeto
+        </button>
+      </div>
+
+      {filtered.length===0&&(
+        <div className="text-center text-slate-400 py-12">
+          <p className="text-3xl mb-2">📁</p>
+          <p>{moduleProjects.length===0?'Nenhum projeto cadastrado nesta frente.':'Nenhum resultado.'}</p>
+        </div>
+      )}
+
+      <div className="space-y-2">
+        {filtered.map(proj=>(
+          <div key={proj.id} className="bg-white rounded-xl border border-slate-200 px-4 py-3 flex items-center gap-3 hover:border-indigo-200 transition">
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-semibold text-slate-800 truncate">{proj.title}</span>
+                {proj.client&&<span className="text-xs text-slate-500">{proj.client}</span>}
+                <StatusBadge status={proj.status}/>
+              </div>
+              <div className="text-xs text-slate-400 mt-0.5">
+                {[proj.ciclo, proj.trimestre, proj.semestre, proj.pedra, proj.ka&&`GSC: ${proj.ka}`].filter(Boolean).join(' · ')}
+              </div>
+            </div>
+            <button onClick={()=>setShowEdit(proj)}
+              className="text-xs text-slate-600 border border-slate-200 px-3 py-1 rounded-lg hover:bg-slate-50 shrink-0">
+              Editar
+            </button>
+          </div>
+        ))}
+      </div>
+
+      {showEdit&&(
+        <ModuleProjectModal
+          project={showEdit==='new'?null:showEdit}
+          moduleConfig={moduleConfig}
+          allKAs={allKAs}
+          spChoices={spChoices}
+          onSave={p=>{ onSave(p); setShowEdit(null); }}
+          onClose={()=>setShowEdit(null)}
+          saving={saving}
+          isSpConnected={isSpConnected}
+          clientId={clientId}
+          tenantId={tenantId}/>
+      )}
+    </div>
+  );
+}
+
+function ModuleProjectModal({project, moduleConfig, allKAs, spChoices, onSave, onClose, saving, isSpConnected, clientId, tenantId}) {
+  const isNew = !project?.spId;
+  const [title,    setTitle]    = useState(project?.title||'');
+  const [client,   setClient]   = useState(project?.client||'');
+  const [solucao,  setSolucao]  = useState(project?.solucao||moduleConfig?.frente||'');
+  const [produto,  setProduto]  = useState(project?.produto||'');
+  const [status,   setStatus]   = useState(project?.status||'');
+  const [ciclo,    setCiclo]    = useState(project?.ciclo||'');
+  const [trimestre,setTrimestre]= useState(project?.trimestre||'');
+  const [semestre, setSemestre] = useState(project?.semestre||'');
+  const [codigoProposta,setCodigoProposta]= useState(project?.codigoProposta||'');
+  const [pedra,    setPedra]    = useState(project?.pedra||'');
+  const [respPedra,setRespPedra]= useState(project?.respPedra||'');
+  // FI extras
+  const [qtdVagas, setQtdVagas] = useState(project?.qtdVagas||'');
+  const [ka,       setKa]       = useState(project?.ka||'');
+  const [phases,   setPhases]   = useState(()=>{
+    const p={}; PHASES.forEach(ph=>{
+      const ex=project?.phases?.[ph.key];
+      p[ph.key]={start:fmtDateForInput(ex?.start)||'',end:fmtDateForInput(ex?.end)||''};
+    }); return p;
+  });
+  // Moskit clients (lazy)
+  const [moskitClients, setMoskitClients] = useState([]);
+  useEffect(()=>{
+    if (!clientId||!tenantId) return;
+    fetchMoskitCSV(clientId, tenantId).then(text=>{
+      const parsed=window.Papa?.parse(text,{header:true,skipEmptyLines:true});
+      if (!parsed?.data?.length) return;
+      const keys=Object.keys(parsed.data[0]);
+      const empCol=keys.find(k=>k.toLowerCase().includes('empresa'));
+      if (empCol) setMoskitClients([...new Set(parsed.data.map(r=>(r[empCol]||'').trim()).filter(Boolean))].sort());
+    }).catch(()=>{});
+  },[clientId,tenantId]);
+
+  const [syncToSP, setSyncToSP] = useState(!project||!!project?.spId||(isSpConnected&&!project?.id));
+
+  function handleSave() {
+    if (!title.trim()) return;
+    const filteredPhases={};
+    PHASES.forEach(ph=>{
+      filteredPhases[ph.key]={...project?.phases?.[ph.key]||{},start:phases[ph.key].start,end:phases[ph.key].end,pcts:[]};
+    });
+    const source = project?.spId?'sharepoint':(syncToSP&&isSpConnected?'sharepoint':'local');
+    onSave({
+      id: project?.id||'proj_'+Date.now(),
+      spId: project?.spId||null,
+      title:title.trim(), client:client.trim(), solucao, produto,
+      status, ciclo, trimestre, semestre, codigoProposta:codigoProposta.trim(),
+      pedra, respPedra, qtdVagas:Number(qtdVagas)||0, ka:ka.trim(),
+      source, analysts:project?.analysts||[], phases:filteredPhases,
+      head1:project?.head1||null, head2:project?.head2||null, head3:project?.head3||null,
+      headPhases:project?.headPhases||{},
+    });
+  }
+
+  const cls='w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-200';
+  const isFI = moduleConfig?.key==='fi';
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col mx-4" onClick={e=>e.stopPropagation()}>
+        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between shrink-0">
+          <h2 className="text-lg font-bold text-slate-800">{isNew?'Novo Projeto':'Editar Projeto'} — {moduleConfig?.label}</h2>
+          <button onClick={onClose} className="text-slate-400 hover:text-red-500 text-xl w-8 h-8 flex items-center justify-center rounded-full hover:bg-slate-100">✕</button>
+        </div>
+        <div className="flex-1 overflow-y-auto px-6 py-5">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="sm:col-span-2">
+              <label className="block text-xs font-medium text-slate-600 mb-1">Nome do Projeto *</label>
+              <input value={title} onChange={e=>setTitle(e.target.value)} className={cls} placeholder="Nome do programa/projeto"/>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Cliente</label>
+              <input value={client} onChange={e=>setClient(e.target.value)} list="modClientDL" className={cls}/>
+              <datalist id="modClientDL">{moskitClients.map(c=><option key={c} value={c}/>)}</datalist>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Frente de Negócio</label>
+              <input value={solucao} onChange={e=>setSolucao(e.target.value)} className={cls}/>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Produto</label>
+              <input value={produto} onChange={e=>setProduto(e.target.value)} className={cls}/>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Status</label>
+              <select value={status} onChange={e=>setStatus(e.target.value)} className={cls}>
+                <option value="">—</option>
+                {(spChoices?.Status_Programa||['Em andamento','Concluído','Cancelado','Planejamento']).map(o=><option key={o} value={o}>{o}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Ciclo Orçamentário</label>
+              <select value={ciclo} onChange={e=>setCiclo(e.target.value)} className={cls}>
+                <option value="">—</option>
+                {(spChoices?.Ciclo_Orcamentario||[]).map(o=><option key={o} value={o}>{o}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Trimestre Orç.</label>
+              <select value={trimestre} onChange={e=>setTrimestre(e.target.value)} className={cls}>
+                <option value="">—</option>
+                {(spChoices?.Trimestre_Orcamentario||['Q1','Q2','Q3','Q4']).map(o=><option key={o} value={o}>{o}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Semestre Orç.</label>
+              <select value={semestre} onChange={e=>setSemestre(e.target.value)} className={cls}>
+                <option value="">—</option>
+                {(spChoices?.Periodo||['1S','2S']).map(o=><option key={o} value={o}>{o}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Código Proposta</label>
+              <input value={codigoProposta} onChange={e=>setCodigoProposta(e.target.value)} className={cls}/>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Pedra</label>
+              <select value={pedra} onChange={e=>setPedra(e.target.value)} className={cls}>
+                <option value="">—</option>
+                {(spChoices?.Pedra||_pedra).map(o=><option key={o} value={o}>{o}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Responsável Pedra</label>
+              <select value={respPedra} onChange={e=>setRespPedra(e.target.value)} className={cls}>
+                <option value="">—</option>
+                {(spChoices?.Responsavel_Pedra||_respPedra).map(o=><option key={o} value={o}>{o}</option>)}
+              </select>
+            </div>
+            {/* Extras exclusivos de Frentes Internacionais */}
+            {isFI&&(<>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Qtd. Vagas Previstas</label>
+                <input type="number" min="0" value={qtdVagas} onChange={e=>setQtdVagas(e.target.value)} className={cls}/>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">GSC</label>
+                <input value={ka} onChange={e=>setKa(e.target.value)} list="modKADL" className={cls}/>
+                <datalist id="modKADL">{(allKAs||[]).map(k=><option key={k} value={k}/>)}</datalist>
+              </div>
+              {/* Datas das fases (sem alocação) */}
+              <div className="sm:col-span-2 border-t border-slate-100 pt-4">
+                <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-3">Datas das Fases</p>
+                <div className="space-y-2">
+                  {PHASES.map(ph=>(
+                    <div key={ph.key} className="flex items-center gap-3">
+                      <span className="text-sm text-slate-600 w-36 shrink-0">{ph.label}</span>
+                      <input type="date" value={phases[ph.key]?.start||''} onChange={e=>setPhases(p=>({...p,[ph.key]:{...p[ph.key],start:e.target.value}}))}
+                        className="border border-slate-200 rounded-lg px-2 py-1 text-xs focus:ring-1 focus:ring-indigo-300"/>
+                      <span className="text-slate-300 text-xs">→</span>
+                      <input type="date" value={phases[ph.key]?.end||''} onChange={e=>setPhases(p=>({...p,[ph.key]:{...p[ph.key],end:e.target.value}}))}
+                        className="border border-slate-200 rounded-lg px-2 py-1 text-xs focus:ring-1 focus:ring-indigo-300"/>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </>)}
+          </div>
+        </div>
+        <div className="px-6 py-4 border-t border-slate-200 flex items-center justify-between gap-3 shrink-0 bg-white rounded-b-2xl">
+          {!project?.spId&&isSpConnected&&(
+            <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-600">
+              <div onClick={()=>setSyncToSP(v=>!v)} className={`relative w-9 h-5 rounded-full transition ${syncToSP?'bg-indigo-600':'bg-slate-300'}`}>
+                <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${syncToSP?'translate-x-4':'translate-x-0.5'}`}/>
+              </div>
+              {syncToSP?'📋 Salvar no SharePoint':'🗂️ Somente na ferramenta'}
+            </label>
+          )}
+          <div className="flex gap-2 ml-auto">
+            <button onClick={onClose} className="border border-slate-300 text-slate-600 px-4 py-2 rounded-lg text-sm hover:bg-slate-50">Cancelar</button>
+            <button onClick={handleSave} disabled={!title.trim()||saving}
+              className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white px-5 py-2 rounded-lg text-sm font-semibold">
+              {saving?'⏳ Salvando...':(isNew?'➕ Criar':'💾 Salvar')}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Analytics View ───────────────────────────────────────────────────────────
 function AnalyticsView({logs}) {
   const [period, setPeriod] = useState(30); // dias
@@ -4813,7 +5176,7 @@ function AnalyticsView({logs}) {
     return Object.values(map).sort((a,b)=>b.count-a.count);
   },[filtered]);
 
-  const MODULE_LABELS = {pulse:'Pulse',gestao:'Gestão',calendar:'Calendário',analytics:'Analytics'};
+  const MODULE_LABELS = {pulse:'Pulse',gestao:'Gestão A&S',calendar:'Calendário',analytics:'Analytics'};
   const fmtDate = ts=>{ if(!ts) return '—'; const d=new Date(ts); return `${d.toLocaleDateString('pt-BR')} ${d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}`; };
   const maxCount = Math.max(...byUser.map(u=>u.count),1);
 
