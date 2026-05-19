@@ -3706,40 +3706,25 @@ function AnalystDetailModal({analyst,allProjects,onClose,extraAllocations,onSave
 async function createFrenteNegocioField(token, siteUrl, listName) {
   const base = _spListBase(siteUrl, listName);
   const hdrs = {'Authorization':`Bearer ${token}`,'Content-Type':'application/json;odata=nometadata','Accept':'application/json;odata=nometadata'};
-  // Opções disponíveis (frentes do Moskit)
-  const choices = [
-    'Atração e Seleção','Atração e Seleção - Portas de Entrada','Atração e Seleção - Especialistas e Lideranças',
-    'Employer Branding','Desenvolvimento','Ferramentas de Assessments','Latam','Carreira e Desenvolvimento',
-  ];
-  // 1. Cria o campo com nome simples (garante InternalName = 'FrenteNegocio')
-  let fieldId = null;
-  try {
-    const createRes = await fetch(`${base}/fields`, {
-      method:'POST', headers:hdrs,
-      body: JSON.stringify({
-        Title:'FrenteNegocio', FieldTypeKind:6, Required:false,
-        Choices:{results:choices},
-      }),
-    });
-    if (!createRes.ok) {
-      const t = await createRes.text();
-      if (!t.includes('already')) throw new Error(`Criar campo: ${createRes.status} ${t.slice(0,100)}`);
-      // Já existe — busca o ID
-    } else {
-      const created = await createRes.json();
-      fieldId = created.Id;
+
+  // Verifica se o campo já existe
+  const checkRes = await fetch(`${base}/fields?$filter=InternalName eq 'FrenteNegocio'&$select=InternalName&$top=1`, {headers:{'Authorization':`Bearer ${token}`,'Accept':'application/json;odata=nometadata'}});
+  if (checkRes.ok) {
+    const checkJson = await checkRes.json();
+    if ((checkJson.value||[]).length > 0) return true; // já existe
+  }
+
+  // Cria como Text (tipo 2) — mais simples, sem validação de choices
+  const createRes = await fetch(`${base}/fields`, {
+    method:'POST', headers:hdrs,
+    body: JSON.stringify({Title:'FrenteNegocio', FieldTypeKind:2, Required:false}),
+  });
+  if (!createRes.ok) {
+    const t = await createRes.text();
+    if (!t.toLowerCase().includes('exist') && !t.includes('duplicate')) {
+      throw new Error(`Criar campo: ${createRes.status} ${t.slice(0,150)}`);
     }
-  } catch(e) { if (!e.message.includes('Criar')) throw e; }
-
-  // 2. Atualiza o título de exibição para "Frente de Negócio"
-  try {
-    await fetch(`${base}/fields/getbytitle('FrenteNegocio')`, {
-      method:'POST',
-      headers:{...hdrs,'X-HTTP-Method':'MERGE','IF-MATCH':'*'},
-      body: JSON.stringify({Title:'Frente de Negócio', FieldTypeKind:6}),
-    });
-  } catch {}
-
+  }
   return true;
 }
 
@@ -5163,13 +5148,27 @@ function ClientesFrentesView({projects, ciclos, isAdmin, authToken}) {
       setMigrateMsg('⏳ Criando coluna no SP…');
       await createFrenteNegocioField(authToken, SP_SITE_URL, SP_LIST_NAME);
       // Passo 2: popular projetos sem frente
-      setMigrateMsg(`⏳ Preenchendo ${sem.length} projeto(s)…`);
-      let ok=0, fail=0;
-      for (const proj of sem) {
-        try { await patchSPItem(authToken, SP_SITE_URL, SP_LIST_NAME, proj.spId, {FrenteNegocio:'Atração e Seleção'}); ok++; }
-        catch { fail++; }
+      const allSP = projects.filter(p=>p.source==='sharepoint'&&p.spId);
+      setMigrateMsg(`⏳ Preenchendo ${allSP.length} projeto(s) com "Atração e Seleção"…`);
+      let ok=0, fail=0, lastErr='';
+      const base = _spListBase(SP_SITE_URL, SP_LIST_NAME);
+      for (const proj of allSP) {
+        try {
+          const res = await fetch(`${base}/items(${proj.spId})`, {
+            method:'POST',
+            headers:{
+              'Authorization':`Bearer ${authToken}`,
+              'Accept':'application/json;odata=nometadata',
+              'Content-Type':'application/json;odata=nometadata',
+              'X-HTTP-Method':'MERGE','If-Match':'*',
+            },
+            body: JSON.stringify({FrenteNegocio:'Atração e Seleção'}),
+          });
+          if (res.ok || res.status===204) { ok++; }
+          else { const t=await res.text().catch(()=>''); lastErr=`${res.status} ${t.slice(0,80)}`; fail++; }
+        } catch(e) { lastErr=e.message; fail++; }
       }
-      setMigrateMsg(`✓ Coluna criada · ${ok} projeto(s) preenchido(s)${fail>0?` · ${fail} falha(s)`:''}.`);
+      setMigrateMsg(`✓ Coluna criada · ${ok} preenchido(s)${fail>0?` · ${fail} falha(s) — último erro: ${lastErr}`:'.'}.`);
     } catch(e) { setMigrateMsg(`Erro: ${e.message}`); }
     setMigrating(false);
   }
