@@ -294,7 +294,8 @@ const SP_SELECT      = [
   'KA','Quantidade_Vagas_Prevista',
   'Trimestre_Orcamentario','Periodo','Codigo_Proposta',
   'Publico','Pedra','Responsavel_Pedra','Tipo_Programa',
-  'FrenteNegocio','Produto_Principal','Farol_Vermelho',
+  // FrenteNegocio adicionado dinamicamente em fetchSPList após confirmar existência no SP
+  'Produto_Principal','Farol_Vermelho',
   ...HEAD_KEYS,...ANALYST_KEYS,
   ...PHASES.flatMap(ph=>[
     `Inicio_${ph.key}`,
@@ -833,7 +834,9 @@ function _spListBase(siteUrl, listName) {
 }
 async function fetchSPList(token, siteUrl, listName) {
   const base = _spListBase(siteUrl, listName);
-  const sel  = SP_SELECT; // usa a constante centralizada que já inclui PHASE_END_COLS
+  // FrenteNegocio incluído só se a coluna já existir no SP (detectado via fetchSPChoices)
+  const extra = _spValidFields.has('FrenteNegocio') ? ',FrenteNegocio' : '';
+  const sel  = SP_SELECT + extra;
   let items=[], url=`${base}/items?$select=${encodeURIComponent(sel)}&$top=200`;
   while (url) {
     const json = await spFetch(token, url);
@@ -1331,16 +1334,16 @@ function App() {
   const loadAll = useCallback(async(token)=>{
     setLoading(true); setError('');
     try {
-      // fetchHeadPctCols PRIMEIRO — garante que HEAD_PCT_COLS está correto
-      // antes de fetchSPList chamar parseSPItem (evita race condition)
+      // Rodar primeiro para que _spValidFields e HEAD_PCT_COLS estejam prontos
+      // antes de fetchSPList (evita race condition e campos inexistentes no $select)
       await fetchHeadPctCols(token, SP_SITE_URL, SP_LIST_NAME);
-      const [spItems, dist, team, hteam, kateam, choices] = await Promise.all([
+      const choices = await fetchSPChoices(token, SP_SITE_URL, SP_LIST_NAME);
+      const [spItems, dist, team, hteam, kateam] = await Promise.all([
         fetchSPList(token, SP_SITE_URL, SP_LIST_NAME),
         fetchDistFile(token, SP_SITE_URL),
         fetchTeamMembers(token, SP_SITE_URL),
         fetchHeadMembers(token, SP_SITE_URL),
         fetchKAMembers(token, SP_SITE_URL),
-        fetchSPChoices(token, SP_SITE_URL, SP_LIST_NAME),
       ]);
       setSpChoices(choices||{});
       setDistData(dist);
