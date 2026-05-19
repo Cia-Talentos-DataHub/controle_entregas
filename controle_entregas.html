@@ -295,6 +295,7 @@ const SP_SELECT      = [
   'Trimestre_Orcamentario','Periodo','Codigo_Proposta',
   'Publico','Pedra','Responsavel_Pedra','Tipo_Programa',
   // FrenteNegocio adicionado dinamicamente em fetchSPList após confirmar existência no SP
+  'Frente_Negocio',    // coluna "Solução" — usada para Produto no dashboard Clientes×Frentes
   'Produto_Principal','Farol_Vermelho',
   ...HEAD_KEYS,...ANALYST_KEYS,
   ...PHASES.flatMap(ph=>[
@@ -442,7 +443,8 @@ function parseSPItem(item) {
     respPedra:    item.Responsavel_Pedra||'',
     tipoProg:     item.Tipo_Programa||'',
     qtdVagas:     Number(item.Quantidade_Vagas_Prevista)||0,
-    solucao:      item.FrenteNegocio||'',        // nova coluna Frente de Negócio (SP: FrenteNegocio)
+    solucao:      item.FrenteNegocio||'',          // nova coluna Frente de Negócio (SP: FrenteNegocio)
+    solucaoSP:    item.Frente_Negocio||'',        // coluna "Solução" (SP: Frente_Negocio) — usada para Produto
     produto:      item.Produto_Principal||'',
     farol:        item.Farol_Vermelho||'',
     head1:      item.Head_1||'',
@@ -5221,10 +5223,12 @@ function ClientesFrentesView({projects, ciclos, isAdmin, authToken}) {
     });
     Object.values(map).forEach(s=>{
       s.nProjetos=s.projects.length;
-      const frentesSet=new Set(s.projects.map(p=>getClientFrente(p.solucao)).filter(Boolean));
+      // Frentes: valores distintos da nova coluna FrenteNegocio
+      const frentesSet=new Set(s.projects.map(p=>(p.solucao||'').trim()).filter(Boolean));
       s.nFrentes=frentesSet.size;
       s.frentesLabels=[...frentesSet];
-      const produtosSet=new Set(s.projects.map(p=>p.produto).filter(Boolean));
+      // Produto: valores distintos da coluna Solução (SP: Frente_Negocio)
+      const produtosSet=new Set(s.projects.map(p=>(p.solucaoSP||'').trim()).filter(Boolean));
       s.nProdutos=produtosSet.size;
       // Pedra de maior hierarquia do cliente
       const bestPedra=s.projects.reduce((best,p)=>(PEDRA_RANK[p.pedra]||0)>(PEDRA_RANK[best]||0)?p.pedra:best,'');
@@ -5449,7 +5453,7 @@ function ClientesFrentesView({projects, ciclos, isAdmin, authToken}) {
                 return (
                   <div key={stat.client}
                     onClick={()=>setSelected(isSelected?null:stat.client)}
-                    title={`${stat.client}\n${stat.nProjetos} projeto(s)\n${viewMode==='frentes'?`${stat.nFrentes} frente(s): ${stat.frentesLabels.join(', ')}`:viewMode==='pedra'?`Pedra: ${stat.pedra||'—'}`:`${stat.nProdutos} produto(s) distintos`}`}
+                    title={`${stat.client}\n${stat.nProjetos} projeto(s)\n${viewMode==='frentes'?`${stat.nFrentes} frente(s): ${stat.frentesLabels.join(', ')}`:viewMode==='pedra'?`Pedra: ${stat.pedra||'—'}`:`${stat.nProdutos} solução(ões) distinta(s)`}`}
                     style={{
                       position:'absolute',
                       left:`${(cell.x/tmW)*100}%`,
