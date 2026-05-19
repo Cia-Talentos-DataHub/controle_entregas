@@ -5270,11 +5270,23 @@ function ClientesFrentesView({projects, ciclos, isAdmin, authToken}) {
     return (stat.nProdutos/maxP)>=0.6?'#fff':'#064e3b';
   }
 
-  // Valor do bloco no treemap muda conforme viewMode
+  // Tamanho do bloco proporcional ao modo selecionado
   function getCellValue(stat){
-    if (viewMode==='frentes') return Math.max(stat.nFrentes,1);
-    if (viewMode==='pedra')   return Math.max(stat.pedraRank,0.5)*stat.nProjetos;
-    return Math.max(stat.nProdutos,1);
+    if (viewMode==='frentes') return Math.max(stat.nFrentes, 0.5);
+    if (viewMode==='pedra')   return Math.max(stat.pedraRank, 0.5);
+    return Math.max(stat.nProdutos, 0.5);
+  }
+
+  // Número exibido no bloco conforme viewMode
+  function getCellLabel(stat){
+    if (viewMode==='frentes') return stat.nFrentes;
+    if (viewMode==='pedra')   return stat.pedra||'—';
+    return stat.nProdutos;
+  }
+  function getCellSublabel(stat){
+    if (viewMode==='frentes') return stat.nFrentes===1?'frente':'frentes';
+    if (viewMode==='pedra')   return '';
+    return stat.nProdutos===1?'solução':'soluções';
   }
 
   // Treemap layout
@@ -5476,7 +5488,9 @@ function ClientesFrentesView({projects, ciclos, isAdmin, authToken}) {
                         <div style={{fontSize:Math.min(Math.max(cell.w/8,8),13),fontWeight:700,color:textColor,textAlign:'center',lineHeight:1.1,wordBreak:'break-word',maxWidth:'100%',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:cell.w>80?'nowrap':'normal'}}>
                           {stat.client}
                         </div>
-                        {cell.h>32&&<div style={{fontSize:Math.min(cell.w/10,11),color:textColor,opacity:0.85,marginTop:1}}>{stat.nProjetos}</div>}
+                        {cell.h>30&&<div style={{fontSize:Math.min(cell.w/9,12),fontWeight:700,color:textColor,marginTop:1}}>{getCellLabel(stat)}</div>}
+                        {cell.h>42&&getCellSublabel(stat)&&<div style={{fontSize:Math.min(cell.w/13,9),color:textColor,opacity:0.8}}>{getCellSublabel(stat)}</div>}
+                        {cell.h>52&&<div style={{fontSize:Math.min(cell.w/14,8),color:textColor,opacity:0.6}}>{stat.nProjetos} proj.</div>}
                       </>
                     )}
                   </div>
