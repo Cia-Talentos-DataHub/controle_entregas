@@ -5514,7 +5514,7 @@ function ClientesFrentesView({projects, ciclos, isAdmin, authToken}) {
           <table className="min-w-full text-xs border-collapse">
             <thead className="sticky top-0 bg-slate-50">
               <tr>
-                {['Cliente','Nome do Projeto','Status','Farol','Frente de Negócio','Ciclo','Pedra'].map(h=>(
+                {['Cliente','Nome do Projeto','Status','Farol','Frente de Negócio','Solução','Ciclo','Pedra'].map(h=>(
                   <th key={h} className="px-3 py-2.5 text-left font-semibold text-slate-500 whitespace-nowrap border-b border-slate-100">{h}</th>
                 ))}
               </tr>
@@ -5536,7 +5536,8 @@ function ClientesFrentesView({projects, ciclos, isAdmin, authToken}) {
                       </span>
                     )}
                   </td>
-                  <td className="px-3 py-2 text-slate-500 whitespace-nowrap max-w-[180px] truncate" title={p.solucao}>{p.solucao||'—'}</td>
+                  <td className="px-3 py-2 text-slate-500 whitespace-nowrap max-w-[160px] truncate" title={p.solucao}>{p.solucao||'—'}</td>
+                  <td className="px-3 py-2 text-slate-500 whitespace-nowrap max-w-[160px] truncate" title={p.solucaoSP}>{p.solucaoSP||'—'}</td>
                   <td className="px-3 py-2 text-slate-400 whitespace-nowrap">{p.ciclo||'—'}</td>
                   <td className="px-3 py-2 text-slate-400 whitespace-nowrap">{p.pedra||'—'}</td>
                 </tr>
