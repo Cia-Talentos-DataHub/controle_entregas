@@ -3104,7 +3104,7 @@ function ProjectModal({project, allAnalysts, allHeads, allKAs, onSave, onClose, 
               </div>
               {/* Produto */}
               <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">Produto</label>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Produto Principal</label>
                 <input value={produto} onChange={e=>setProduto(e.target.value)}
                   className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-200"
                   placeholder="Buscar no Moskit"/>
@@ -4224,7 +4224,7 @@ function PulseEditModal({project, allAnalysts, allKAs, onSave, onClose, saving, 
                   <input value={solucao} onChange={e=>setSolucao(e.target.value)} className={cls2}/>
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1">Produto</label>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Produto Principal</label>
                   <input value={pulseData['Produto_Principal']||''} onChange={e=>updatePulse('Produto_Principal',e.target.value)} className={cls2}/>
                 </div>
                 {[
@@ -5227,8 +5227,8 @@ function ClientesFrentesView({projects, ciclos, isAdmin, authToken}) {
       const frentesSet=new Set(s.projects.map(p=>(p.solucao||'').trim()).filter(Boolean));
       s.nFrentes=frentesSet.size;
       s.frentesLabels=[...frentesSet];
-      // Produto: valores distintos da coluna Solução (SP: Frente_Negocio)
-      const produtosSet=new Set(s.projects.map(p=>(p.solucaoSP||'').trim()).filter(Boolean));
+      // Produto: valores distintos de Produto_Principal
+      const produtosSet=new Set(s.projects.map(p=>(p.produto||'').trim()).filter(Boolean));
       s.nProdutos=produtosSet.size;
       // Pedra de maior hierarquia do cliente
       const bestPedra=s.projects.reduce((best,p)=>(PEDRA_RANK[p.pedra]||0)>(PEDRA_RANK[best]||0)?p.pedra:best,'');
@@ -5514,7 +5514,7 @@ function ClientesFrentesView({projects, ciclos, isAdmin, authToken}) {
           <table className="min-w-full text-xs border-collapse">
             <thead className="sticky top-0 bg-slate-50">
               <tr>
-                {['Cliente','Nome do Projeto','Status','Farol','Frente de Negócio','Solução','Ciclo','Pedra'].map(h=>(
+                {['Cliente','Nome do Projeto','Status','Farol','Frente de Negócio','Produto Principal','Ciclo','Pedra'].map(h=>(
                   <th key={h} className="px-3 py-2.5 text-left font-semibold text-slate-500 whitespace-nowrap border-b border-slate-100">{h}</th>
                 ))}
               </tr>
@@ -5537,7 +5537,7 @@ function ClientesFrentesView({projects, ciclos, isAdmin, authToken}) {
                     )}
                   </td>
                   <td className="px-3 py-2 text-slate-500 whitespace-nowrap max-w-[160px] truncate" title={p.solucao}>{p.solucao||'—'}</td>
-                  <td className="px-3 py-2 text-slate-500 whitespace-nowrap max-w-[160px] truncate" title={p.solucaoSP}>{p.solucaoSP||'—'}</td>
+                  <td className="px-3 py-2 text-slate-500 whitespace-nowrap max-w-[160px] truncate" title={p.produto}>{p.produto||'—'}</td>
                   <td className="px-3 py-2 text-slate-400 whitespace-nowrap">{p.ciclo||'—'}</td>
                   <td className="px-3 py-2 text-slate-400 whitespace-nowrap">{p.pedra||'—'}</td>
                 </tr>
@@ -5734,7 +5734,7 @@ function ModuleProjectModal({project, moduleConfig, allKAs, spChoices, onSave, o
               }
             </div>
             <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1">Produto</label>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Produto Principal</label>
               <input value={produto} onChange={e=>setProduto(e.target.value)} className={cls}/>
             </div>
             <div>
