@@ -1598,7 +1598,7 @@ function App() {
             const d=fmtDateForSP(v); if(d) payload[spKey]=d;
           } else if (f.t==='number') {
             const n=parseFloat(String(v).replace(',','.'));
-            if (!isNaN(n)) payload[spKey]=n;
+            if (!isNaN(n)) payload[spKey]=String(n);
           } else if (f.t==='multicheck') {
             const vals=v.split(',').map(x=>x.trim()).filter(Boolean);
             if (vals.length>0) {
