@@ -251,11 +251,11 @@ const PULSE_FIELDS = [
   // ── Diversidade e Inclusão — pares Meta / % Meta ──────────────────────────
   {s:'Diversidade e Inclusão',k:'Meta_etnico_racial',          l:'Meta Étnico Racial',          t:'select', o:_atingiu},
   {s:'Diversidade e Inclusão',k:'Pct_meta_etnia',              l:'% Meta Etnia',                t:'number'},
-  {s:'Diversidade e Inclusão',k:'Meta_feminino',               l:'Meta Feminino',               t:'number'},
+  {s:'Diversidade e Inclusão',k:'Meta_feminino',               l:'Meta Feminino',               t:'select', o:_atingiu},
   {s:'Diversidade e Inclusão',k:'Pct_meta_feminino',           l:'% Meta Feminino',             t:'number'},
-  {s:'Diversidade e Inclusão',k:'Meta_PcD',                    l:'Meta PcD',                    t:'number'},
+  {s:'Diversidade e Inclusão',k:'Meta_PcD',                    l:'Meta PcD',                    t:'select', o:_atingiu},
   {s:'Diversidade e Inclusão',k:'Pct_meta_pcd',                l:'% Meta PcD',                  t:'number'},
-  {s:'Diversidade e Inclusão',k:'Meta_LGBTQIA',                l:'Meta LGBTQIA+',               t:'number'},
+  {s:'Diversidade e Inclusão',k:'Meta_LGBTQIA',                l:'Meta LGBTQIA+',               t:'select', o:_atingiu},
   {s:'Diversidade e Inclusão',k:'Pct_meta_LGBTQIA',            l:'% Meta LGBTQIA+',             t:'number'},
   {s:'Diversidade e Inclusão',k:'Meta_outro_publico_especifico',l:'Meta Outro Público',          t:'select', o:_atingiu},
   {s:'Diversidade e Inclusão',k:'Pct_meta_outro_publico',      l:'% Meta Outro Público',        t:'number'},
@@ -1110,7 +1110,10 @@ const PULSE_FIELD_SP_OVERRIDES = {
   'Auxilio_mudanca':                   'Aux_x00ed_liomudan_x00e7_a_x003f',
   'Trilha_de_Desenvolvimento':         'TrilhadeDesenvolvimento_x0028_Jo',
   'Processo_para_nicho':               'Esteprocesso_x00e9_paraumnichoes',
-  'Meta_etnico_racial':                'Tevemetaparap_x00fa_blico_x00e9_',
+  'Meta_etnico_racial':                'Tevemetaparap_x00fa_blico_x00e9_',  // Choice: Não teve/Atingida/Não atingida
+  'Meta_feminino':                    'Tevemetaparap_x00fa_blicofeminin',   // Choice: Não teve/Atingida/Não atingida
+  'Meta_PcD':                         'Metaparap_x00fa_blicoPcD',           // Choice: Não teve/Atingida/Não atingida
+  'Meta_LGBTQIA':                     'Metaparap_x00fa_blicoLGBTQIA_x00',  // Choice: Não teve/Atingida/Não atingida
   'Acoes_para_metas':                  'A_x00e7__x00f5_esqueajudaramatra',
   'Parceiro_diversidade':              'Tevealgumparceiroparaatrairdiver',
   'Flexibilizacao_criterios_internos': 'Flexibiliza_x00e7__x00e3_odecrit',
