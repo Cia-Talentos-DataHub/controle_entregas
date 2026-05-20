@@ -126,7 +126,24 @@ const _tpEtapa = ['Dinâmica de Grupo','Entrevista Individual','Painel','Entrevi
 const _pos     = ['Presencial','Online','Híbrido'];
 const _atingiu = ['Não teve','Atingida','Não atingida'];
 const _pedra   = ['-','Diamante','Safira','Rubi'];
-const _respPedra = ['-','Carla Esteves','Claudia Pereira','Esteban Morin','Luana De Paula','Milie Haji','Paula Esteves'];
+const _respPedra  = ['Carla','Claudia','Esteban','Felipe','Ligia','Luana','Milie','Paula','Tey'];
+// De-para: nomes antigos → novos (para migração e leitura de dados existentes)
+const RESP_PEDRA_DEPARA = {
+  'carla esteves':'Carla','carla':'Carla',
+  'claudia pereira':'Claudia','claudia':'Claudia',
+  'esteban morin':'Esteban','esteban':'Esteban',
+  'luana de paula':'Luana','luana':'Luana',
+  'milie haji':'Milie','milie':'Milie',
+  'paula esteves':'Paula','paula':'Paula',
+  'felipe':'Felipe','ligia':'Ligia','tey':'Tey','-':'',
+};
+function normRespPedra(v) {
+  if (!v) return '';
+  return (v.split(/[,;]+/).map(s=>{
+    const t=s.trim();
+    return RESP_PEDRA_DEPARA[t.toLowerCase()]||t;
+  }).filter(Boolean).join(','));
+}
 const _publico    = ['-','Seleção - Projeto Estágio Completo','Seleção - Projeto Trainee Completo','Outro'];
 const _tipoProg   = ['-','Customizado','Digital +','Vaga Pontual','Bolsas'];
 const _segmento   = ['Financeiro','Industrial','Serviços','Agronegócio','Outros'];
@@ -161,7 +178,7 @@ const PULSE_FIELDS = [
   {s:'Produto e Tipo',        k:'Periodicidade_contratacoes',  l:'Periodicidade Contratações',  t:'select', o:_periodicidade},
   // ── Gestão e Responsáveis ──────────────────────────────────────────────────
   {s:'Gestão e Responsáveis', k:'Pedra',                       l:'Pedra',                       t:'select', o:_pedra},
-  {s:'Gestão e Responsáveis', k:'Responsavel_Pedra',           l:'Responsável Pedra',           t:'select', o:_respPedra},
+  {s:'Gestão e Responsáveis', k:'Responsavel_Pedra',           l:'Responsável Pedra',           t:'multicheck', o:_respPedra, fixedOptions:true},
   {s:'Gestão e Responsáveis', k:'Etapa_Processo',              l:'Etapa do Processo',           t:'select', o:_etapaProc},
   {s:'Gestão e Responsáveis', k:'Relacionamento_Cliente',      l:'Rel. Cliente',                t:'select', o:_rel},
   {s:'Gestão e Responsáveis', k:'Relacionamento_Cliente_EB',   l:'Rel. Cliente EB',             t:'select', o:_rel},
@@ -440,7 +457,7 @@ function parseSPItem(item) {
     codigoProposta: item.Codigo_Proposta||'',
     publico:      item.Publico||'',
     pedra:        item.Pedra||'',
-    respPedra:    item.Responsavel_Pedra||'',
+    respPedra:    normRespPedra(item.Responsavel_Pedra||''),
     tipoProg:     item.Tipo_Programa||'',
     qtdVagas:     Number(item.Quantidade_Vagas_Prevista)||0,
     solucao:      item.FrenteNegocio||'',          // nova coluna Frente de Negócio (SP: FrenteNegocio)
@@ -1798,7 +1815,7 @@ function App() {
           onRefresh={()=>loadAll(authState.token)} module={module} onHome={()=>setModule(null)}
           entityView={entityView} setEntityView={setEntityView}/>
         {saveMsgBanner}
-        <ClientesFrentesView projects={projects} ciclos={ciclos} isAdmin={isAdmin} authToken={authState.token}/>
+        <ClientesFrentesView projects={projects} ciclos={ciclos}/>
       </div>
     );
   }
@@ -3067,14 +3084,24 @@ function ProjectModal({project, allAnalysts, allHeads, allKAs, onSave, onClose, 
                   {(spChoices?.Pedra||_pedra).map(o=><option key={o} value={o}>{o}</option>)}
                 </select>
               </div>
-              {/* Responsável Pedra */}
-              <div>
+              {/* Responsável Pedra — multi-seleção */}
+              <div className="sm:col-span-2">
                 <label className="block text-xs font-medium text-slate-600 mb-1">Responsável Pedra</label>
-                <select value={respPedra} onChange={e=>setRespPedra(e.target.value)}
-                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-200">
-                  <option value="">—</option>
-                  {(spChoices?.Responsavel_Pedra||_respPedra).map(o=><option key={o} value={o}>{o}</option>)}
-                </select>
+                <div className="flex flex-wrap gap-2 pt-1">
+                  {_respPedra.map(opt=>{
+                    const sel=(respPedra||'').split(',').map(x=>x.trim()).filter(Boolean);
+                    const checked=sel.includes(opt);
+                    return (
+                      <label key={opt} className={`flex items-center gap-1.5 cursor-pointer px-2.5 py-1 rounded-lg border text-xs transition ${checked?'bg-indigo-50 border-indigo-300 text-indigo-700':'border-slate-200 text-slate-600 hover:bg-slate-50'}`}>
+                        <input type="checkbox" checked={checked} onChange={e=>{
+                          const next=e.target.checked?[...sel,opt]:sel.filter(s=>s!==opt);
+                          setRespPedra(next.join(','));
+                        }} className="accent-indigo-600"/>
+                        {opt}
+                      </label>
+                    );
+                  })}
+                </div>
               </div>
               {/* Tipo de Programa */}
               <div>
@@ -4233,7 +4260,6 @@ function PulseEditModal({project, allAnalysts, allKAs, onSave, onClose, saving, 
                   {l:'Semestre Orç.',      v:pulseData['Semestre_Orcamentario']||'', s:v=>updatePulse('Semestre_Orcamentario',v),  t:'sel', opts:spChoices?.Periodo||['1S','2S']},
                   {l:'Código Proposta',    v:pulseData['Codigo_Proposta']||'',       s:v=>updatePulse('Codigo_Proposta',v),         t:'txt'},
                   {l:'Pedra',              v:pulseData['Pedra']||'',                 s:v=>updatePulse('Pedra',v),                   t:'sel', opts:spChoices?.Pedra||_pedra},
-                  {l:'Responsável Pedra',  v:pulseData['Responsavel_Pedra']||'',    s:v=>updatePulse('Responsavel_Pedra',v),       t:'sel', opts:spChoices?.Responsavel_Pedra||_respPedra},
                 ].map(({l,v,s,t,opts})=>(
                   <div key={l}>
                     <label className="block text-xs font-medium text-slate-600 mb-1">{l}</label>
@@ -4245,6 +4271,26 @@ function PulseEditModal({project, allAnalysts, allKAs, onSave, onClose, saving, 
                       : <input value={v} onChange={e=>s(e.target.value)} className={cls2}/>}
                   </div>
                 ))}
+                {/* Responsável Pedra — multi-seleção separada */}
+                <div className="sm:col-span-2">
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Responsável Pedra</label>
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    {_respPedra.map(opt=>{
+                      const cur=pulseData['Responsavel_Pedra']||'';
+                      const sel=cur.split(',').map(x=>x.trim()).filter(Boolean);
+                      const checked=sel.includes(opt);
+                      return (
+                        <label key={opt} className={`flex items-center gap-1.5 cursor-pointer px-2.5 py-1 rounded-lg border text-xs transition ${checked?'bg-indigo-50 border-indigo-300 text-indigo-700':'border-slate-200 text-slate-600 hover:bg-slate-50'}`}>
+                          <input type="checkbox" checked={checked} onChange={e=>{
+                            const next=e.target.checked?[...sel,opt]:sel.filter(s=>s!==opt);
+                            updatePulse('Responsavel_Pedra',next.join(','));
+                          }} className="accent-indigo-600"/>
+                          {opt}
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
               </div>
             </section>
 
@@ -5137,49 +5183,14 @@ function squarifyLayout(data, rect) {
   return [...squarifyLayout(firstHalf,r1),...squarifyLayout(secondHalf,r2)];
 }
 
-function ClientesFrentesView({projects, ciclos, isAdmin, authToken}) {
-  const [migrating, setMigrating] = useState(false);
-  const [migrateMsg, setMigrateMsg] = useState('');
-
-  async function handleMigrate() {
-    const sem = projects.filter(p=>p.source==='sharepoint'&&!p.solucao&&p.spId);
-    if (!window.confirm(`Isso vai:\n1. Criar a coluna "Frente de Negócio" na List_Pulse (se não existir)\n2. Preencher ${sem.length} projeto(s) sem frente com "Atração e Seleção"\n\nConfirmar?`)) return;
-    setMigrating(true); setMigrateMsg('');
-    try {
-      // Passo 1: criar a coluna
-      setMigrateMsg('⏳ Criando coluna no SP…');
-      await createFrenteNegocioField(authToken, SP_SITE_URL, SP_LIST_NAME);
-      // Passo 2: popular projetos sem frente
-      const allSP = projects.filter(p=>p.source==='sharepoint'&&p.spId);
-      setMigrateMsg(`⏳ Preenchendo ${allSP.length} projeto(s) com "Atração e Seleção"…`);
-      let ok=0, fail=0, lastErr='';
-      const base = _spListBase(SP_SITE_URL, SP_LIST_NAME);
-      for (const proj of allSP) {
-        try {
-          const res = await fetch(`${base}/items(${proj.spId})`, {
-            method:'POST',
-            headers:{
-              'Authorization':`Bearer ${authToken}`,
-              'Accept':'application/json;odata=nometadata',
-              'Content-Type':'application/json;odata=nometadata',
-              'X-HTTP-Method':'MERGE','If-Match':'*',
-            },
-            body: JSON.stringify({FrenteNegocio:'Atração e Seleção'}),
-          });
-          if (res.ok || res.status===204) { ok++; }
-          else { const t=await res.text().catch(()=>''); lastErr=`${res.status} ${t.slice(0,80)}`; fail++; }
-        } catch(e) { lastErr=e.message; fail++; }
-      }
-      setMigrateMsg(`✓ Coluna criada · ${ok} preenchido(s)${fail>0?` · ${fail} falha(s) — último erro: ${lastErr}`:'.'}.`);
-    } catch(e) { setMigrateMsg(`Erro: ${e.message}`); }
-    setMigrating(false);
-  }
+function ClientesFrentesView({projects, ciclos}) {
   const [filterCiclos,   setFilterCiclos]  = useState([]); // multi-select
   const [filterFrente,   setFilterFrente]  = useState('');
   const [filterCliente,  setFilterCliente] = useState('');
   const [removeClientes, setRemoveClientes]= useState([]); // filtro inverso
   const [filterPedra,    setFilterPedra]   = useState('');
   const [filterFarol,    setFilterFarol]   = useState('');
+  const [filterRespPedra, setFilterRespPedra] = useState('');
   const [topN,           setTopN]          = useState(60);
   const [viewMode,       setViewMode]      = useState('frentes');
   const [selected,       setSelected]      = useState(null);
@@ -5198,14 +5209,16 @@ function ClientesFrentesView({projects, ciclos, isAdmin, authToken}) {
     if (filterFrente  && (p.solucao||'')!==filterFrente) return false;
     if (filterCliente && p.client!==filterCliente) return false;
     if (removeClientes.length>0 && removeClientes.includes(p.client)) return false;
-    if (filterPedra   && (p.pedra||'')!==filterPedra) return false;
+    if (filterPedra     && (p.pedra||'')!==filterPedra) return false;
+    if (filterRespPedra && !(p.respPedra||'').split(',').map(x=>x.trim()).includes(filterRespPedra)) return false;
     if (clientsWithFarol && !clientsWithFarol.has(p.client)) return false;
     return true;
-  }),[spProjects,filterCiclos,filterFrente,filterCliente,removeClientes,filterPedra,clientsWithFarol]);
+  }),[spProjects,filterCiclos,filterFrente,filterCliente,removeClientes,filterPedra,filterRespPedra,clientsWithFarol]);
 
   // Opções únicas para os filtros
   const frenteOpts  = useMemo(()=>[...new Set(spProjects.map(p=>p.solucao).filter(Boolean))].sort(),[spProjects]);
-  const pedraOpts   = useMemo(()=>[...new Set(spProjects.map(p=>p.pedra).filter(Boolean))].sort(),[spProjects]);
+  const pedraOpts    = useMemo(()=>[...new Set(spProjects.map(p=>p.pedra).filter(Boolean))].sort(),[spProjects]);
+  const respPedraOpts= useMemo(()=>[...new Set(spProjects.flatMap(p=>(p.respPedra||'').split(',').map(x=>x.trim())).filter(Boolean))].sort(),[spProjects]);
   const farolOpts   = useMemo(()=>[...new Set(spProjects.map(p=>p.farol).filter(Boolean))].sort(),[spProjects]);
   const clienteOpts = useMemo(()=>[...new Set(spProjects.map(p=>p.client).filter(Boolean))].sort(),[spProjects]);
 
@@ -5300,30 +5313,10 @@ function ClientesFrentesView({projects, ciclos, isAdmin, authToken}) {
     return base.sort((a,b)=>(a.client||'').localeCompare(b.client||''));
   },[filtered,selected]);
 
-  const hasFilters=filterCiclos.length>0||filterFrente||filterCliente||removeClientes.length>0||filterPedra||filterFarol;
+  const hasFilters=filterCiclos.length>0||filterFrente||filterCliente||removeClientes.length>0||filterPedra||filterFarol||filterRespPedra;
 
   return (
     <div className="max-w-screen-xl mx-auto px-4 pb-12 space-y-6 mt-4">
-
-      {/* Banner de migração (admin only) */}
-      {isAdmin&&(
-        <div className="bg-amber-50 border border-amber-200 rounded-2xl px-5 py-3 flex items-center gap-4 flex-wrap">
-          <span className="text-sm text-amber-800 flex-1">
-            {migrateMsg||(()=>{
-              const sem=projects.filter(p=>p.source==='sharepoint'&&!p.solucao).length;
-              return sem>0
-                ? `⚠️ ${sem} projeto(s) sem Frente de Negócio. Clique para criar a coluna no SP e preencher com "Atração e Seleção".`
-                : `✓ Coluna configurada. Clique para recriar ou reforçar o padrão.`;
-            })()}
-          </span>
-          {!migrateMsg&&(
-            <button onClick={handleMigrate} disabled={migrating}
-              className="text-xs bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white px-4 py-1.5 rounded-lg font-semibold transition">
-              {migrating?'⏳ Processando...':'Criar coluna e preencher padrão'}
-            </button>
-          )}
-        </div>
-      )}
 
       {/* Filtros */}
       <div className="bg-white rounded-2xl border border-slate-200 px-5 py-4 flex flex-wrap gap-4 items-end">
@@ -5390,6 +5383,15 @@ function ClientesFrentesView({projects, ciclos, isAdmin, authToken}) {
             {pedraOpts.map(p=><option key={p} value={p}>{p}</option>)}
           </select>
         </div>
+        {/* Responsável Pedra */}
+        <div>
+          <label className="text-xs font-semibold text-slate-400 uppercase tracking-wide block mb-1.5">Resp. Pedra</label>
+          <select value={filterRespPedra} onChange={e=>setFilterRespPedra(e.target.value)}
+            className="text-sm border border-slate-200 rounded-xl px-3 py-2 bg-white focus:ring-2 focus:ring-sky-300">
+            <option value="">Todos</option>
+            {respPedraOpts.map(r=><option key={r} value={r}>{r}</option>)}
+          </select>
+        </div>
         {/* Farol */}
         <div>
           <label className="text-xs font-semibold text-slate-400 uppercase tracking-wide block mb-1.5">Farol</label>
@@ -5406,7 +5408,7 @@ function ClientesFrentesView({projects, ciclos, isAdmin, authToken}) {
             className="text-sm border border-slate-200 rounded-xl px-3 py-2 w-20 focus:ring-2 focus:ring-sky-300"/>
         </div>
         {(hasFilters||selected)&&(
-          <button onClick={()=>{setFilterCiclos([]);setFilterFrente('');setFilterCliente('');setRemoveClientes([]);setFilterPedra('');setFilterFarol('');setSelected(null);}}
+          <button onClick={()=>{setFilterCiclos([]);setFilterFrente('');setFilterCliente('');setRemoveClientes([]);setFilterPedra('');setFilterRespPedra('');setFilterFarol('');setSelected(null);}}
             className="text-xs text-slate-400 hover:text-red-500 border border-slate-200 px-3 py-2 rounded-xl self-end transition">
             ✕ Limpar tudo
           </button>
@@ -5514,7 +5516,7 @@ function ClientesFrentesView({projects, ciclos, isAdmin, authToken}) {
           <table className="min-w-full text-xs border-collapse">
             <thead className="sticky top-0 bg-slate-50">
               <tr>
-                {['Cliente','Nome do Projeto','Status','Farol','Frente de Negócio','Produto Principal','Ciclo','Pedra'].map(h=>(
+                {['Cliente','Nome do Projeto','Status','Farol','Frente de Negócio','Produto Principal','Ciclo','Pedra','Resp. Pedra'].map(h=>(
                   <th key={h} className="px-3 py-2.5 text-left font-semibold text-slate-500 whitespace-nowrap border-b border-slate-100">{h}</th>
                 ))}
               </tr>
@@ -5540,6 +5542,7 @@ function ClientesFrentesView({projects, ciclos, isAdmin, authToken}) {
                   <td className="px-3 py-2 text-slate-500 whitespace-nowrap max-w-[160px] truncate" title={p.produto}>{p.produto||'—'}</td>
                   <td className="px-3 py-2 text-slate-400 whitespace-nowrap">{p.ciclo||'—'}</td>
                   <td className="px-3 py-2 text-slate-400 whitespace-nowrap">{p.pedra||'—'}</td>
+                  <td className="px-3 py-2 text-slate-500 whitespace-nowrap">{p.respPedra||'—'}</td>
                 </tr>
               ))}
               {tableRows.length===0&&(
@@ -5776,12 +5779,23 @@ function ModuleProjectModal({project, moduleConfig, allKAs, spChoices, onSave, o
                 {(spChoices?.Pedra||_pedra).map(o=><option key={o} value={o}>{o}</option>)}
               </select>
             </div>
-            <div>
+            <div className="sm:col-span-2">
               <label className="block text-xs font-medium text-slate-600 mb-1">Responsável Pedra</label>
-              <select value={respPedra} onChange={e=>setRespPedra(e.target.value)} className={cls}>
-                <option value="">—</option>
-                {(spChoices?.Responsavel_Pedra||_respPedra).map(o=><option key={o} value={o}>{o}</option>)}
-              </select>
+              <div className="flex flex-wrap gap-2 pt-1">
+                {_respPedra.map(opt=>{
+                  const sel=(respPedra||'').split(',').map(x=>x.trim()).filter(Boolean);
+                  const checked=sel.includes(opt);
+                  return (
+                    <label key={opt} className={`flex items-center gap-1.5 cursor-pointer px-2.5 py-1 rounded-lg border text-xs transition ${checked?'bg-indigo-50 border-indigo-300 text-indigo-700':'border-slate-200 text-slate-600 hover:bg-slate-50'}`}>
+                      <input type="checkbox" checked={checked} onChange={e=>{
+                        const next=e.target.checked?[...sel,opt]:sel.filter(s=>s!==opt);
+                        setRespPedra(next.join(','));
+                      }} className="accent-indigo-600"/>
+                      {opt}
+                    </label>
+                  );
+                })}
+              </div>
             </div>
             {/* Extras exclusivos de Frentes Internacionais */}
             {isFI&&(<>
