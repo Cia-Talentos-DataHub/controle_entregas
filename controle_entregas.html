@@ -1609,8 +1609,14 @@ function App() {
           } else if (f.t==='multicheck') {
             const vals=v.split(',').map(x=>x.trim()).filter(Boolean);
             if (vals.length>0) {
-              // MultiChoice (SP tipo 15) → {results:[...]} | Choice/Text → string simples
-              payload[spKey] = f.spMultiChoice ? {results:vals} : vals.join(',');
+              const spType = _spFieldTypes[spKey];
+              if (spType===15) {
+                // MultiChoice tipo 15 — SP espera array direto: ["val1","val2"]
+                payload[spKey] = vals;
+              } else {
+                // Choice (6) ou Text (2/3) — string simples separada por vírgula
+                payload[spKey] = vals.join(',');
+              }
             }
           } else {
             payload[spKey]=v;
