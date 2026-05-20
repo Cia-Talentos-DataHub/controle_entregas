@@ -205,7 +205,7 @@ const PULSE_FIELDS = [
   {s:'Candidatos e Atração',  k:'_2a_Prospeccao',              l:'2ª Prospecção',               t:'date'},
   {s:'Candidatos e Atração',  k:'_3a_Prospeccao',              l:'3ª Prospecção',               t:'date'},
   // ── Assessments e Testes ───────────────────────────────────────────────────
-  {s:'Assessments e Testes',  k:'Assessments_Utilizados',      l:'Assessments Utilizados',      t:'multicheck', o:_assessments, w:true},
+  {s:'Assessments e Testes',  k:'Assessments_Utilizados',      l:'Assessments Utilizados',      t:'multicheck', o:_assessments, w:true, spMultiChoice:true},
   {s:'Assessments e Testes',  k:'Inicio_Testes',               l:'Início Testes',               t:'date'},
   {s:'Assessments e Testes',  k:'Termino_Testes',              l:'Término Testes',              t:'date'},
   // Inicio_Ranking/Termino_Ranking agora são datas da fase Ranking (geridas por PHASES)
@@ -1598,7 +1598,10 @@ function App() {
             if (!isNaN(n)) payload[spKey]=n;
           } else if (f.t==='multicheck') {
             const vals=v.split(',').map(x=>x.trim()).filter(Boolean);
-            if (vals.length>0) payload[spKey]={results:vals}; // SP MultiChoice format
+            if (vals.length>0) {
+              // MultiChoice (SP tipo 15) → {results:[...]} | Choice/Text → string simples
+              payload[spKey] = f.spMultiChoice ? {results:vals} : vals.join(',');
+            }
           } else {
             payload[spKey]=v;
           }
