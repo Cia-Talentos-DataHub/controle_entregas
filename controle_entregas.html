@@ -841,7 +841,7 @@ async function spFetch(token, url, opts={}) {
       ...(opts.headers||{}),
     },
   });
-  if (!res.ok) { const t=await res.text().catch(()=>''); throw new Error(`SP ${res.status}: ${t.slice(0,200)}`); }
+  if (!res.ok) { const t=await res.text().catch(()=>''); throw new Error(`SP ${res.status}: ${t.slice(0,600)}`); }
   if (res.status===204) return null;
   return res.json();
 }
@@ -1127,6 +1127,7 @@ const PULSE_FIELD_SP_OVERRIDES = {
 const _spFieldMap      = {}; // { codigoKey → StaticName real no SP }
 const _spValidFields   = new Set(); // StaticNames reais e graváveis
 const _spRequiredFields= new Set(); // StaticNames de campos Required no SP
+const _spFieldTypes    = {}; // { StaticName → FieldTypeKind } — para saber o tipo real no SP
 const _spUnresolved    = []; // PULSE_FIELDS sem correspondência confirmada no SP
 
 // Decodifica _xNNNN_ usado pelo SP nos nomes internos de colunas com acentos/especiais
@@ -1156,6 +1157,9 @@ async function fetchSPChoices(token, siteUrl, listName) {
     writable.forEach(f=>{
       if (f.InternalName) _spValidFields.add(f.InternalName);
       if (f.StaticName)   _spValidFields.add(f.StaticName);
+      // Registra o tipo real do campo — usado em savePulse para enviar número vs. string
+      if (f.InternalName) _spFieldTypes[f.InternalName] = f.FieldTypeKind;
+      if (f.StaticName)   _spFieldTypes[f.StaticName]   = f.FieldTypeKind;
       // Registra campos obrigatórios — null será omitido para esses
       if (f.Required) {
         if (f.InternalName) _spRequiredFields.add(f.InternalName);
@@ -1597,7 +1601,11 @@ function App() {
             const d=fmtDateForSP(v); if(d) payload[spKey]=d;
           } else if (f.t==='number') {
             const n=parseFloat(String(v).replace(',','.'));
-            if (!isNaN(n)) payload[spKey]=String(n);
+            if (!isNaN(n)) {
+              // Campos Text (tipo 2) no SP exigem string; Number/Currency (9/10) exigem número
+              const spType = _spFieldTypes[spKey];
+              payload[spKey] = (spType===2||spType===3) ? String(n) : n;
+            }
           } else if (f.t==='multicheck') {
             const vals=v.split(',').map(x=>x.trim()).filter(Boolean);
             if (vals.length>0) {
@@ -1625,6 +1633,7 @@ function App() {
           if (headCol) payload[headCol]     = pctToSP(headTotal);
         }
       });
+      console.log('🔵 savePulse payload:', JSON.stringify(payload, null, 2));
       await patchSPItem(authState.token, SP_SITE_URL, SP_LIST_NAME, project.spId, payload);
       // Usa distDataRef.current para garantir que férias/extras salvos antes não sejam perdidos
       const cur = distDataRef.current;
