@@ -314,10 +314,6 @@ const SP_SELECT      = [
   // FrenteNegocio adicionado dinamicamente em fetchSPList após confirmar existência no SP
   'Frente_Negocio',    // coluna "Solução" (legado)
   'Produto_Principal','Farol_Vermelho',
-  // Vagas — usadas em Clientes×Frentes
-  'Vagas_Trabalhadas','Vagas_Fechadas','Vagas_Extras','Vagas_Canceladas','Vagas_Nao_Fechadas',
-  // Acompanhamento — usados em Clientes×Frentes
-  'Motivos_Celebrar','Devemos_Cuidar','Resumo_Semanal',
   ...HEAD_KEYS,...ANALYST_KEYS,
   ...PHASES.flatMap(ph=>[
     `Inicio_${ph.key}`,
@@ -467,14 +463,14 @@ function parseSPItem(item) {
     solucao:      item.FrenteNegocio||'',          // nova coluna Frente de Negócio (SP: FrenteNegocio)
     produto:      item.Produto_Principal||'',
     farol:        item.Farol_Vermelho||'',
-    vagasTrab:    Number(item.Vagas_Trabalhadas)||0,
-    vagasFech:    Number(item.Vagas_Fechadas)||0,
-    vagasExtra:   Number(item.Vagas_Extras)||0,
-    vagasCanc:    Number(item.Vagas_Canceladas)||0,
-    vagasNaoFech: Number(item.Vagas_Nao_Fechadas)||0,
-    motivosCelebrar: item.Motivos_Celebrar||'',
-    devemosCuidar:   item.Devemos_Cuidar||'',
-    resumoSemanal:   item.Resumo_Semanal||'',
+    vagasTrab:    Number(item[_spFieldMap['Vagas_Trabalhadas']||'Vagas_Trabalhadas'])||0,
+    vagasFech:    Number(item[_spFieldMap['Vagas_Fechadas']   ||'Vagas_Fechadas'   ])||0,
+    vagasExtra:   Number(item[_spFieldMap['Vagas_Extras']     ||'Vagas_Extras'     ])||0,
+    vagasCanc:    Number(item[_spFieldMap['Vagas_Canceladas'] ||'Vagas_Canceladas' ])||0,
+    vagasNaoFech: Number(item[_spFieldMap['Vagas_Nao_Fechadas']||'Vagas_Nao_Fechadas'])||0,
+    motivosCelebrar: item[_spFieldMap['Motivos_Celebrar']||'Motivos_Celebrar']||'',
+    devemosCuidar:   item[_spFieldMap['Devemos_Cuidar']  ||'Devemos_Cuidar'  ]||'',
+    resumoSemanal:   item[_spFieldMap['Resumo_Semanal']  ||'Resumo_Semanal'  ]||'',
     head1:      item.Head_1||'',
     head2:      item.Head_2||'',
     head3:      item.Head_3||'',
@@ -862,11 +858,19 @@ function _spListBase(siteUrl, listName) {
   const rel = new URL(siteUrl).pathname.replace(/\/$/, '');
   return `${siteUrl}/_api/web/GetList('${rel}/Lists/${listName}')`;
 }
+// Campos extras do Clientes×Frentes — nomes resolvidos via _spFieldMap após fetchSPChoices
+const CF_EXTRA_KEYS = ['Vagas_Trabalhadas','Vagas_Fechadas','Vagas_Extras','Vagas_Canceladas',
+                       'Vagas_Nao_Fechadas','Motivos_Celebrar','Devemos_Cuidar','Resumo_Semanal'];
 async function fetchSPList(token, siteUrl, listName) {
   const base = _spListBase(siteUrl, listName);
   // FrenteNegocio incluído só se a coluna já existir no SP (detectado via fetchSPChoices)
-  const extra = _spValidFields.has('FrenteNegocio') ? ',FrenteNegocio' : '';
-  const sel  = SP_SELECT + extra;
+  const extraFN = _spValidFields.has('FrenteNegocio') ? ',FrenteNegocio' : '';
+  // Vagas e Acompanhamento para Clientes×Frentes — usa nome real resolvido pelo _spFieldMap
+  const extraCF = CF_EXTRA_KEYS
+    .map(k => _spFieldMap[k])
+    .filter(n => n && n !== '__nonexistent__' && !SP_SELECT.includes(n))
+    .join(',');
+  const sel  = SP_SELECT + extraFN + (extraCF ? ','+extraCF : '');
   let items=[], url=`${base}/items?$select=${encodeURIComponent(sel)}&$top=200`;
   while (url) {
     const json = await spFetch(token, url);
