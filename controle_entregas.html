@@ -5227,7 +5227,7 @@ function ClientesFrentesView({projects, ciclos}) {
   const [filterPedra,    setFilterPedra]   = useState('');
   const [filterFarol,    setFilterFarol]   = useState('');
   const [filterRespPedra, setFilterRespPedra] = useState('');
-  const [filterPublico,  setFilterPublico] = useState('');
+  const [filterPublico,  setFilterPublico] = useState([]);
   const [topN,           setTopN]          = useState(60);
   const [viewMode,       setViewMode]      = useState('frentes');
   const [selected,       setSelected]      = useState(null);
@@ -5248,7 +5248,7 @@ function ClientesFrentesView({projects, ciclos}) {
     if (removeClientes.length>0 && removeClientes.includes(p.client)) return false;
     if (filterPedra     && (p.pedra||'')!==filterPedra) return false;
     if (filterRespPedra && !(p.respPedra||'').split(',').map(x=>x.trim()).includes(filterRespPedra)) return false;
-    if (filterPublico   && (p.publico||'')!==filterPublico) return false;
+    if (filterPublico.length>0 && !filterPublico.includes(p.publico||'')) return false;
     if (clientsWithFarol && !clientsWithFarol.has(p.client)) return false;
     return true;
   }),[spProjects,filterCiclos,filterFrente,filterCliente,removeClientes,filterPedra,filterRespPedra,filterPublico,clientsWithFarol]);
@@ -5361,7 +5361,7 @@ function ClientesFrentesView({projects, ciclos}) {
     return base.sort((a,b)=>(a.client||'').localeCompare(b.client||''));
   },[filtered,selected]);
 
-  const hasFilters=filterCiclos.length>0||filterFrente||filterCliente||removeClientes.length>0||filterPedra||filterFarol||filterRespPedra||filterPublico;
+  const hasFilters=filterCiclos.length>0||filterFrente||filterCliente||removeClientes.length>0||filterPedra||filterFarol||filterRespPedra||filterPublico.length>0;
 
   return (
     <div className="max-w-screen-xl mx-auto px-4 pb-12 space-y-6 mt-4">
@@ -5449,14 +5449,23 @@ function ClientesFrentesView({projects, ciclos}) {
             {farolOpts.map(f=><option key={f} value={f}>{f}</option>)}
           </select>
         </div>
-        {/* Público */}
-        <div>
+        {/* Público — multi-select */}
+        <div className="relative group">
           <label className="text-xs font-semibold text-slate-400 uppercase tracking-wide block mb-1.5">Público</label>
-          <select value={filterPublico} onChange={e=>setFilterPublico(e.target.value)}
-            className="text-sm border border-slate-200 rounded-xl px-3 py-2 bg-white min-w-[160px] focus:ring-2 focus:ring-sky-300">
-            <option value="">Todos</option>
-            {publicoOpts.map(p=><option key={p} value={p}>{p}</option>)}
-          </select>
+          <div className="text-sm border border-slate-200 rounded-xl px-3 py-2 bg-white min-w-[180px] cursor-pointer select-none focus:ring-2 focus:ring-sky-300 flex items-center justify-between gap-2">
+            <span className="truncate">{filterPublico.length===0?'Todos':`${filterPublico.length} selecionado(s)`}</span>
+            <span className="text-slate-400">▾</span>
+          </div>
+          <div className="absolute top-full left-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg z-20 hidden group-hover:block min-w-[220px] py-1 max-h-48 overflow-y-auto">
+            {publicoOpts.map(p=>(
+              <label key={p} className="flex items-center gap-2 px-3 py-1.5 hover:bg-sky-50 cursor-pointer text-sm">
+                <input type="checkbox" checked={filterPublico.includes(p)}
+                  onChange={e=>setFilterPublico(prev=>e.target.checked?[...prev,p]:prev.filter(x=>x!==p))}/>
+                {p}
+              </label>
+            ))}
+            {filterPublico.length>0&&<button onClick={()=>setFilterPublico([])} className="w-full text-xs text-red-400 px-3 py-1 text-left hover:bg-red-50">✕ Limpar</button>}
+          </div>
         </div>
         {/* Top N */}
         <div>
@@ -5465,7 +5474,7 @@ function ClientesFrentesView({projects, ciclos}) {
             className="text-sm border border-slate-200 rounded-xl px-3 py-2 w-20 focus:ring-2 focus:ring-sky-300"/>
         </div>
         {(hasFilters||selected)&&(
-          <button onClick={()=>{setFilterCiclos([]);setFilterFrente('');setFilterCliente('');setRemoveClientes([]);setFilterPedra('');setFilterRespPedra('');setFilterFarol('');setFilterPublico('');setSelected(null);}}
+          <button onClick={()=>{setFilterCiclos([]);setFilterFrente('');setFilterCliente('');setRemoveClientes([]);setFilterPedra('');setFilterRespPedra('');setFilterFarol('');setFilterPublico([]);setSelected(null);}}
             className="text-xs text-slate-400 hover:text-red-500 border border-slate-200 px-3 py-2 rounded-xl self-end transition">
             ✕ Limpar tudo
           </button>
@@ -5533,6 +5542,17 @@ function ClientesFrentesView({projects, ciclos}) {
             {totalVagasTrab>0&&<p className="text-[10px] text-slate-400">Não fechadas x trabalhadas</p>}
           </div>
         </div>
+      </div>
+
+      {/* KPIs — projetos por frente */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+        {FRENTES_CATS.map(f=>(
+          <div key={f.label} className="bg-white rounded-2xl border border-slate-200 p-4">
+            <p className="text-2xl font-bold text-slate-900">{frentesDist[f.label]||0}</p>
+            <p className="text-xs font-semibold text-slate-700 mt-0.5 truncate" title={f.label}>{f.label}</p>
+            <p className="text-xs text-slate-400">projetos</p>
+          </div>
+        ))}
       </div>
 
       {/* Treemap */}
