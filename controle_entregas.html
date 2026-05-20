@@ -178,7 +178,7 @@ const PULSE_FIELDS = [
   {s:'Produto e Tipo',        k:'Periodicidade_contratacoes',  l:'Periodicidade Contratações',  t:'select', o:_periodicidade},
   // ── Gestão e Responsáveis ──────────────────────────────────────────────────
   {s:'Gestão e Responsáveis', k:'Pedra',                       l:'Pedra',                       t:'select', o:_pedra},
-  {s:'Gestão e Responsáveis', k:'Responsavel_Pedra',           l:'Responsável Pedra',           t:'multicheck', o:_respPedra, fixedOptions:true, spMultiChoice:true},
+  {s:'Gestão e Responsáveis', k:'Responsavel_Pedra',           l:'Responsável Pedra',           t:'multicheck', o:_respPedra, fixedOptions:true},
   {s:'Gestão e Responsáveis', k:'Etapa_Processo',              l:'Etapa do Processo',           t:'select', o:_etapaProc},
   {s:'Gestão e Responsáveis', k:'Relacionamento_Cliente',      l:'Rel. Cliente',                t:'select', o:_rel},
   {s:'Gestão e Responsáveis', k:'Relacionamento_Cliente_EB',   l:'Rel. Cliente EB',             t:'select', o:_rel},
@@ -488,10 +488,7 @@ function buildSPPayload(project) {
   if (project.codigoProposta!== undefined) payload['Codigo_Proposta']          = project.codigoProposta||null;
   if (project.publico       !== undefined) payload['Publico']                  = project.publico||null;
   if (project.pedra         !== undefined) payload['Pedra']                    = project.pedra||null;
-  if (project.respPedra     !== undefined) {
-    const rpVals = (project.respPedra||'').split(',').map(x=>x.trim()).filter(Boolean);
-    payload['Responsavel_Pedra'] = rpVals.length ? {results:rpVals} : null;
-  }
+  if (project.respPedra     !== undefined) payload['Responsavel_Pedra']        = project.respPedra||null;
   if (project.tipoProg      !== undefined) payload['Tipo_Programa']            = project.tipoProg||null;
   if (project.qtdVagas      !== undefined && project.qtdVagas>0) payload['Quantidade_Vagas_Prevista'] = project.qtdVagas;
   if (project.solucao       !== undefined) payload['FrenteNegocio']    = project.solucao||null;
