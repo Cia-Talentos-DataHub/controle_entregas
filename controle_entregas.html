@@ -18,6 +18,7 @@
   }
 </script>
 <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdn.tailwindcss.com"></script>
 <style>
   body { font-family:'Segoe UI',sans-serif; background:#f8fafc; }
@@ -810,11 +811,9 @@ const MOSKIT_SP_SCOPE  = 'https://ciadetalentos.sharepoint.com/.default';
 const MOSKIT_SITE_URL  = 'https://ciadetalentos.sharepoint.com/sites/Public';
 const MOSKIT_FILE_REL  = "/sites/Public/Documentos Partilhados/Desenvolvimento de Neg\u00f3cios/0 Back Office - DN/Relat\u00f3rio de Vendas/Base_Moskit.csv";
 // ─── NPS / Graph API ─────────────────────────────────────────────────────────
-const GRAPH_SCOPE     = 'https://graph.microsoft.com/.default';
-const NPS_SITE_HOST   = 'ciadetalentos.sharepoint.com';
-const NPS_SITE_PATH   = '/sites/Public';
-const NPS_CLI_FILE    = 'CIA/GeralCT/Indicadores CT/Bases dos projetos/Bases de vagas/Analise_Respostas_Dissertativas_CLI.xlsx';
-const NPS_CDD_FILE    = 'CIA/GeralCT/Indicadores CT/Bases dos projetos/Bases de vagas/Analise_Pesquisa_Candidatos_Completo.xlsx';
+// NPS usa o mesmo site/escopo do Moskit (ciadetalentos.sharepoint.com/sites/Public)
+const NPS_CLI_REL     = "/sites/Public/Documentos Partilhados/CIA/GeralCT/Indicadores CT/Bases dos projetos/Bases de vagas/Analise_Respostas_Dissertativas_CLI.xlsx";
+const NPS_CDD_REL     = "/sites/Public/Documentos Partilhados/CIA/GeralCT/Indicadores CT/Bases dos projetos/Bases de vagas/Analise_Pesquisa_Candidatos_Completo.xlsx";
 const NPS_CLI_SHEET   = 'Pesquisa_cliente';
 const NPS_CDD_SHEET   = 'Pesquisa_candidato';
 const NPS_ETAPAS_ELEG = new Set(['Contínuo','Relatório Final','Projeto Concluído']);
@@ -842,21 +841,24 @@ async function acquireTokenForResource(clientId, tenantId, scope) {
   }
 }
 // ─── Graph API / Excel helpers ────────────────────────────────────────────────
-async function fetchExcelSheet(clientId, tenantId, filePath, sheetName) {
-  const token = await acquireTokenForResource(clientId, tenantId, GRAPH_SCOPE);
-  const encodedPath = filePath.split('/').map(encodeURIComponent).join('/');
-  const encodedSheet = encodeURIComponent(sheetName);
-  const url = `https://graph.microsoft.com/v1.0/sites/${NPS_SITE_HOST}:${NPS_SITE_PATH}:/drive/root:/${encodedPath}:/workbook/worksheets('${encodedSheet}')/usedRange`;
-  const res = await fetch(url, {headers:{'Authorization':`Bearer ${token}`,'Content-Type':'application/json'}});
+async function fetchExcelSheet(clientId, tenantId, serverRelUrl, sheetName) {
+  // Usa SharePoint REST API (mesmo padrão do Moskit CSV) + SheetJS para parsear o xlsx
+  const token = await acquireTokenForResource(clientId, tenantId, MOSKIT_SP_SCOPE);
+  const safeRel = serverRelUrl.replace(/'/g, "''");
+  const url = `${MOSKIT_SITE_URL}/_api/web/GetFileByServerRelativeUrl('${safeRel}')/$value`;
+  const res = await fetch(url, {headers:{'Authorization':`Bearer ${token}`}});
   if (!res.ok) {
     const t = await res.text().catch(()=>'');
-    throw new Error(`Graph ${res.status}: ${t.slice(0,400)}`);
+    throw new Error(`SP ${res.status}: ${t.slice(0,300)}`);
   }
-  const data = await res.json();
-  const allRows = data.values||[];
-  if (allRows.length < 2) return [];
-  const headers = allRows[0].map(h => String(h==null?'':h).trim());
-  return allRows.slice(1)
+  const buffer = await res.arrayBuffer();
+  const workbook = XLSX.read(buffer, {type:'array'});
+  const sheetToUse = workbook.SheetNames.find(s=>s===sheetName) || workbook.SheetNames[0];
+  const sheet = workbook.Sheets[sheetToUse];
+  const rawData = XLSX.utils.sheet_to_json(sheet, {header:1, defval:''});
+  if (rawData.length < 2) return [];
+  const headers = rawData[0].map(h => String(h==null?'':h).trim());
+  return rawData.slice(1)
     .filter(r => r.some(v => v!==null && v!==''))
     .map(row => {
       const obj = {};
@@ -6434,8 +6436,8 @@ function NpsView({projects, ciclos, clientId, tenantId}) {
     setNpsError(null);
     try {
       const [cli, cdd] = await Promise.all([
-        fetchExcelSheet(clientId, tenantId, NPS_CLI_FILE, NPS_CLI_SHEET),
-        fetchExcelSheet(clientId, tenantId, NPS_CDD_FILE, NPS_CDD_SHEET),
+        fetchExcelSheet(clientId, tenantId, NPS_CLI_REL, NPS_CLI_SHEET),
+        fetchExcelSheet(clientId, tenantId, NPS_CDD_REL, NPS_CDD_SHEET),
       ]);
       setNpsData({cli, cdd});
     } catch(e) {
