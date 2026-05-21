@@ -5269,7 +5269,7 @@ function ClientesFrentesView({projects, ciclos}) {
     if (filterStatus.length>0  && !filterStatus.includes(p.status||''))  return false;
     if (clientsWithFarol && !clientsWithFarol.has(p.client)) return false;
     return true;
-  }),[spProjects,filterCiclos,filterFrente,filterCliente,removeClientes,filterPedra,filterRespPedra,filterPublico,clientsWithFarol]);
+  }),[spProjects,filterCiclos,filterFrente,filterCliente,removeClientes,filterPedra,filterRespPedra,filterPublico,filterStatus,clientsWithFarol]);
 
   // Opções únicas para os filtros
   const frenteOpts   = useMemo(()=>[...new Set(spProjects.map(p=>p.solucao).filter(Boolean))].sort(),[spProjects]);
