@@ -1657,13 +1657,20 @@ function App() {
       });
       console.log('🔵 savePulse payload:', JSON.stringify(payload, null, 2));
       await patchSPItem(authState.token, SP_SITE_URL, SP_LIST_NAME, project.spId, payload);
-      // Usa distDataRef.current para garantir que férias/extras salvos antes não sejam perdidos
+      // Usa distDataRef.current para garantir que férias/extras salvos antes não sejam perdidos.
+      // SAFEGUARD: preserva vacations e extraAllocations do estado React (fonte de verdade)
+      // para evitar sobrescrita acidental caso distDataRef ainda seja o estado inicial vazio.
       const cur = distDataRef.current;
       const newDist = {
         ...cur,
         distributions:     {...(cur.distributions||{})},
         headDistributions: {...(cur.headDistributions||{})},
         localProjects:     [...(cur.localProjects||[])],
+        // Garante que nunca sobrescreve com array vazio se o estado React já tem dados
+        extraAllocations:  (cur.extraAllocations?.length ? cur.extraAllocations : undefined)
+                           ?? extraAllocations ?? [],
+        vacations:         (cur.vacations?.length        ? cur.vacations        : undefined)
+                           ?? vacations ?? [],
       };
       const distEntry={};
       PHASES.forEach(ph=>{ distEntry[ph.key]=project.phases[ph.key]?.pcts||[]; });
@@ -1688,7 +1695,7 @@ function App() {
       setSaving(false);
       setTimeout(()=>setSaveMsg(null), 8000);
     }
-  },[authState]);  // distData removido — lido via distDataRef.current
+  },[authState, extraAllocations, vacations]);  // safeguard: preserva férias/extras do estado React
 
   // ── Suggestions ──
   function getSuggestions(proj, phKey) {
@@ -5228,6 +5235,16 @@ function ClientesFrentesView({projects, ciclos}) {
   const [filterFarol,    setFilterFarol]   = useState('');
   const [filterRespPedra, setFilterRespPedra] = useState('');
   const [filterPublico,  setFilterPublico] = useState([]);
+  const [filterStatus,   setFilterStatus]  = useState([]);
+  const [openDropdown,   setOpenDropdown]  = useState(null); // 'ciclo'|'remove'|'status'|'publico'
+  const dropdownRef = React.useRef(null);
+  React.useEffect(()=>{
+    function handleOutside(e){
+      if(dropdownRef.current && !dropdownRef.current.contains(e.target)) setOpenDropdown(null);
+    }
+    document.addEventListener('mousedown', handleOutside);
+    return ()=>document.removeEventListener('mousedown', handleOutside);
+  },[]);
   const [topN,           setTopN]          = useState(60);
   const [viewMode,       setViewMode]      = useState('frentes');
   const [selected,       setSelected]      = useState(null);
@@ -5249,6 +5266,7 @@ function ClientesFrentesView({projects, ciclos}) {
     if (filterPedra     && (p.pedra||'')!==filterPedra) return false;
     if (filterRespPedra && !(p.respPedra||'').split(',').map(x=>x.trim()).includes(filterRespPedra)) return false;
     if (filterPublico.length>0 && !filterPublico.includes(p.publico||'')) return false;
+    if (filterStatus.length>0  && !filterStatus.includes(p.status||''))  return false;
     if (clientsWithFarol && !clientsWithFarol.has(p.client)) return false;
     return true;
   }),[spProjects,filterCiclos,filterFrente,filterCliente,removeClientes,filterPedra,filterRespPedra,filterPublico,clientsWithFarol]);
@@ -5260,6 +5278,7 @@ function ClientesFrentesView({projects, ciclos}) {
   const farolOpts    = useMemo(()=>[...new Set(spProjects.map(p=>p.farol).filter(Boolean))].sort(),[spProjects]);
   const clienteOpts  = useMemo(()=>[...new Set(spProjects.map(p=>p.client).filter(Boolean))].sort(),[spProjects]);
   const publicoOpts  = useMemo(()=>[...new Set(spProjects.map(p=>p.publico).filter(Boolean))].sort(),[spProjects]);
+  const statusOpts   = useMemo(()=>[...new Set(spProjects.map(p=>p.status).filter(Boolean))].sort(),[spProjects]);
 
   // Hierarquia de valor da Pedra
   const PEDRA_RANK={'Diamante':4,'Safira':3,'Rubi':2};
@@ -5361,30 +5380,33 @@ function ClientesFrentesView({projects, ciclos}) {
     return base.sort((a,b)=>(a.client||'').localeCompare(b.client||''));
   },[filtered,selected]);
 
-  const hasFilters=filterCiclos.length>0||filterFrente||filterCliente||removeClientes.length>0||filterPedra||filterFarol||filterRespPedra||filterPublico.length>0;
+  const hasFilters=filterCiclos.length>0||filterFrente||filterCliente||removeClientes.length>0||filterPedra||filterFarol||filterRespPedra||filterPublico.length>0||filterStatus.length>0;
 
   return (
     <div className="max-w-screen-xl mx-auto px-4 pb-12 space-y-6 mt-4">
 
       {/* Filtros */}
-      <div className="bg-white rounded-2xl border border-slate-200 px-5 py-4 flex flex-wrap gap-4 items-end">
+      <div ref={dropdownRef} className="bg-white rounded-2xl border border-slate-200 px-5 py-4 flex flex-wrap gap-4 items-end">
         {/* Ciclo — multi-select via checkboxes em dropdown */}
-        <div className="relative group">
+        <div className="relative">
           <label className="text-xs font-semibold text-slate-400 uppercase tracking-wide block mb-1.5">Ciclo</label>
-          <div className="text-sm border border-slate-200 rounded-xl px-3 py-2 bg-white min-w-[150px] cursor-pointer select-none focus:ring-2 focus:ring-sky-300 flex items-center justify-between gap-2">
+          <div onClick={()=>setOpenDropdown(openDropdown==='ciclo'?null:'ciclo')}
+            className="text-sm border border-slate-200 rounded-xl px-3 py-2 bg-white min-w-[150px] cursor-pointer select-none focus:ring-2 focus:ring-sky-300 flex items-center justify-between gap-2">
             <span className="truncate">{filterCiclos.length===0?'Todos':`${filterCiclos.length} selecionado(s)`}</span>
             <span className="text-slate-400">▾</span>
           </div>
-          <div className="absolute top-full left-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg z-20 hidden group-hover:block min-w-[160px] py-1">
-            {(ciclos||[]).map(c=>(
-              <label key={c} className="flex items-center gap-2 px-3 py-1.5 hover:bg-sky-50 cursor-pointer text-sm">
-                <input type="checkbox" checked={filterCiclos.includes(c)}
-                  onChange={e=>setFilterCiclos(prev=>e.target.checked?[...prev,c]:prev.filter(x=>x!==c))}/>
-                {c}
-              </label>
-            ))}
-            {filterCiclos.length>0&&<button onClick={()=>setFilterCiclos([])} className="w-full text-xs text-red-400 px-3 py-1 text-left hover:bg-red-50">✕ Limpar</button>}
-          </div>
+          {openDropdown==='ciclo'&&(
+            <div className="absolute top-full left-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg z-30 min-w-[160px] py-1">
+              {(ciclos||[]).map(c=>(
+                <label key={c} className="flex items-center gap-2 px-3 py-1.5 hover:bg-sky-50 cursor-pointer text-sm">
+                  <input type="checkbox" checked={filterCiclos.includes(c)}
+                    onChange={e=>setFilterCiclos(prev=>e.target.checked?[...prev,c]:prev.filter(x=>x!==c))}/>
+                  {c}
+                </label>
+              ))}
+              {filterCiclos.length>0&&<button onClick={()=>setFilterCiclos([])} className="w-full text-xs text-red-400 px-3 py-1 text-left hover:bg-red-50">✕ Limpar</button>}
+            </div>
+          )}
         </div>
         {/* Frente */}
         <div>
@@ -5405,22 +5427,25 @@ function ClientesFrentesView({projects, ciclos}) {
           </select>
         </div>
         {/* Filtro inverso — remover clientes */}
-        <div className="relative group">
+        <div className="relative">
           <label className="text-xs font-semibold text-slate-400 uppercase tracking-wide block mb-1.5">Remover clientes</label>
-          <div className="text-sm border border-slate-200 rounded-xl px-3 py-2 bg-white min-w-[160px] cursor-pointer select-none flex items-center justify-between gap-2">
+          <div onClick={()=>setOpenDropdown(openDropdown==='remove'?null:'remove')}
+            className="text-sm border border-slate-200 rounded-xl px-3 py-2 bg-white min-w-[160px] cursor-pointer select-none flex items-center justify-between gap-2">
             <span className="truncate text-red-500">{removeClientes.length===0?'Nenhum':`${removeClientes.length} removido(s)`}</span>
             <span className="text-slate-400">▾</span>
           </div>
-          <div className="absolute top-full left-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg z-20 hidden group-hover:block min-w-[180px] py-1 max-h-48 overflow-y-auto">
-            {clienteOpts.map(c=>(
-              <label key={c} className="flex items-center gap-2 px-3 py-1.5 hover:bg-red-50 cursor-pointer text-sm">
-                <input type="checkbox" checked={removeClientes.includes(c)}
-                  onChange={e=>setRemoveClientes(prev=>e.target.checked?[...prev,c]:prev.filter(x=>x!==c))}/>
-                {c}
-              </label>
-            ))}
-            {removeClientes.length>0&&<button onClick={()=>setRemoveClientes([])} className="w-full text-xs text-red-400 px-3 py-1 text-left hover:bg-red-50">✕ Limpar</button>}
-          </div>
+          {openDropdown==='remove'&&(
+            <div className="absolute top-full left-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg z-30 min-w-[180px] py-1 max-h-48 overflow-y-auto">
+              {clienteOpts.map(c=>(
+                <label key={c} className="flex items-center gap-2 px-3 py-1.5 hover:bg-red-50 cursor-pointer text-sm">
+                  <input type="checkbox" checked={removeClientes.includes(c)}
+                    onChange={e=>setRemoveClientes(prev=>e.target.checked?[...prev,c]:prev.filter(x=>x!==c))}/>
+                  {c}
+                </label>
+              ))}
+              {removeClientes.length>0&&<button onClick={()=>setRemoveClientes([])} className="w-full text-xs text-red-400 px-3 py-1 text-left hover:bg-red-50">✕ Limpar</button>}
+            </div>
+          )}
         </div>
         {/* Pedra */}
         <div>
@@ -5449,23 +5474,47 @@ function ClientesFrentesView({projects, ciclos}) {
             {farolOpts.map(f=><option key={f} value={f}>{f}</option>)}
           </select>
         </div>
+        {/* Status — multi-select */}
+        <div className="relative">
+          <label className="text-xs font-semibold text-slate-400 uppercase tracking-wide block mb-1.5">Status</label>
+          <div onClick={()=>setOpenDropdown(openDropdown==='status'?null:'status')}
+            className="text-sm border border-slate-200 rounded-xl px-3 py-2 bg-white min-w-[160px] cursor-pointer select-none flex items-center justify-between gap-2">
+            <span className="truncate">{filterStatus.length===0?'Todos':`${filterStatus.length} selecionado(s)`}</span>
+            <span className="text-slate-400">▾</span>
+          </div>
+          {openDropdown==='status'&&(
+            <div className="absolute top-full left-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg z-30 min-w-[200px] py-1 max-h-48 overflow-y-auto">
+              {statusOpts.map(s=>(
+                <label key={s} className="flex items-center gap-2 px-3 py-1.5 hover:bg-sky-50 cursor-pointer text-sm">
+                  <input type="checkbox" checked={filterStatus.includes(s)}
+                    onChange={e=>setFilterStatus(prev=>e.target.checked?[...prev,s]:prev.filter(x=>x!==s))}/>
+                  {s}
+                </label>
+              ))}
+              {filterStatus.length>0&&<button onClick={()=>setFilterStatus([])} className="w-full text-xs text-red-400 px-3 py-1 text-left hover:bg-red-50">✕ Limpar</button>}
+            </div>
+          )}
+        </div>
         {/* Público — multi-select */}
-        <div className="relative group">
+        <div className="relative">
           <label className="text-xs font-semibold text-slate-400 uppercase tracking-wide block mb-1.5">Público</label>
-          <div className="text-sm border border-slate-200 rounded-xl px-3 py-2 bg-white min-w-[180px] cursor-pointer select-none focus:ring-2 focus:ring-sky-300 flex items-center justify-between gap-2">
+          <div onClick={()=>setOpenDropdown(openDropdown==='publico'?null:'publico')}
+            className="text-sm border border-slate-200 rounded-xl px-3 py-2 bg-white min-w-[180px] cursor-pointer select-none focus:ring-2 focus:ring-sky-300 flex items-center justify-between gap-2">
             <span className="truncate">{filterPublico.length===0?'Todos':`${filterPublico.length} selecionado(s)`}</span>
             <span className="text-slate-400">▾</span>
           </div>
-          <div className="absolute top-full left-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg z-20 hidden group-hover:block min-w-[220px] py-1 max-h-48 overflow-y-auto">
-            {publicoOpts.map(p=>(
-              <label key={p} className="flex items-center gap-2 px-3 py-1.5 hover:bg-sky-50 cursor-pointer text-sm">
-                <input type="checkbox" checked={filterPublico.includes(p)}
-                  onChange={e=>setFilterPublico(prev=>e.target.checked?[...prev,p]:prev.filter(x=>x!==p))}/>
-                {p}
-              </label>
-            ))}
-            {filterPublico.length>0&&<button onClick={()=>setFilterPublico([])} className="w-full text-xs text-red-400 px-3 py-1 text-left hover:bg-red-50">✕ Limpar</button>}
-          </div>
+          {openDropdown==='publico'&&(
+            <div className="absolute top-full left-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg z-30 min-w-[220px] py-1 max-h-48 overflow-y-auto">
+              {publicoOpts.map(p=>(
+                <label key={p} className="flex items-center gap-2 px-3 py-1.5 hover:bg-sky-50 cursor-pointer text-sm">
+                  <input type="checkbox" checked={filterPublico.includes(p)}
+                    onChange={e=>setFilterPublico(prev=>e.target.checked?[...prev,p]:prev.filter(x=>x!==p))}/>
+                  {p}
+                </label>
+              ))}
+              {filterPublico.length>0&&<button onClick={()=>setFilterPublico([])} className="w-full text-xs text-red-400 px-3 py-1 text-left hover:bg-red-50">✕ Limpar</button>}
+            </div>
+          )}
         </div>
         {/* Top N */}
         <div>
@@ -5474,7 +5523,7 @@ function ClientesFrentesView({projects, ciclos}) {
             className="text-sm border border-slate-200 rounded-xl px-3 py-2 w-20 focus:ring-2 focus:ring-sky-300"/>
         </div>
         {(hasFilters||selected)&&(
-          <button onClick={()=>{setFilterCiclos([]);setFilterFrente('');setFilterCliente('');setRemoveClientes([]);setFilterPedra('');setFilterRespPedra('');setFilterFarol('');setFilterPublico([]);setSelected(null);}}
+          <button onClick={()=>{setFilterCiclos([]);setFilterFrente('');setFilterCliente('');setRemoveClientes([]);setFilterPedra('');setFilterRespPedra('');setFilterFarol('');setFilterPublico([]);setFilterStatus([]);setSelected(null);}}
             className="text-xs text-slate-400 hover:text-red-500 border border-slate-200 px-3 py-2 rounded-xl self-end transition">
             ✕ Limpar tudo
           </button>
