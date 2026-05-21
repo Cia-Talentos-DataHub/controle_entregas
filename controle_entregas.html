@@ -809,6 +809,16 @@ async function signOutMsal(clientId, tenantId) {
 const MOSKIT_SP_SCOPE  = 'https://ciadetalentos.sharepoint.com/.default';
 const MOSKIT_SITE_URL  = 'https://ciadetalentos.sharepoint.com/sites/Public';
 const MOSKIT_FILE_REL  = "/sites/Public/Documentos Partilhados/Desenvolvimento de Neg\u00f3cios/0 Back Office - DN/Relat\u00f3rio de Vendas/Base_Moskit.csv";
+// ─── NPS / Graph API ─────────────────────────────────────────────────────────
+const GRAPH_SCOPE     = 'https://graph.microsoft.com/.default';
+const NPS_SITE_HOST   = 'ciadetalentos.sharepoint.com';
+const NPS_SITE_PATH   = '/sites/Public';
+const NPS_CLI_FILE    = 'CIA/GeralCT/Indicadores CT/Bases dos projetos/Bases de vagas/Analise_Respostas_Dissertativas_CLI.xlsx';
+const NPS_CDD_FILE    = 'CIA/GeralCT/Indicadores CT/Bases dos projetos/Bases de vagas/Analise_Pesquisa_Candidatos_Completo.xlsx';
+const NPS_CLI_SHEET   = 'Pesquisa_cliente';
+const NPS_CDD_SHEET   = 'Pesquisa_candidato';
+const NPS_ETAPAS_ELEG = new Set(['Contínuo','Relatório Final','Projeto Concluído']);
+
 const MOSKIT_COLS = [
   {key:'ID',                          label:'ID',              fk:'id',      type:'text'},
   {key:'Nome',                        label:'Nome',            fk:'nome',    type:'text'},
@@ -831,6 +841,57 @@ async function acquireTokenForResource(clientId, tenantId, scope) {
     return res.accessToken;
   }
 }
+// ─── Graph API / Excel helpers ────────────────────────────────────────────────
+async function fetchExcelSheet(clientId, tenantId, filePath, sheetName) {
+  const token = await acquireTokenForResource(clientId, tenantId, GRAPH_SCOPE);
+  const encodedPath = filePath.split('/').map(encodeURIComponent).join('/');
+  const encodedSheet = encodeURIComponent(sheetName);
+  const url = `https://graph.microsoft.com/v1.0/sites/${NPS_SITE_HOST}:${NPS_SITE_PATH}:/drive/root:/${encodedPath}:/workbook/worksheets('${encodedSheet}')/usedRange`;
+  const res = await fetch(url, {headers:{'Authorization':`Bearer ${token}`,'Content-Type':'application/json'}});
+  if (!res.ok) {
+    const t = await res.text().catch(()=>'');
+    throw new Error(`Graph ${res.status}: ${t.slice(0,400)}`);
+  }
+  const data = await res.json();
+  const allRows = data.values||[];
+  if (allRows.length < 2) return [];
+  const headers = allRows[0].map(h => String(h==null?'':h).trim());
+  return allRows.slice(1)
+    .filter(r => r.some(v => v!==null && v!==''))
+    .map(row => {
+      const obj = {};
+      headers.forEach((h, i) => { obj[h] = row[i]??''; });
+      return obj;
+    });
+}
+
+function calcNpsMetrics(rows, scoreCol) {
+  const valid = rows.filter(r => {
+    const v = r[scoreCol];
+    return v!=='' && v!==null && v!==undefined && !isNaN(Number(v));
+  });
+  const total = valid.length;
+  if (!total) return {total:0, respondentes:rows.length, promotores:0, neutros:0, detratores:0, nps:null, pctProm:0, pctNeu:0, pctDet:0};
+  const promotores = valid.filter(r => Number(r[scoreCol])>=9).length;
+  const neutros    = valid.filter(r => Number(r[scoreCol])>=7 && Number(r[scoreCol])<=8).length;
+  const detratores = valid.filter(r => Number(r[scoreCol])<=6).length;
+  const nps = Math.round(((promotores - detratores) / total) * 100);
+  return {
+    total, respondentes:rows.length, promotores, neutros, detratores, nps,
+    pctProm: Math.round((promotores/total)*100),
+    pctNeu:  Math.round((neutros/total)*100),
+    pctDet:  Math.round((detratores/total)*100),
+  };
+}
+
+function npsZona(nps) {
+  if (nps===null||nps===undefined) return {label:'—',        color:'#94a3b8', bg:'#f1f5f9'};
+  if (nps>=75)  return {label:'Excelência',       color:'#16a34a', bg:'#dcfce7'};
+  if (nps>=50)  return {label:'Qualidade',        color:'#2563eb', bg:'#dbeafe'};
+  if (nps>=0)   return {label:'Aperfeiçoamento',  color:'#d97706', bg:'#fef3c7'};
+  return              {label:'Crítica',           color:'#dc2626', bg:'#fee2e2'};
+}
+
 async function fetchMoskitCSV(clientId, tenantId) {
   const token = await acquireTokenForResource(clientId, tenantId, MOSKIT_SP_SCOPE);
   const safeRel = MOSKIT_FILE_REL.replace(/'/g,"''");
@@ -1875,6 +1936,23 @@ function App() {
     );
   }
 
+  // ── NPS module ──
+  if (module==='nps') {
+    return (
+      <div className="min-h-screen bg-slate-50">
+        <AppHeader view={view} setView={setView} authState={authState}
+          onSignOut={signOut} projectCount={projects.length} loading={loading}
+          onRefresh={()=>loadAll(authState.token)} module={module} onHome={()=>setModule(null)}/>
+        {errorBanner}
+        <NpsView
+          projects={projects}
+          ciclos={ciclos}
+          clientId={clientId}
+          tenantId={tenantId}/>
+      </div>
+    );
+  }
+
   // ── Calendar module ──
   if (module==='calendar') {
     return (
@@ -1989,7 +2067,7 @@ function AppHeader({view,setView,authState,onSignOut,projectCount,loading,onRefr
           )}
           <div className="w-7 h-7 bg-indigo-600 rounded-lg flex items-center justify-center text-white text-xs font-bold">CT</div>
           <span className="text-base font-bold text-slate-800">
-            {module==='pulse'?'Pulse':module==='gestao'?'Gestão A&S':module==='calendar'?'Calendário':module==='analytics'?'Analytics':module==='clientes'?'Clientes × Frentes':MODULE_CONFIGS[module]?.label||'Alocação'}
+            {module==='pulse'?'Pulse':module==='gestao'?'Gestão A&S':module==='calendar'?'Calendário':module==='analytics'?'Analytics':module==='clientes'?'Clientes × Frentes':module==='nps'?'NPS':MODULE_CONFIGS[module]?.label||'Alocação'}
           </span>
           {module==='gestao'&&projectCount>0&&<span className="bg-indigo-100 text-indigo-700 text-xs px-2 py-0.5 rounded-full">{projectCount} proj.</span>}
         </div>
@@ -2013,7 +2091,7 @@ function AppHeader({view,setView,authState,onSignOut,projectCount,loading,onRefr
           )}
         </nav>
         )}
-        {(module==='pulse'||module==='calendar'||module==='analytics')&&<div className="flex-1"/>}
+        {(module==='pulse'||module==='calendar'||module==='analytics'||module==='nps'||module==='clientes')&&<div className="flex-1"/>}
         <div className="flex items-center gap-2 ml-auto shrink-0">
           <button onClick={onRefresh} disabled={loading} title="Atualizar dados do SharePoint"
             className="text-xs text-slate-400 hover:text-indigo-600 border border-slate-200 hover:border-indigo-200 px-2.5 py-1.5 rounded-lg transition disabled:opacity-40">
@@ -2115,6 +2193,23 @@ function HomeScreen({onSelect,authState,onSignOut,loading,onRefresh,error,onClea
             <h2 className="text-xl font-bold text-slate-900 mb-2">Clientes × Frentes</h2>
             <p className="text-sm text-slate-500 leading-relaxed">Treemap de clientes por frentes/produtos com KPIs e tabela detalhada.</p>
             <div className="mt-6 flex items-center text-sm font-semibold text-sky-600 group-hover:text-sky-700">Abrir <span className="ml-1.5">→</span></div>
+          </button>
+
+          {/* NPS card — sempre visível */}
+          <button onClick={()=>onSelect('nps')}
+            className="group bg-white rounded-2xl border-2 border-slate-200 hover:border-amber-400 hover:shadow-xl transition-all p-8 text-left">
+            <div className="w-14 h-14 bg-amber-100 rounded-2xl flex items-center justify-center mb-5 group-hover:bg-amber-200 transition-colors">
+              <svg xmlns="http://www.w3.org/2000/svg" className="w-7 h-7 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.8">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M11.48 3.499a.562.562 0 011.04 0l2.125 5.111a.563.563 0 00.475.345l5.518.442c.499.04.701.663.321.988l-4.204 3.602a.563.563 0 00-.182.557l1.285 5.385a.562.562 0 01-.84.61l-4.725-2.885a.563.563 0 00-.586 0L6.982 20.54a.562.562 0 01-.84-.61l1.285-5.386a.562.562 0 00-.182-.557l-4.204-3.602a.562.562 0 01.321-.988l5.518-.442a.563.563 0 00.475-.345L11.48 3.5z"/>
+              </svg>
+            </div>
+            <h2 className="text-xl font-bold text-slate-900 mb-2">NPS</h2>
+            <p className="text-sm text-slate-500 leading-relaxed">
+              Net Promoter Score de Clientes e Candidatos. KPIs, distribuição e programas elegíveis.
+            </p>
+            <div className="mt-6 flex items-center text-sm font-semibold text-amber-600 group-hover:text-amber-700">
+              Abrir NPS <span className="ml-1.5">→</span>
+            </div>
           </button>
 
           {/* Calendário card — sempre visível */}
@@ -6126,7 +6221,7 @@ function AnalyticsView({logs}) {
     return Object.values(map).sort((a,b)=>b.count-a.count);
   },[filtered]);
 
-  const MODULE_LABELS = {pulse:'Pulse',gestao:'Gestão A&S',calendar:'Calendário',analytics:'Analytics'};
+  const MODULE_LABELS = {pulse:'Pulse',gestao:'Gestão A&S',calendar:'Calendário',analytics:'Analytics',nps:'NPS',clientes:'Clientes × Frentes'};
   const fmtDate = ts=>{ if(!ts) return '—'; const d=new Date(ts); return `${d.toLocaleDateString('pt-BR')} ${d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}`; };
   const maxCount = Math.max(...byUser.map(u=>u.count),1);
 
@@ -6235,6 +6330,394 @@ function AnalyticsView({logs}) {
               );
             })}
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── NPS Module ───────────────────────────────────────────────────────────────
+function NpsDonut({pctProm, pctNeu, pctDet, nps, size=120}) {
+  const r = 40, cx = 60, cy = 60;
+  const C = 2 * Math.PI * r;
+  const segs = [
+    {pct:pctProm, color:'#16a34a'},
+    {pct:pctNeu,  color:'#d97706'},
+    {pct:pctDet,  color:'#dc2626'},
+  ];
+  let accumulated = 0;
+  const paths = segs.map((s, i) => {
+    if (!s.pct) { accumulated += s.pct; return null; }
+    const dashLen = (s.pct / 100) * C;
+    const rotateDeg = accumulated * 3.6 - 90;
+    const el = (
+      <circle key={i} cx={cx} cy={cy} r={r}
+        fill="none" stroke={s.color} strokeWidth="16"
+        strokeDasharray={`${dashLen} ${C - dashLen}`}
+        transform={`rotate(${rotateDeg}, ${cx}, ${cy})`}/>
+    );
+    accumulated += s.pct;
+    return el;
+  });
+  const zona = npsZona(nps);
+  return (
+    <svg width={size} height={size} viewBox="0 0 120 120">
+      <circle cx={cx} cy={cy} r={r} fill="none" stroke="#e2e8f0" strokeWidth="16"/>
+      {paths}
+      <text x={cx} y={cy-4} textAnchor="middle" fontSize="18" fontWeight="bold" fill={zona.color}>
+        {nps!==null ? nps : '—'}
+      </text>
+      <text x={cx} y={cy+12} textAnchor="middle" fontSize="9" fill="#64748b">NPS</text>
+    </svg>
+  );
+}
+
+function NpsKpiCard({label, value, sub, color}) {
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 p-4 flex flex-col gap-1">
+      <span className="text-xs text-slate-500 font-medium">{label}</span>
+      <span className="text-2xl font-bold" style={{color: color||'#1e293b'}}>{value}</span>
+      {sub&&<span className="text-xs text-slate-400">{sub}</span>}
+    </div>
+  );
+}
+
+function NpsSegmentBar({pctProm, pctNeu, pctDet, promotores, neutros, detratores, nps}) {
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 p-4 flex flex-col gap-2">
+      {[
+        {label:'Promotores', pct:pctProm, n:promotores, color:'#16a34a'},
+        {label:'Neutros',    pct:pctNeu,  n:neutros,    color:'#d97706'},
+        {label:'Detratores', pct:pctDet,  n:detratores, color:'#dc2626'},
+      ].map(s=>(
+        <div key={s.label} className="flex items-center gap-2">
+          <div className="w-2 h-2 rounded-full shrink-0" style={{background:s.color}}/>
+          <span className="text-xs text-slate-500 w-20 shrink-0">{s.label}</span>
+          <div className="flex-1 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+            <div className="h-full rounded-full transition-all" style={{width:`${s.pct}%`, background:s.color}}/>
+          </div>
+          <span className="text-xs font-semibold w-8 text-right" style={{color:s.color}}>{s.pct}%</span>
+          <span className="text-xs text-slate-400 w-8">({s.n})</span>
+        </div>
+      ))}
+      {nps!==null&&(
+        <div className="mt-1 pt-1.5 border-t border-slate-100">
+          <span className="text-xs font-bold" style={{color:npsZona(nps).color}}>
+            Zona: {npsZona(nps).label}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function NpsView({projects, ciclos, clientId, tenantId}) {
+  const [tab,        setTab]        = useState('cli');
+  const [npsData,    setNpsData]    = useState({cli:null, cdd:null});
+  const [loadingNps, setLoadingNps] = useState(true);
+  const [npsError,   setNpsError]   = useState(null);
+
+  // CLI filters
+  const [cliCiclo,   setCliCiclo]   = useState('');
+  const [cliPublico, setCliPublico] = useState('');
+  const [cliTipo,    setCliTipo]    = useState('');
+  const [cliSolucao, setCliSolucao] = useState('');
+
+  // CDD filters
+  const [cddTipoPesq,  setCddTipoPesq]  = useState('');
+  const [cddProcesso,  setCddProcesso]  = useState('');
+
+  useEffect(()=>{ loadNpsData(); }, []);
+
+  async function loadNpsData() {
+    setLoadingNps(true);
+    setNpsError(null);
+    try {
+      const [cli, cdd] = await Promise.all([
+        fetchExcelSheet(clientId, tenantId, NPS_CLI_FILE, NPS_CLI_SHEET),
+        fetchExcelSheet(clientId, tenantId, NPS_CDD_FILE, NPS_CDD_SHEET),
+      ]);
+      setNpsData({cli, cdd});
+    } catch(e) {
+      setNpsError(e.message);
+    }
+    setLoadingNps(false);
+  }
+
+  // ── CLI computed ──
+  const cliMetrics = useMemo(()=>{
+    if (!npsData.cli) return null;
+    let allProjs = projects;
+    if (cliCiclo)   allProjs = allProjs.filter(p=>p.semestre===cliCiclo);
+    if (cliPublico) allProjs = allProjs.filter(p=>p.publico===cliPublico);
+    if (cliTipo)    allProjs = allProjs.filter(p=>p.tipoProg===cliTipo);
+    if (cliSolucao) allProjs = allProjs.filter(p=>normFrente(p.solucao)===normFrente(cliSolucao));
+    const elegiveis = allProjs.filter(p=>NPS_ETAPAS_ELEG.has(p.etapa));
+
+    // Excel rows filtered to active programs
+    const activeNames = new Set(elegiveis.map(p=>String(p.nome||'').toLowerCase().trim()));
+    const allCliRows = npsData.cli;
+    const matchedRows = activeNames.size===0
+      ? allCliRows  // if no SP filter active, show all Excel rows
+      : allCliRows.filter(r=>activeNames.has(String(r['Nome_Programa']||'').toLowerCase().trim()));
+
+    const excelProgs = new Set(allCliRows.map(r=>String(r['Nome_Programa']||'').toLowerCase().trim()));
+    const semPesquisa = elegiveis.filter(p=>!excelProgs.has(String(p.nome||'').toLowerCase().trim()));
+    const metrics = calcNpsMetrics(matchedRows, 'RECOMENDACAO');
+    return {elegiveis:elegiveis.length, comPesquisa:elegiveis.length-semPesquisa.length, semPesquisa, rows:matchedRows, ...metrics};
+  },[npsData.cli, projects, cliCiclo, cliPublico, cliTipo, cliSolucao]);
+
+  // ── CDD computed ──
+  const cddMetrics = useMemo(()=>{
+    if (!npsData.cdd) return null;
+    let rows = npsData.cdd;
+    if (cddTipoPesq) rows = rows.filter(r=>r['TIPO_PESQUISA']===cddTipoPesq);
+    if (cddProcesso) rows = rows.filter(r=>String(r['PROCESSO_SELETIVO']||'').toLowerCase().includes(cddProcesso.toLowerCase()));
+    const tiposPesq = [...new Set(npsData.cdd.map(r=>r['TIPO_PESQUISA']).filter(Boolean))].sort();
+    const metrics = calcNpsMetrics(rows, 'RESPOSTA');
+    return {...metrics, rows, tiposPesq};
+  },[npsData.cdd, cddTipoPesq, cddProcesso]);
+
+  // ── Filter option lists ──
+  const eligProjects  = projects.filter(p=>NPS_ETAPAS_ELEG.has(p.etapa));
+  const cliPublicos   = [...new Set(eligProjects.map(p=>p.publico).filter(Boolean))].sort();
+  const cliTipos      = [...new Set(eligProjects.map(p=>p.tipoProg).filter(Boolean))].sort();
+  const cliSolucoes   = [...new Set(eligProjects.map(p=>normFrente(p.solucao)).filter(Boolean))].sort();
+
+  const filterRow = (children) => (
+    <div className="flex flex-wrap gap-3 mb-5 bg-white border border-slate-200 rounded-xl p-4">{children}</div>
+  );
+  const filterSelect = (label, value, setter, opts) => (
+    <div className="flex flex-col gap-1">
+      <label className="text-xs font-medium text-slate-500">{label}</label>
+      <select value={value} onChange={e=>setter(e.target.value)}
+        className="text-sm border border-slate-200 rounded-lg px-3 py-1.5 bg-white min-w-[130px]">
+        <option value="">Todos</option>
+        {opts.map(o=><option key={o} value={o}>{o}</option>)}
+      </select>
+    </div>
+  );
+
+  return (
+    <div className="max-w-screen-xl mx-auto px-4 pb-10">
+      {/* Tab switcher + refresh */}
+      <div className="flex items-center justify-between mt-4 mb-5 flex-wrap gap-3">
+        <div className="flex bg-slate-100 rounded-xl p-1 gap-1">
+          {[{k:'cli',label:'Clientes'},{k:'cdd',label:'Candidatos'}].map(t=>(
+            <button key={t.k} onClick={()=>setTab(t.k)}
+              className={`px-5 py-2 rounded-lg text-sm font-semibold transition ${tab===t.k?'bg-white shadow text-amber-600':'text-slate-500 hover:text-slate-700'}`}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+        <button onClick={loadNpsData} disabled={loadingNps}
+          className="flex items-center gap-1.5 text-xs border border-slate-200 hover:border-amber-300 text-slate-500 hover:text-amber-600 px-3 py-1.5 rounded-lg transition disabled:opacity-40">
+          {loadingNps
+            ? <><span className="animate-spin inline-block w-3 h-3 border-2 border-amber-400 border-t-transparent rounded-full mr-1"/>Carregando…</>
+            : '🔄 Atualizar dados Excel'}
+        </button>
+      </div>
+
+      {/* Error */}
+      {npsError&&(
+        <div className="mb-4 bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3 text-sm flex items-start gap-2">
+          <span className="font-bold shrink-0">Erro:</span>
+          <span className="flex-1 break-all">{npsError}</span>
+          <button onClick={()=>setNpsError(null)} className="shrink-0 text-red-400 hover:text-red-600 ml-2">✕</button>
+        </div>
+      )}
+
+      {/* Loading */}
+      {loadingNps&&(
+        <div className="flex flex-col items-center justify-center py-20 gap-3 text-slate-400">
+          <div className="w-10 h-10 border-4 border-amber-300 border-t-transparent rounded-full animate-spin"/>
+          <p className="text-sm">Buscando dados NPS no SharePoint…</p>
+        </div>
+      )}
+
+      {/* ══ CLI TAB ══ */}
+      {!loadingNps && tab==='cli' && npsData.cli!==null && (
+        <div className="fade-in">
+          {filterRow(<>
+            {filterSelect('Ciclo', cliCiclo, setCliCiclo, ciclos)}
+            {filterSelect('Público', cliPublico, setCliPublico, cliPublicos)}
+            {filterSelect('Tipo Programa', cliTipo, setCliTipo, cliTipos)}
+            {filterSelect('Frente de Negócio', cliSolucao, setCliSolucao, cliSolucoes)}
+          </>)}
+
+          {cliMetrics&&(
+            <>
+              {/* KPI row */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-5">
+                <NpsKpiCard label="Elegíveis" value={cliMetrics.elegiveis} sub="etapa NPS-elegível"/>
+                <NpsKpiCard label="Com pesquisa" value={cliMetrics.comPesquisa} sub="cruzaram com Excel"/>
+                <NpsKpiCard label="Respostas" value={cliMetrics.total} sub="respostas válidas"/>
+                <NpsKpiCard
+                  label="Taxa cobertura"
+                  value={cliMetrics.elegiveis ? `${Math.round((cliMetrics.comPesquisa/cliMetrics.elegiveis)*100)}%` : '—'}
+                  sub="elegíveis com pesquisa"
+                  color={cliMetrics.elegiveis&&(cliMetrics.comPesquisa/cliMetrics.elegiveis)>=0.7?'#16a34a':'#d97706'}/>
+                <div className="bg-white rounded-xl border border-slate-200 p-2 flex flex-col items-center justify-center col-span-1">
+                  {cliMetrics.nps!==null
+                    ? <NpsDonut pctProm={cliMetrics.pctProm} pctNeu={cliMetrics.pctNeu} pctDet={cliMetrics.pctDet} nps={cliMetrics.nps} size={96}/>
+                    : <span className="text-slate-300 text-xs">sem dados</span>}
+                </div>
+                <NpsSegmentBar {...cliMetrics}/>
+              </div>
+
+              {/* Responses table */}
+              {cliMetrics.rows.length>0&&(
+                <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden mb-5">
+                  <div className="px-5 py-3 border-b border-slate-100 flex items-center justify-between">
+                    <h3 className="text-sm font-bold text-slate-700">Respostas NPS — Clientes</h3>
+                    <span className="text-xs text-slate-400">{cliMetrics.rows.length} registro(s)</span>
+                  </div>
+                  <div className="overflow-x-auto max-h-72">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="bg-slate-50">
+                          {['CLIENTE','Nome_Programa','ALVO','RECOMENDACAO','Classe'].map(c=>(
+                            <th key={c} className="px-4 py-2 text-left text-xs font-semibold text-slate-500 whitespace-nowrap sticky top-0 bg-slate-50">{c}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {cliMetrics.rows.slice(0,300).map((r,i)=>{
+                          const score = Number(r['RECOMENDACAO']);
+                          const cls = isNaN(score)?'—': score>=9?'Promotor': score>=7?'Neutro':'Detrator';
+                          const cc = cls==='Promotor'?'text-green-700 bg-green-50':cls==='Neutro'?'text-amber-700 bg-amber-50':cls==='Detrator'?'text-red-700 bg-red-50':'text-slate-400';
+                          return (
+                            <tr key={i} className="hover:bg-slate-50">
+                              <td className="px-4 py-2 text-slate-700 max-w-[140px] truncate">{r['CLIENTE']||'—'}</td>
+                              <td className="px-4 py-2 text-slate-700 max-w-[200px] truncate font-medium">{r['Nome_Programa']||'—'}</td>
+                              <td className="px-4 py-2 text-slate-500 max-w-[140px] truncate">{r['ALVO']||'—'}</td>
+                              <td className="px-4 py-2 font-bold text-slate-800">{r['RECOMENDACAO']??'—'}</td>
+                              <td className="px-4 py-2"><span className={`text-xs px-2 py-0.5 rounded-full font-medium ${cc}`}>{cls}</span></td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                    {cliMetrics.rows.length>300&&<p className="text-xs text-slate-400 text-center py-2">Exibindo 300 de {cliMetrics.rows.length}</p>}
+                  </div>
+                </div>
+              )}
+
+              {/* Elegíveis sem pesquisa */}
+              {cliMetrics.semPesquisa.length>0&&(
+                <div className="bg-white rounded-2xl border border-amber-200 overflow-hidden">
+                  <div className="px-5 py-3 border-b border-amber-100 bg-amber-50 flex items-center justify-between">
+                    <h3 className="text-sm font-bold text-amber-800">⚠ Elegíveis sem pesquisa</h3>
+                    <span className="text-xs text-amber-600 font-medium">{cliMetrics.semPesquisa.length} programa(s)</span>
+                  </div>
+                  <div className="overflow-x-auto max-h-48">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="bg-amber-50/60">
+                          {['Cliente','Programa','Etapa','Ciclo','Público'].map(c=>(
+                            <th key={c} className="px-4 py-2 text-left text-xs font-semibold text-amber-700 whitespace-nowrap">{c}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-amber-50">
+                        {cliMetrics.semPesquisa.map((p,i)=>(
+                          <tr key={i} className="hover:bg-amber-50/40">
+                            <td className="px-4 py-2 text-slate-600 truncate max-w-[120px]">{p.cliente||'—'}</td>
+                            <td className="px-4 py-2 text-slate-800 font-medium truncate max-w-[200px]">{p.nome}</td>
+                            <td className="px-4 py-2 text-slate-500 text-xs">{p.etapa}</td>
+                            <td className="px-4 py-2 text-slate-500 text-xs">{p.semestre}</td>
+                            <td className="px-4 py-2 text-slate-500 text-xs">{p.publico}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {cliMetrics.rows.length===0&&!npsError&&(
+                <p className="text-center py-10 text-slate-400 text-sm">Nenhuma resposta encontrada para os filtros selecionados.</p>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {/* ══ CDD TAB ══ */}
+      {!loadingNps && tab==='cdd' && npsData.cdd!==null && (
+        <div className="fade-in">
+          {filterRow(<>
+            {filterSelect('Tipo de Pesquisa', cddTipoPesq, setCddTipoPesq, cddMetrics?.tiposPesq||[])}
+            <div className="flex flex-col gap-1">
+              <label className="text-xs font-medium text-slate-500">Processo Seletivo</label>
+              <input type="text" value={cddProcesso} onChange={e=>setCddProcesso(e.target.value)}
+                placeholder="Filtrar processo…"
+                className="text-sm border border-slate-200 rounded-lg px-3 py-1.5 bg-white min-w-[200px]"/>
+            </div>
+          </>)}
+
+          {cddMetrics&&(
+            <>
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-5">
+                <NpsKpiCard label="Registros" value={cddMetrics.respondentes} sub="total de elegíveis"/>
+                <NpsKpiCard label="Respostas NPS" value={cddMetrics.total} sub="score 0–10 preenchido"/>
+                <NpsKpiCard
+                  label="Taxa resposta"
+                  value={cddMetrics.respondentes ? `${Math.round((cddMetrics.total/cddMetrics.respondentes)*100)}%` : '—'}
+                  sub="elegíveis que responderam"
+                  color={cddMetrics.respondentes&&(cddMetrics.total/cddMetrics.respondentes)>=0.6?'#16a34a':'#d97706'}/>
+                <div className="bg-white rounded-xl border border-slate-200 p-2 flex flex-col items-center justify-center col-span-1">
+                  {cddMetrics.nps!==null
+                    ? <NpsDonut pctProm={cddMetrics.pctProm} pctNeu={cddMetrics.pctNeu} pctDet={cddMetrics.pctDet} nps={cddMetrics.nps} size={96}/>
+                    : <span className="text-slate-300 text-xs">sem dados</span>}
+                </div>
+                <NpsSegmentBar {...cddMetrics}/>
+                <NpsKpiCard label="Promotores" value={cddMetrics.promotores}
+                  sub={`${cddMetrics.pctProm}% do total`} color="#16a34a"/>
+              </div>
+
+              {/* Table */}
+              {cddMetrics.rows.length>0&&(
+                <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                  <div className="px-5 py-3 border-b border-slate-100 flex items-center justify-between">
+                    <h3 className="text-sm font-bold text-slate-700">Respostas NPS — Candidatos</h3>
+                    <span className="text-xs text-slate-400">{cddMetrics.rows.length} registro(s)</span>
+                  </div>
+                  <div className="overflow-x-auto max-h-72">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="bg-slate-50">
+                          {['PROCESSO_SELETIVO','TIPO_PESQUISA','RESPOSTA','Classe'].map(c=>(
+                            <th key={c} className="px-4 py-2 text-left text-xs font-semibold text-slate-500 whitespace-nowrap sticky top-0 bg-slate-50">{c}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {cddMetrics.rows.slice(0,300).map((r,i)=>{
+                          const score = Number(r['RESPOSTA']);
+                          const cls = isNaN(score)?'—': score>=9?'Promotor': score>=7?'Neutro':'Detrator';
+                          const cc = cls==='Promotor'?'text-green-700 bg-green-50':cls==='Neutro'?'text-amber-700 bg-amber-50':cls==='Detrator'?'text-red-700 bg-red-50':'text-slate-400';
+                          return (
+                            <tr key={i} className="hover:bg-slate-50">
+                              <td className="px-4 py-2 text-slate-700 max-w-[220px] truncate font-medium">{r['PROCESSO_SELETIVO']||'—'}</td>
+                              <td className="px-4 py-2 text-slate-500 text-xs whitespace-nowrap">{r['TIPO_PESQUISA']||'—'}</td>
+                              <td className="px-4 py-2 font-bold text-slate-800">{r['RESPOSTA']??'—'}</td>
+                              <td className="px-4 py-2"><span className={`text-xs px-2 py-0.5 rounded-full font-medium ${cc}`}>{cls}</span></td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                    {cddMetrics.rows.length>300&&<p className="text-xs text-slate-400 text-center py-2">Exibindo 300 de {cddMetrics.rows.length}</p>}
+                  </div>
+                </div>
+              )}
+
+              {cddMetrics.rows.length===0&&!npsError&&(
+                <p className="text-center py-10 text-slate-400 text-sm">Nenhuma resposta encontrada para os filtros selecionados.</p>
+              )}
+            </>
+          )}
         </div>
       )}
     </div>
