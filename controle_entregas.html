@@ -1521,17 +1521,20 @@ function App() {
   // Usa distDataRef.current (sempre atualizado) para evitar sobrescrever dados
   // salvos por outro callback antes de um re-render completar.
   const saveExtraAllocs = useCallback(async(newExtras)=>{
-    const newDist = {...distDataRef.current, extraAllocations: newExtras};
-    distDataRef.current = newDist;          // atualiza ref imediatamente
-    setExtraAllocations(newExtras);
-    setDistData(newDist);
+    const prevDist = distDataRef.current;
+    const newDist = {...prevDist, extraAllocations: newExtras};
+    distDataRef.current = newDist;
     setSaving(true); setSaveMsg(null);
     try {
       const tok = await getWriteToken();
       await saveDistFile(tok, SP_SITE_URL, newDist);
+      setExtraAllocations(newExtras);
+      setDistData(newDist);
       setSaveMsg({type:'success', text:'✅ Alocações extras salvas no SharePoint.'});
     } catch(e) {
-      setSaveMsg({type:'error', text:`❌ Erro ao salvar alocações: ${e.message}. Recarregue e tente novamente.`});
+      distDataRef.current = prevDist;
+      setSaveMsg({type:'error', text:`❌ Erro ao salvar alocações: ${e.message}. Tente novamente.`});
+      throw e;
     } finally {
       setSaving(false);
       setTimeout(()=>setSaveMsg(null), 7000);
@@ -1539,20 +1542,23 @@ function App() {
   },[authState.token]);
 
   const saveVacations = useCallback(async(newVacs)=>{
-    const newDist = {...distDataRef.current, vacations: newVacs};
-    distDataRef.current = newDist;          // atualiza ref imediatamente
-    setVacations(newVacs);
-    setDistData(newDist);
+    // Guarda estado anterior para rollback em caso de falha
+    const prevDist = distDataRef.current;
+    const newDist = {...prevDist, vacations: newVacs};
+    distDataRef.current = newDist;  // atualiza ref imediatamente (safe para saves concorrentes)
     setSaving(true); setSaveMsg(null);
     try {
       const tok = await getWriteToken();
       await saveDistFile(tok, SP_SITE_URL, newDist);
+      // Só atualiza o estado React APÓS confirmação do SP — evita mostrar dado não salvo
+      setVacations(newVacs);
+      setDistData(newDist);
       setSaveMsg({type:'success', text:'✅ Férias salvas no SharePoint.'});
     } catch(e) {
-      // Reverte estado local para não exibir dado que não foi salvo
-      const prev = {...distDataRef.current, vacations: distDataRef.current.vacations||[]};
-      // Não reverte a lista local (UX) mas avisa claramente
-      setSaveMsg({type:'error', text:`❌ Erro ao salvar férias: ${e.message}. Recarregue e tente novamente.`});
+      // Rollback da ref para não contaminar saves subsequentes com dado não gravado
+      distDataRef.current = prevDist;
+      setSaveMsg({type:'error', text:`❌ Erro ao salvar férias: ${e.message}. Tente novamente.`});
+      throw e;  // re-throw: permite que o modal saiba que falhou e não feche/confirme
     } finally {
       setSaving(false);
       setTimeout(()=>setSaveMsg(null), 7000);
