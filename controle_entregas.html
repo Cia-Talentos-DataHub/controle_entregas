@@ -6949,155 +6949,174 @@ function NpsView({projects, ciclos, clientId, tenantId}) {
 }
 
 // ─── CX View ─────────────────────────────────────────────────────────────────
+// Mapa de IDs → nomes de agentes (obtido via ticket_fields, que não requer permissão admin)
+const FD_AGENT_NAMES = {
+  68003256728:'Ana Bertoni',68003256731:'Ana Correia',68003256736:'Caroline Lucas',
+  68002789253:'Claudia Pereira',68003256746:'Dom Urias',68002142843:'Eduarda Lavieri',
+  68002738516:'Emily Moreira',68002172685:'Esther Florence Batista',68003256755:'Felicia Duarte',
+  68002044212:'Felipe Jun',68002172700:'Flavia Barbosa Botelho',68003256762:'Flavia Mastrocola',
+  68003256764:'Gabriela Cruvinel',68003256665:'Gabriella Ciaccio',68002738522:'Giuliana Vieira',
+  68002738530:'Karina Yumi',68002738541:'Larissa Bassani',68002738548:'Leonardo Lobo',
+  68002738555:'Livia Petez',68002738560:'Lucas Moreira',68002738569:'Luis Olivares',
+  68003256670:'Marcella Pereira',68003256682:'Mariana Albuquerque',68003256675:'Mariana Portes',
+  68002738571:'Michelle Gonzaga',68002738575:'Milene Vieira',68003256693:'Milie Haji',
+  68002667696:'Pedro Pimenta',68003256702:'Renata Martines',68002108439:'Tamires Ramos',
+  68002738577:'Victor Negano',68003256713:'Viviane Ovanessian',
+};
+const FD_PRIORITY_LABEL = {1:'Baixa',2:'Média',3:'Alta',4:'Urgente'};
+const FD_PRIORITY_COLOR = {1:'text-slate-500',2:'text-blue-600',3:'text-orange-600',4:'text-red-600'};
+
 function CxView() {
   const PERIODS = [{v:'1',l:'Hoje'},{v:'7',l:'7 dias'},{v:'30',l:'30 dias'}];
-  const [period,    setPeriod]      = useState('7');
-  const [tickets,   setTickets]     = useState(null);
-  const [backlog,   setBacklog]     = useState(null);
-  const [agents,    setAgents]      = useState({});
-  const [loading,   setLoading]     = useState(false);
-  const [err,       setErr]         = useState(null);
-  const [lastUpd,   setLastUpd]     = useState(null);
-  const [countdown, setCountdown]   = useState(180);
+  const NO_FILTER = 'all';
+
+  const [period,    setPeriod]    = useState('7');
+  const [filters,   setFilters]   = useState({status:NO_FILTER,agente:NO_FILTER,categoria:NO_FILTER,ps:NO_FILTER,priority:NO_FILTER});
+  const [tickets,   setTickets]   = useState(null);
+  const [backlog,   setBacklog]   = useState(null);
+  const [loading,   setLoading]   = useState(false);
+  const [err,       setErr]       = useState(null);
+  const [lastUpd,   setLastUpd]   = useState(null);
+  const [countdown, setCountdown] = useState(180);
   const periodRef = useRef(period);
   const timerRef  = useRef(null);
   const loadRef   = useRef(null);
 
-  useEffect(() => { periodRef.current = period; }, [period]);
+  useEffect(()=>{ periodRef.current = period; },[period]);
+
+  function agentName(id) { return FD_AGENT_NAMES[id] || (id ? `Agente #${id}` : 'Não atribuído'); }
+  function setFilter(key, val) {
+    setFilters(f => ({...f, [key]: f[key]===val ? NO_FILTER : val}));
+  }
+  function clearFilters() { setFilters({status:NO_FILTER,agente:NO_FILTER,categoria:NO_FILTER,ps:NO_FILTER,priority:NO_FILTER}); }
+  const hasActiveFilters = Object.values(filters).some(v=>v!==NO_FILTER);
 
   async function loadData(p) {
     setLoading(true); setErr(null);
     try {
-      const days = parseInt(p) || 7;
+      const days   = parseInt(p)||7;
       const cutoff = new Date();
-      cutoff.setDate(cutoff.getDate() - days);
-      cutoff.setHours(0, 0, 0, 0);
-      const since = encodeURIComponent(cutoff.toISOString());
+      cutoff.setDate(cutoff.getDate()-days);
+      cutoff.setHours(0,0,0,0);
+      const since  = encodeURIComponent(cutoff.toISOString());
 
-      // Load agents map + backlog count + first page of tickets in parallel
-      const [agentList, backlogRes, firstPage] = await Promise.all([
-        fdFetch('/agents?per_page=100').catch(() => []),
-        fdFetch('/search/tickets?query=' + encodeURIComponent('"status:2 OR status:3"')).catch(() => ({total:0})),
-        fdFetch(`/tickets?per_page=100&page=1&updated_since=${since}&order_by=created_at&order_type=desc`),
+      const [backlogRes, firstPage] = await Promise.all([
+        fdFetch('/search/tickets?query='+encodeURIComponent('"status:2 OR status:3"')).catch(()=>({total:0})),
+        fdFetch(`/tickets?per_page=100&page=1&include=stats&updated_since=${since}&order_by=created_at&order_type=desc`),
       ]);
+      setBacklog(backlogRes.total??0);
 
-      // Build agent id→name map
-      const agMap = {};
-      for (const a of (agentList||[])) agMap[a.id] = a.contact?.name || `#${a.id}`;
-      setAgents(agMap);
-      setBacklog(backlogRes.total ?? 0);
-
-      // Paginate remaining tickets (up to 20 pages total)
-      let all = [...firstPage];
-      let page = 2;
-      while (page <= 20 && all[all.length-1] && new Date(all[all.length-1].created_at) >= cutoff) {
-        const more = await fdFetch(`/tickets?per_page=100&page=${page}&updated_since=${since}&order_by=created_at&order_type=desc`);
+      let all = [...firstPage], page = 2;
+      while (page<=20 && all[all.length-1] && new Date(all[all.length-1].created_at)>=cutoff) {
+        const more = await fdFetch(`/tickets?per_page=100&page=${page}&include=stats&updated_since=${since}&order_by=created_at&order_type=desc`);
         if (!more.length) break;
         all = all.concat(more);
-        if (more.length < 100) break;
+        if (more.length<100) break;
         page++;
       }
-
-      // Keep only tickets created within the period
-      setTickets(all.filter(t => new Date(t.created_at) >= cutoff));
+      setTickets(all.filter(t=>new Date(t.created_at)>=cutoff));
       setLastUpd(new Date());
-    } catch(e) {
-      setErr(e.message);
-    } finally {
-      setLoading(false);
-    }
+    } catch(e) { setErr(e.message); }
+    finally    { setLoading(false); }
   }
   loadRef.current = loadData;
 
-  useEffect(() => { loadData(period); }, [period]);
-
-  // Auto-refresh every 3 min
-  useEffect(() => {
+  useEffect(()=>{ loadData(period); },[period]);
+  useEffect(()=>{
     if (timerRef.current) clearInterval(timerRef.current);
-    timerRef.current = setInterval(() => {
-      setCountdown(c => {
-        if (c <= 1) { loadRef.current(periodRef.current); return 180; }
-        return c - 1;
-      });
-    }, 1000);
-    return () => clearInterval(timerRef.current);
-  }, []);
+    timerRef.current = setInterval(()=>{
+      setCountdown(c=>{ if(c<=1){loadRef.current(periodRef.current);return 180;} return c-1; });
+    },1000);
+    return ()=>clearInterval(timerRef.current);
+  },[]);
 
-  const metrics = useMemo(() => {
-    if (!tickets) return null;
-    const list = tickets;
-    const now  = new Date();
-    const days = parseInt(period) || 7;
+  // ── Filtered tickets (client-side) ──
+  const filteredTickets = useMemo(()=>{
+    if (!tickets) return [];
+    return tickets.filter(t=>{
+      if (filters.status   !==NO_FILTER && t.status                                          !== Number(filters.status))   return false;
+      if (filters.agente   !==NO_FILTER && String(t.responder_id||0)                         !== filters.agente)            return false;
+      if (filters.categoria!==NO_FILTER && (t.custom_fields?.cf_assunto_do_ticket||'—')      !== filters.categoria)         return false;
+      if (filters.ps       !==NO_FILTER && (t.custom_fields?.cf_processo_seletivo||'—')      !== filters.ps)                return false;
+      if (filters.priority !==NO_FILTER && t.priority                                        !== Number(filters.priority))  return false;
+      return true;
+    });
+  },[tickets,filters]);
 
-    // Volume
+  // ── Filter options (always from raw tickets so dropdowns stay full) ──
+  const opts = useMemo(()=>{
+    if (!tickets) return {};
+    return {
+      statuses:   [...new Set(tickets.map(t=>t.status))].sort(),
+      agentes:    [...new Set(tickets.map(t=>t.responder_id||0))].sort(),
+      categorias: [...new Set(tickets.map(t=>t.custom_fields?.cf_assunto_do_ticket).filter(Boolean))].sort(),
+      psList:     [...new Set(tickets.map(t=>t.custom_fields?.cf_processo_seletivo).filter(k=>k&&!FD_PS_EXCLUDE.has(k)))].sort(),
+      priorities: [...new Set(tickets.map(t=>t.priority))].sort(),
+    };
+  },[tickets]);
+
+  // ── Metrics from filteredTickets ──
+  const metrics = useMemo(()=>{
+    const list = filteredTickets;
+    if (!list) return null;
+    const now   = new Date();
+    const days  = parseInt(period)||7;
     const total = list.length;
     const todayStart = new Date(); todayStart.setHours(0,0,0,0);
-    const todayCount = list.filter(t => new Date(t.created_at) >= todayStart).length;
-    const last24h    = list.filter(t => new Date(t.created_at) >= new Date(now - 86400000)).length;
-    const avgDaily   = days > 0 ? total / days : total;
-    const isSpike    = last24h > Math.max(avgDaily * 2, 10) && last24h >= 5;
+    const todayCount = list.filter(t=>new Date(t.created_at)>=todayStart).length;
+    const last24h    = list.filter(t=>new Date(t.created_at)>=new Date(now-86400000)).length;
+    const avgDaily   = days>0?total/days:total;
+    const isSpike    = last24h>Math.max(avgDaily*2,10)&&last24h>=5;
 
-    // SLA breach via Freshdesk escalated flags (already computed server-side)
-    const frBreached  = list.filter(t => t.fr_escalated).length;
-    const resBreached = list.filter(t => t.is_escalated).length;
-    const frTotal     = list.filter(t => t.fr_due_by).length;
-    const resTotal    = list.filter(t => t.due_by).length;
-    const frSlaRate   = frTotal  > 0 ? Math.round(((frTotal  - frBreached)  / frTotal)  * 100) : null;
-    const resSlaRate  = resTotal > 0 ? Math.round(((resTotal - resBreached) / resTotal) * 100) : null;
+    const frBreached  = list.filter(t=>t.fr_escalated).length;
+    const resBreached = list.filter(t=>t.is_escalated).length;
+    const frTotal     = list.filter(t=>t.fr_due_by).length;
+    const resTotal    = list.filter(t=>t.due_by).length;
+    const frSlaRate   = frTotal >0?Math.round(((frTotal -frBreached) /frTotal )*100):null;
+    const resSlaRate  = resTotal>0?Math.round(((resTotal-resBreached)/resTotal)*100):null;
 
-    // Currently open + out of SLA
-    const outOfSla = list
-      .filter(t => (t.fr_escalated || t.is_escalated) && [2,3,6,7].includes(t.status))
-      .sort((a,b) => new Date(a.created_at) - new Date(b.created_at))
-      .slice(0, 25);
+    const outOfSla = list.filter(t=>(t.fr_escalated||t.is_escalated)&&[2,3,6,7].includes(t.status))
+      .sort((a,b)=>new Date(a.created_at)-new Date(b.created_at)).slice(0,25);
 
-    // Category breakdown (L1 = cf_assunto_do_ticket)
-    const byCat = {}, byDet = {};
-    for (const t of list) {
-      const c = t.custom_fields?.cf_assunto_do_ticket || 'Não categorizado';
-      const d = t.custom_fields?.cf_categoria || null;
-      byCat[c] = (byCat[c] || 0) + 1;
-      if (d) byDet[d] = (byDet[d] || 0) + 1;
+    const isOpen = t=>[2,3,6,7].includes(t.status);
+    const semResposta = list.filter(t=>isOpen(t)&&!t.stats?.first_responded_at);
+    const waitBuckets = {lt4:0,h4_8:0,h8_24:0,gt24:0};
+    for (const t of semResposta) {
+      const h=(now-new Date(t.created_at))/3600000;
+      if(h<4)waitBuckets.lt4++;else if(h<8)waitBuckets.h4_8++;else if(h<24)waitBuckets.h8_24++;else waitBuckets.gt24++;
     }
+    const aguardandoMais = [...semResposta].sort((a,b)=>new Date(a.created_at)-new Date(b.created_at)).slice(0,20);
+    const semResolucao = list.filter(t=>isOpen(t)&&t.stats?.first_responded_at&&!t.stats?.resolved_at);
+    const hRes = semResolucao.map(t=>(now-new Date(t.created_at))/3600000);
+    const avgHorasResolucao = hRes.length?Math.round(hRes.reduce((a,b)=>a+b,0)/hRes.length):null;
 
-    // Processo seletivo
-    const byPS = {};
+    const byCat={},byDet={},byPS={},byTeste={},byAgent={},byStatus={},byPriority={},byDay={};
     for (const t of list) {
-      const k = t.custom_fields?.cf_processo_seletivo;
-      if (k && !FD_PS_EXCLUDE.has(k)) byPS[k] = (byPS[k] || 0) + 1;
+      const c=t.custom_fields?.cf_assunto_do_ticket||'Não categorizado';
+      const d=t.custom_fields?.cf_categoria||null;
+      byCat[c]=(byCat[c]||0)+1;
+      if(d) byDet[d]=(byDet[d]||0)+1;
+      const ps=t.custom_fields?.cf_processo_seletivo;
+      if(ps&&!FD_PS_EXCLUDE.has(ps)) byPS[ps]=(byPS[ps]||0)+1;
+      const te=t.custom_fields?.cf_em_qual_teste_precisa_de_ajuda;
+      if(te&&te!=='Sem correlação com teste') byTeste[te]=(byTeste[te]||0)+1;
+      const aid=t.responder_id||0;
+      if(!byAgent[aid]) byAgent[aid]={id:aid,total:0,resolved:0,escalated:0,semResp:0};
+      byAgent[aid].total++;
+      if([4,5].includes(t.status)) byAgent[aid].resolved++;
+      if(t.fr_escalated||t.is_escalated) byAgent[aid].escalated++;
+      if(isOpen(t)&&!t.stats?.first_responded_at) byAgent[aid].semResp++;
+      byStatus[t.status]=(byStatus[t.status]||0)+1;
+      byPriority[t.priority]=(byPriority[t.priority]||0)+1;
+      const dd=t.created_at.slice(0,10); byDay[dd]=(byDay[dd]||0)+1;
     }
-
-    // Test issues
-    const byTeste = {};
-    for (const t of list) {
-      const k = t.custom_fields?.cf_em_qual_teste_precisa_de_ajuda;
-      if (k && k !== 'Sem correlação com teste') byTeste[k] = (byTeste[k] || 0) + 1;
-    }
-
-    // By agent
-    const byAgent = {};
-    for (const t of list) {
-      const id = t.responder_id || 0;
-      if (!byAgent[id]) byAgent[id] = {id, total:0, resolved:0, escalated:0};
-      byAgent[id].total++;
-      if ([4,5].includes(t.status)) byAgent[id].resolved++;
-      if (t.fr_escalated || t.is_escalated) byAgent[id].escalated++;
-    }
-
-    // Daily trend (show up to last 14 days)
-    const byDay = {};
-    for (const t of list) { const d = t.created_at.slice(0,10); byDay[d] = (byDay[d]||0)+1; }
-
-    // By status
-    const byStatus = {};
-    for (const t of list) byStatus[t.status] = (byStatus[t.status]||0)+1;
-
     return {total,todayCount,last24h,avgDaily,isSpike,
       frSlaRate,resSlaRate,frBreached,resBreached,
-      outOfSla,byCat,byDet,byPS,byTeste,byAgent,byDay,byStatus};
-  }, [tickets, period]);
+      outOfSla,semResposta,waitBuckets,aguardandoMais,semResolucao,avgHorasResolucao,
+      byCat,byDet,byPS,byTeste,byAgent,byStatus,byPriority,byDay};
+  },[filteredTickets,period]);
 
-  // ── Sub-components (defined inside to access FD_DOMAIN) ──
+  // ── Chart sub-components ──
   function KpiCard({icon,label,value,sub,color='text-slate-900',bg='bg-white',border='border-slate-200'}) {
     return (
       <div className={`${bg} rounded-2xl border ${border} p-5`}>
@@ -7109,38 +7128,37 @@ function CxView() {
     );
   }
 
-  function HBar({label,count,max,color='bg-indigo-500'}) {
-    const pct = max>0 ? Math.round((count/max)*100) : 0;
+  function ChartBar({label,count,max,color='bg-indigo-500',active,onClick,pct}) {
+    const w = max>0?Math.max(Math.round((count/max)*100),1):0;
     return (
-      <div className="flex items-center gap-2">
-        <div className="w-36 text-xs text-slate-600 truncate shrink-0" title={label}>{label}</div>
-        <div className="flex-1 bg-slate-100 rounded-full h-2">
-          <div className={`${color} h-2 rounded-full transition-all`} style={{width:`${pct}%`}}/>
+      <div onClick={onClick} className={`flex items-center gap-2 cursor-pointer rounded-lg px-2 py-1 transition-colors ${active?'bg-indigo-50':onClick?'hover:bg-slate-50':''}`}>
+        <div className="w-40 text-xs text-slate-600 truncate shrink-0" title={label}>{label}</div>
+        <div className="flex-1 bg-slate-100 rounded-full h-3 relative overflow-hidden">
+          <div className={`${active?'bg-indigo-600':color} h-3 rounded-full transition-all duration-300`} style={{width:`${w}%`}}/>
         </div>
-        <div className="w-7 text-xs text-slate-500 text-right shrink-0">{count}</div>
+        <div className="w-8 text-xs font-medium text-slate-600 text-right shrink-0">{count}</div>
+        {pct&&<div className="w-9 text-xs text-slate-400 text-right shrink-0">{pct}%</div>}
       </div>
     );
   }
 
   function TrendChart({byDay}) {
-    const days = parseInt(period)||7;
-    const n    = Math.min(days, 14);
-    const now  = new Date();
+    const n   = Math.min(parseInt(period)||7,14);
+    const now = new Date();
     const slots = [];
-    for (let i = n-1; i >= 0; i--) {
-      const d = new Date(now); d.setDate(d.getDate()-i);
-      const key = d.toISOString().slice(0,10);
-      slots.push({key, count:byDay[key]||0, label:`${d.getDate()}/${d.getMonth()+1}`});
+    for (let i=n-1;i>=0;i--) {
+      const d=new Date(now); d.setDate(d.getDate()-i);
+      const key=d.toISOString().slice(0,10);
+      slots.push({key,count:byDay[key]||0,label:`${d.getDate()}/${d.getMonth()+1}`});
     }
-    const maxV = Math.max(...slots.map(s=>s.count),1);
-    const W=440, H=80, bW=Math.floor((W/slots.length)-2);
+    const maxV=Math.max(...slots.map(s=>s.count),1);
+    const W=460,H=90,bW=Math.floor((W/slots.length)-2);
     return (
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{height:'80px'}}>
-        {slots.map((s,i) => {
-          const bH  = Math.max(Math.round((s.count/maxV)*(H-22)),2);
-          const x   = i*(W/slots.length)+1;
-          const y   = H-bH-16;
-          const isToday = s.key===new Date().toISOString().slice(0,10);
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{height:'90px'}}>
+        {slots.map((s,i)=>{
+          const bH=Math.max(Math.round((s.count/maxV)*(H-22)),2);
+          const x=i*(W/slots.length)+1, y=H-bH-16;
+          const isToday=s.key===new Date().toISOString().slice(0,10);
           return (
             <g key={s.key}>
               <rect x={x} y={y} width={bW} height={bH} fill={isToday?'#f59e0b':'#6366f1'} rx="2" opacity="0.85"/>
@@ -7153,21 +7171,49 @@ function CxView() {
     );
   }
 
-  const slaColor = r => r===null?'text-slate-400':r>=90?'text-green-600':r>=70?'text-amber-600':'text-red-600';
+  function StatusBar({byStatus,total}) {
+    const STATUS_C={2:'#3b82f6',3:'#f59e0b',4:'#22c55e',5:'#94a3b8',6:'#f97316',7:'#a855f7'};
+    const entries=Object.entries(byStatus).sort((a,b)=>b[1]-a[1]);
+    return (
+      <div className="space-y-2">
+        <div className="flex h-4 rounded-full overflow-hidden gap-px">
+          {entries.map(([s,c])=>(
+            <div key={s} title={`${FD_STATUS_LABEL[s]}: ${c}`}
+              style={{width:`${Math.round((c/total)*100)}%`,background:STATUS_C[s]||'#94a3b8'}}/>
+          ))}
+        </div>
+        <div className="flex flex-wrap gap-x-3 gap-y-1">
+          {entries.map(([s,c])=>(
+            <button key={s} onClick={()=>setFilter('status',String(s))}
+              className={`flex items-center gap-1.5 text-xs transition rounded px-1 py-0.5 ${filters.status===String(s)?'ring-2 ring-indigo-400 bg-indigo-50':''}`}>
+              <span className="w-2.5 h-2.5 rounded-sm inline-block shrink-0" style={{background:STATUS_C[s]||'#94a3b8'}}/>
+              <span className="text-slate-600">{FD_STATUS_LABEL[s]}</span>
+              <span className="font-medium text-slate-800">{c}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  const slaColor  = r=>r===null?'text-slate-400':r>=90?'text-green-600':r>=70?'text-amber-600':'text-red-600';
   const periodLabel = period==='1'?'hoje':`últimos ${period} dias`;
+  const activeFilterCount = Object.values(filters).filter(v=>v!==NO_FILTER).length;
+
+  if (loading&&!tickets) return <div className="text-center py-24 text-slate-400 fade-in">Carregando dados do Freshdesk…</div>;
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-6 space-y-5 fade-in">
 
-      {/* Header bar */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      {/* ── Header ── */}
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-xl font-bold text-slate-900">Dashboard CX</h1>
           {lastUpd&&<p className="text-xs text-slate-400 mt-0.5">
-            Atualizado às {lastUpd.toLocaleTimeString('pt-BR')} · refresh em <span className="font-medium">{countdown}s</span>
+            Atualizado {lastUpd.toLocaleTimeString('pt-BR')} · refresh em <span className="font-medium">{countdown}s</span>
           </p>}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           {PERIODS.map(p=>(
             <button key={p.v} onClick={()=>setPeriod(p.v)}
               className={`px-3 py-1.5 rounded-lg text-sm font-medium transition ${period===p.v?'bg-indigo-600 text-white':'bg-white border border-slate-200 text-slate-600 hover:border-indigo-300'}`}>
@@ -7181,14 +7227,92 @@ function CxView() {
         </div>
       </div>
 
-      {/* Error */}
+      {/* ── Filter bar ── */}
+      {tickets&&opts.statuses&&(
+        <div className="bg-white border border-slate-200 rounded-2xl p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Filtros</span>
+            {hasActiveFilters&&(
+              <button onClick={clearFilters} className="text-xs text-indigo-600 hover:underline">
+                Limpar todos ({activeFilterCount})
+              </button>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {/* Status */}
+            <select value={filters.status} onChange={e=>setFilters(f=>({...f,status:e.target.value}))}
+              className={`text-xs rounded-lg border px-2.5 py-1.5 bg-white transition ${filters.status!==NO_FILTER?'border-indigo-400 text-indigo-700 font-medium':'border-slate-200 text-slate-600'}`}>
+              <option value={NO_FILTER}>Status (todos)</option>
+              {(opts.statuses||[]).map(s=><option key={s} value={s}>{FD_STATUS_LABEL[s]||s}</option>)}
+            </select>
+            {/* Agente */}
+            <select value={filters.agente} onChange={e=>setFilters(f=>({...f,agente:e.target.value}))}
+              className={`text-xs rounded-lg border px-2.5 py-1.5 bg-white transition ${filters.agente!==NO_FILTER?'border-indigo-400 text-indigo-700 font-medium':'border-slate-200 text-slate-600'}`}>
+              <option value={NO_FILTER}>Agente (todos)</option>
+              {(opts.agentes||[]).map(id=><option key={id} value={String(id)}>{agentName(id)}</option>)}
+            </select>
+            {/* Categoria */}
+            <select value={filters.categoria} onChange={e=>setFilters(f=>({...f,categoria:e.target.value}))}
+              className={`text-xs rounded-lg border px-2.5 py-1.5 bg-white transition ${filters.categoria!==NO_FILTER?'border-indigo-400 text-indigo-700 font-medium':'border-slate-200 text-slate-600'}`}>
+              <option value={NO_FILTER}>Categoria (todas)</option>
+              {(opts.categorias||[]).map(c=><option key={c} value={c}>{c}</option>)}
+            </select>
+            {/* Processo Seletivo */}
+            <select value={filters.ps} onChange={e=>setFilters(f=>({...f,ps:e.target.value}))}
+              className={`text-xs rounded-lg border px-2.5 py-1.5 bg-white transition ${filters.ps!==NO_FILTER?'border-indigo-400 text-indigo-700 font-medium':'border-slate-200 text-slate-600'}`}>
+              <option value={NO_FILTER}>Processo Seletivo (todos)</option>
+              {(opts.psList||[]).map(p=><option key={p} value={p}>{p}</option>)}
+            </select>
+            {/* Prioridade */}
+            <select value={filters.priority} onChange={e=>setFilters(f=>({...f,priority:e.target.value}))}
+              className={`text-xs rounded-lg border px-2.5 py-1.5 bg-white transition ${filters.priority!==NO_FILTER?'border-indigo-400 text-indigo-700 font-medium':'border-slate-200 text-slate-600'}`}>
+              <option value={NO_FILTER}>Prioridade (todas)</option>
+              {(opts.priorities||[]).map(p=><option key={p} value={p}>{FD_PRIORITY_LABEL[p]||p}</option>)}
+            </select>
+          </div>
+          {/* Active filter chips */}
+          {hasActiveFilters&&(
+            <div className="flex flex-wrap gap-1.5 pt-1 border-t border-slate-100">
+              {filters.status!==NO_FILTER&&(
+                <span className="flex items-center gap-1 bg-indigo-100 text-indigo-700 text-xs px-2 py-0.5 rounded-full">
+                  Status: {FD_STATUS_LABEL[filters.status]}
+                  <button onClick={()=>setFilters(f=>({...f,status:NO_FILTER}))} className="hover:text-indigo-900 ml-0.5">×</button>
+                </span>
+              )}
+              {filters.agente!==NO_FILTER&&(
+                <span className="flex items-center gap-1 bg-indigo-100 text-indigo-700 text-xs px-2 py-0.5 rounded-full">
+                  Agente: {agentName(Number(filters.agente))}
+                  <button onClick={()=>setFilters(f=>({...f,agente:NO_FILTER}))} className="hover:text-indigo-900 ml-0.5">×</button>
+                </span>
+              )}
+              {filters.categoria!==NO_FILTER&&(
+                <span className="flex items-center gap-1 bg-indigo-100 text-indigo-700 text-xs px-2 py-0.5 rounded-full">
+                  Categoria: {filters.categoria}
+                  <button onClick={()=>setFilters(f=>({...f,categoria:NO_FILTER}))} className="hover:text-indigo-900 ml-0.5">×</button>
+                </span>
+              )}
+              {filters.ps!==NO_FILTER&&(
+                <span className="flex items-center gap-1 bg-indigo-100 text-indigo-700 text-xs px-2 py-0.5 rounded-full">
+                  PS: {filters.ps}
+                  <button onClick={()=>setFilters(f=>({...f,ps:NO_FILTER}))} className="hover:text-indigo-900 ml-0.5">×</button>
+                </span>
+              )}
+              {filters.priority!==NO_FILTER&&(
+                <span className="flex items-center gap-1 bg-indigo-100 text-indigo-700 text-xs px-2 py-0.5 rounded-full">
+                  Prioridade: {FD_PRIORITY_LABEL[filters.priority]}
+                  <button onClick={()=>setFilters(f=>({...f,priority:NO_FILTER}))} className="hover:text-indigo-900 ml-0.5">×</button>
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Error ── */}
       {err&&<div className="bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3 text-sm">⚠️ {err}</div>}
 
-      {/* Loading state */}
-      {loading&&!tickets&&<div className="text-center py-24 text-slate-400">Carregando dados do Freshdesk…</div>}
-
       {metrics&&<>
-        {/* Spike / incident alert */}
+        {/* ── Alerts ── */}
         {metrics.isSpike&&(
           <div className="bg-red-50 border-2 border-red-300 rounded-2xl p-4 flex items-start gap-3">
             <span className="text-2xl">🚨</span>
@@ -7196,13 +7320,10 @@ function CxView() {
               <p className="font-bold text-red-700">Incidente potencial detectado</p>
               <p className="text-sm text-red-600 mt-0.5">
                 <strong>{metrics.last24h}</strong> chamados nas últimas 24h vs. média de <strong>{Math.round(metrics.avgDaily)}/dia</strong>.
-                Verifique falhas em testes (Talkia, Recognita) ou sistemas de cadastro/agendamento.
               </p>
             </div>
           </div>
         )}
-
-        {/* Test spike alerts */}
         {Object.entries(metrics.byTeste).filter(([,v])=>v>=5).length>0&&(
           <div className="bg-amber-50 border border-amber-300 rounded-2xl p-4 flex items-start gap-3">
             <span className="text-xl">⚠️</span>
@@ -7215,139 +7336,249 @@ function CxView() {
           </div>
         )}
 
-        {/* KPI Cards */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
-          <KpiCard icon="📊"
-            label={`Volume (${periodLabel})`}
-            value={metrics.total}
+        {/* ── KPI cards ── */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <KpiCard icon="📊" label={`Volume (${periodLabel})`} value={metrics.total}
             sub={period!=='1'?`${metrics.todayCount} hoje`:undefined}/>
-          <KpiCard icon="🗂️"
-            label="Backlog atual"
-            value={backlog??'…'}
-            sub="abertos + pendentes"
-            bg={backlog>30?'bg-red-50':'bg-white'}
-            color={backlog>30?'text-red-600':'text-slate-900'}
+          <KpiCard icon="🗂️" label="Backlog atual" value={backlog??'…'} sub="abertos + pendentes"
+            bg={backlog>30?'bg-red-50':'bg-white'} color={backlog>30?'text-red-600':'text-slate-900'}
             border={backlog>30?'border-red-200':'border-slate-200'}/>
-          <KpiCard icon="⚡"
-            label="SLA 1ª Resposta"
-            value={metrics.frSlaRate!==null?`${metrics.frSlaRate}%`:'—'}
-            sub={`${metrics.frBreached} violação${metrics.frBreached!==1?'ões':''}`}
-            color={slaColor(metrics.frSlaRate)}/>
-          <KpiCard icon="✅"
-            label="SLA Resolução"
-            value={metrics.resSlaRate!==null?`${metrics.resSlaRate}%`:'—'}
-            sub={`${metrics.resBreached} violação${metrics.resBreached!==1?'ões':''}`}
-            color={slaColor(metrics.resSlaRate)}/>
-          <KpiCard icon="🚨"
-            label="Fora do SLA (abertos)"
-            value={metrics.outOfSla.length}
-            bg={metrics.outOfSla.length>0?'bg-orange-50':'bg-white'}
-            color={metrics.outOfSla.length>0?'text-orange-600':'text-slate-900'}
-            border={metrics.outOfSla.length>0?'border-orange-200':'border-slate-200'}/>
+          <KpiCard icon="💬" label="Sem 1ª Resposta (abertos)" value={metrics.semResposta.length}
+            sub={metrics.waitBuckets.gt24>0?`${metrics.waitBuckets.gt24} há mais de 24h`:'todos < 24h'}
+            bg={metrics.semResposta.length>0?'bg-rose-50':'bg-white'}
+            color={metrics.semResposta.length>0?'text-rose-600':'text-slate-900'}
+            border={metrics.semResposta.length>0?'border-rose-200':'border-slate-200'}/>
+          <KpiCard icon="⏳" label="Em andamento (respondidos)" value={metrics.semResolucao.length}
+            sub={metrics.avgHorasResolucao!=null?`média ${metrics.avgHorasResolucao}h em aberto`:undefined}
+            bg={metrics.avgHorasResolucao>48?'bg-amber-50':'bg-white'}
+            color={metrics.avgHorasResolucao>48?'text-amber-600':'text-slate-900'}
+            border={metrics.avgHorasResolucao>48?'border-amber-200':'border-slate-200'}/>
         </div>
 
-        {/* Volume trend */}
-        <div className="bg-white rounded-2xl border border-slate-200 p-5">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-sm font-semibold text-slate-700">Tendência de Volume</h3>
-            <span className="text-xs text-slate-400">Barra amarela = hoje</span>
+        {/* ── SLA row (policy-based) ── */}
+        <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4">
+          <p className="text-xs text-slate-400 mb-3 flex items-center gap-1.5">
+            <span>ℹ️</span>
+            <span>SLA baseado nas políticas configuradas no Freshdesk. Configure prazos reais em <strong>Admin → SLA Policies</strong> para métricas precisas.</span>
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <KpiCard icon="⚡" label="SLA 1ª Resposta (FD)" value={metrics.frSlaRate!=null?`${metrics.frSlaRate}%`:'—'}
+              sub={`${metrics.frBreached} violação${metrics.frBreached!==1?'ões':''}`} color={slaColor(metrics.frSlaRate)}/>
+            <KpiCard icon="✅" label="SLA Resolução (FD)" value={metrics.resSlaRate!=null?`${metrics.resSlaRate}%`:'—'}
+              sub={`${metrics.resBreached} violação${metrics.resBreached!==1?'ões':''}`} color={slaColor(metrics.resSlaRate)}/>
+            <KpiCard icon="🚨" label="Fora do SLA (FD)" value={metrics.outOfSla.length}
+              bg={metrics.outOfSla.length>0?'bg-orange-50':'bg-white'}
+              color={metrics.outOfSla.length>0?'text-orange-600':'text-slate-900'}
+              border={metrics.outOfSla.length>0?'border-orange-200':'border-slate-200'}/>
           </div>
-          <TrendChart byDay={metrics.byDay}/>
         </div>
 
-        {/* Breakdowns row */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {/* Por Categoria */}
-          <div className="bg-white rounded-2xl border border-slate-200 p-5">
-            <h3 className="text-sm font-semibold text-slate-700 mb-4">Por Categoria</h3>
-            <div className="space-y-2.5">
-              {Object.entries(metrics.byCat).sort((a,b)=>b[1]-a[1]).map(([k,v])=>(
-                <HBar key={k} label={k} count={v} max={Math.max(...Object.values(metrics.byCat))} color="bg-indigo-500"/>
+        {/* ── Tickets sem 1ª resposta ── */}
+        {metrics.semResposta.length>0&&(
+          <div className="bg-white rounded-2xl border border-rose-200 p-5 space-y-4">
+            <h3 className="text-sm font-semibold text-rose-700">💬 Sem 1ª Resposta — {metrics.semResposta.length} ticket{metrics.semResposta.length!==1?'s':''} aguardando</h3>
+            <div className="grid grid-cols-4 gap-3 text-center">
+              {[{l:'< 4h',v:metrics.waitBuckets.lt4,c:'text-green-600',bg:'bg-green-50',b:'border-green-200'},
+                {l:'4–8h',v:metrics.waitBuckets.h4_8,c:'text-amber-600',bg:'bg-amber-50',b:'border-amber-200'},
+                {l:'8–24h',v:metrics.waitBuckets.h8_24,c:'text-orange-600',bg:'bg-orange-50',b:'border-orange-200'},
+                {l:'> 24h',v:metrics.waitBuckets.gt24,c:'text-red-600',bg:'bg-red-50',b:'border-red-200'},
+              ].map(b=>(
+                <div key={b.l} className={`${b.bg} border ${b.b} rounded-xl p-3`}>
+                  <div className={`text-2xl font-bold ${b.c}`}>{b.v}</div>
+                  <div className="text-xs text-slate-500 mt-0.5">{b.l}</div>
+                </div>
               ))}
+            </div>
+            <div className="overflow-x-auto scroll-table">
+              <table className="w-full text-xs">
+                <thead><tr className="text-left text-slate-500 border-b border-slate-100">
+                  <th className="pb-2 pr-3 font-medium">#</th>
+                  <th className="pb-2 pr-3 font-medium">Assunto</th>
+                  <th className="pb-2 pr-3 font-medium">Agente</th>
+                  <th className="pb-2 pr-3 font-medium">Categoria</th>
+                  <th className="pb-2 pr-3 font-medium">Processo Seletivo</th>
+                  <th className="pb-2 pr-3 font-medium">Criado em</th>
+                  <th className="pb-2 font-medium">Aguardando</th>
+                </tr></thead>
+                <tbody className="divide-y divide-slate-50">
+                  {metrics.aguardandoMais.map(t=>{
+                    const h=Math.round((new Date()-new Date(t.created_at))/3600000);
+                    const cor=h>=24?'text-red-600 font-bold':h>=8?'text-orange-600 font-medium':'text-amber-600';
+                    const lbl=h>=48?`${Math.floor(h/24)}d ${h%24}h`:h>=1?`${h}h`:'<1h';
+                    return (
+                      <tr key={t.id} className="hover:bg-rose-50">
+                        <td className="py-2 pr-3"><a href={`https://${FD_DOMAIN}.freshdesk.com/a/tickets/${t.id}`} target="_blank" rel="noopener noreferrer" className="text-indigo-600 font-medium hover:underline">#{t.id}</a></td>
+                        <td className="py-2 pr-3 text-slate-700 max-w-xs truncate" title={t.subject}>{t.subject}</td>
+                        <td className="py-2 pr-3 text-slate-500 whitespace-nowrap">{agentName(t.responder_id)}</td>
+                        <td className="py-2 pr-3 text-slate-500 truncate max-w-32" title={t.custom_fields?.cf_assunto_do_ticket}>{t.custom_fields?.cf_assunto_do_ticket||'—'}</td>
+                        <td className="py-2 pr-3 text-slate-500 truncate max-w-32" title={t.custom_fields?.cf_processo_seletivo}>{t.custom_fields?.cf_processo_seletivo||'—'}</td>
+                        <td className="py-2 pr-3 text-slate-400 whitespace-nowrap">{new Date(t.created_at).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</td>
+                        <td className={`py-2 whitespace-nowrap ${cor}`}>{lbl}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* ── Trend + Status ── */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="bg-white rounded-2xl border border-slate-200 p-5">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-semibold text-slate-700">Tendência de Volume</h3>
+              <span className="text-xs text-slate-400">🟡 hoje</span>
+            </div>
+            <TrendChart byDay={metrics.byDay}/>
+          </div>
+          <div className="bg-white rounded-2xl border border-slate-200 p-5">
+            <h3 className="text-sm font-semibold text-slate-700 mb-4">Distribuição por Status</h3>
+            {metrics.total>0
+              ? <StatusBar byStatus={metrics.byStatus} total={metrics.total}/>
+              : <p className="text-xs text-slate-400">Sem dados</p>}
+          </div>
+        </div>
+
+        {/* ── Charts row: Categoria + PS + Teste ── */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="bg-white rounded-2xl border border-slate-200 p-5">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-sm font-semibold text-slate-700">Por Categoria</h3>
+              <span className="text-xs text-slate-400">clique para filtrar</span>
+            </div>
+            <div className="space-y-1">
+              {Object.entries(metrics.byCat).sort((a,b)=>b[1]-a[1]).map(([k,v])=>{
+                const tot=Object.values(metrics.byCat).reduce((a,b)=>a+b,0);
+                return <ChartBar key={k} label={k} count={v} max={Math.max(...Object.values(metrics.byCat))}
+                  color="bg-indigo-400" active={filters.categoria===k}
+                  pct={Math.round((v/tot)*100)}
+                  onClick={()=>setFilter('categoria',k)}/>;
+              })}
               {!Object.keys(metrics.byCat).length&&<p className="text-xs text-slate-400">Sem dados</p>}
             </div>
           </div>
 
-          {/* Por Processo Seletivo */}
           <div className="bg-white rounded-2xl border border-slate-200 p-5">
-            <h3 className="text-sm font-semibold text-slate-700 mb-4">Por Processo Seletivo</h3>
-            <div className="space-y-2.5">
-              {Object.entries(metrics.byPS).sort((a,b)=>b[1]-a[1]).slice(0,8).map(([k,v])=>(
-                <HBar key={k} label={k} count={v} max={Math.max(...Object.values(metrics.byPS))} color="bg-sky-500"/>
-              ))}
-              {!Object.keys(metrics.byPS).length&&<p className="text-xs text-slate-400">Sem dados de processo seletivo</p>}
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-sm font-semibold text-slate-700">Por Processo Seletivo</h3>
+              <span className="text-xs text-slate-400">clique para filtrar</span>
+            </div>
+            <div className="space-y-1">
+              {Object.entries(metrics.byPS).sort((a,b)=>b[1]-a[1]).slice(0,10).map(([k,v])=>{
+                const tot=Object.values(metrics.byPS).reduce((a,b)=>a+b,0);
+                return <ChartBar key={k} label={k} count={v} max={Math.max(...Object.values(metrics.byPS))}
+                  color="bg-sky-400" active={filters.ps===k}
+                  pct={Math.round((v/tot)*100)}
+                  onClick={()=>setFilter('ps',k)}/>;
+              })}
+              {!Object.keys(metrics.byPS).length&&<p className="text-xs text-slate-400">Sem dados</p>}
             </div>
           </div>
 
-          {/* Por Tipo de Teste */}
           <div className="bg-white rounded-2xl border border-slate-200 p-5">
             <h3 className="text-sm font-semibold text-slate-700 mb-4">Problemas por Teste</h3>
-            <div className="space-y-2.5">
+            <div className="space-y-1">
               {Object.entries(metrics.byTeste).sort((a,b)=>b[1]-a[1]).map(([k,v])=>(
-                <HBar key={k} label={k} count={v} max={Math.max(...Object.values(metrics.byTeste),1)} color="bg-rose-400"/>
+                <ChartBar key={k} label={k} count={v} max={Math.max(...Object.values(metrics.byTeste),1)} color="bg-rose-400"/>
               ))}
-              {!Object.keys(metrics.byTeste).length&&(
-                <p className="text-xs text-slate-400">Nenhum problema de teste no período ✓</p>
-              )}
+              {!Object.keys(metrics.byTeste).length&&<p className="text-xs text-slate-400">Nenhum problema de teste ✓</p>}
             </div>
           </div>
         </div>
 
-        {/* Subcat breakdown (detalhamento) */}
+        {/* ── Detalhamento de subcategoria ── */}
         {Object.keys(metrics.byDet).length>0&&(
           <div className="bg-white rounded-2xl border border-slate-200 p-5">
             <h3 className="text-sm font-semibold text-slate-700 mb-4">Principais Problemas (Detalhamento)</h3>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              {Object.entries(metrics.byDet).sort((a,b)=>b[1]-a[1]).slice(0,12).map(([k,v])=>(
-                <HBar key={k} label={k} count={v} max={Math.max(...Object.values(metrics.byDet))} color="bg-violet-400"/>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
+              {Object.entries(metrics.byDet).sort((a,b)=>b[1]-a[1]).slice(0,14).map(([k,v])=>(
+                <ChartBar key={k} label={k} count={v} max={Math.max(...Object.values(metrics.byDet))} color="bg-violet-400"/>
               ))}
             </div>
           </div>
         )}
 
-        {/* Tickets fora do SLA */}
+        {/* ── Produtividade por Agente ── */}
+        {Object.keys(metrics.byAgent).length>0&&(
+          <div className="bg-white rounded-2xl border border-slate-200 p-5">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-sm font-semibold text-slate-700">Produtividade por Agente</h3>
+              <span className="text-xs text-slate-400">clique para filtrar</span>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* Gráfico — tickets totais por agente */}
+              <div>
+                <p className="text-xs font-medium text-slate-500 mb-2">Total de tickets</p>
+                <div className="space-y-1">
+                  {Object.values(metrics.byAgent).sort((a,b)=>b.total-a.total).map(a=>(
+                    <ChartBar key={a.id} label={agentName(a.id)} count={a.total}
+                      max={Math.max(...Object.values(metrics.byAgent).map(x=>x.total),1)}
+                      color="bg-indigo-400" active={filters.agente===String(a.id||0)}
+                      onClick={()=>setFilter('agente',String(a.id||0))}/>
+                  ))}
+                </div>
+              </div>
+              {/* Tabela detalhada */}
+              <div>
+                <p className="text-xs font-medium text-slate-500 mb-2">Detalhamento</p>
+                <table className="w-full text-xs">
+                  <thead><tr className="text-left text-slate-400 border-b border-slate-100">
+                    <th className="pb-1.5 font-medium">Agente</th>
+                    <th className="pb-1.5 text-center font-medium">Total</th>
+                    <th className="pb-1.5 text-center font-medium">Resolvidos</th>
+                    <th className="pb-1.5 text-center font-medium">Sem resp.</th>
+                    <th className="pb-1.5 text-center font-medium">SLA ✗</th>
+                  </tr></thead>
+                  <tbody className="divide-y divide-slate-50">
+                    {Object.values(metrics.byAgent).sort((a,b)=>b.total-a.total).map(a=>(
+                      <tr key={a.id} className="hover:bg-slate-50">
+                        <td className="py-1.5 text-slate-700 font-medium">{agentName(a.id)}</td>
+                        <td className="py-1.5 text-center text-slate-600">{a.total}</td>
+                        <td className="py-1.5 text-center text-green-600">{a.resolved}</td>
+                        <td className="py-1.5 text-center">
+                          {a.semResp>0?<span className="text-rose-600 font-medium">{a.semResp}</span>:<span className="text-slate-300">—</span>}
+                        </td>
+                        <td className="py-1.5 text-center">
+                          {a.escalated>0?<span className="text-red-500 font-bold">{a.escalated}</span>:<span className="text-green-500">✓</span>}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Tickets fora do SLA (FD policy) ── */}
         {metrics.outOfSla.length>0&&(
           <div className="bg-white rounded-2xl border border-orange-200 p-5">
-            <h3 className="text-sm font-semibold text-orange-700 mb-4">🚨 Tickets Fora do SLA — Ação Necessária</h3>
+            <h3 className="text-sm font-semibold text-orange-700 mb-4">🚨 Fora do SLA (política Freshdesk)</h3>
             <div className="overflow-x-auto scroll-table">
               <table className="w-full text-xs">
-                <thead>
-                  <tr className="text-left text-slate-500 border-b border-slate-100">
-                    <th className="pb-2 pr-3 font-medium">#</th>
-                    <th className="pb-2 pr-3 font-medium">Assunto</th>
-                    <th className="pb-2 pr-3 font-medium">Status</th>
-                    <th className="pb-2 pr-3 font-medium">Categoria</th>
-                    <th className="pb-2 pr-3 font-medium">Processo Seletivo</th>
-                    <th className="pb-2 pr-3 font-medium">Criado em</th>
-                    <th className="pb-2 font-medium">SLA violado</th>
-                  </tr>
-                </thead>
+                <thead><tr className="text-left text-slate-500 border-b border-slate-100">
+                  <th className="pb-2 pr-3 font-medium">#</th>
+                  <th className="pb-2 pr-3 font-medium">Assunto</th>
+                  <th className="pb-2 pr-3 font-medium">Agente</th>
+                  <th className="pb-2 pr-3 font-medium">Status</th>
+                  <th className="pb-2 pr-3 font-medium">Categoria</th>
+                  <th className="pb-2 pr-3 font-medium">Prioridade</th>
+                  <th className="pb-2 pr-3 font-medium">Criado em</th>
+                  <th className="pb-2 font-medium">SLA violado</th>
+                </tr></thead>
                 <tbody className="divide-y divide-slate-50">
                   {metrics.outOfSla.map(t=>(
-                    <tr key={t.id} className="hover:bg-orange-50 transition-colors">
-                      <td className="py-2 pr-3">
-                        <a href={`https://${FD_DOMAIN}.freshdesk.com/a/tickets/${t.id}`} target="_blank" rel="noopener noreferrer"
-                          className="text-indigo-600 font-medium hover:underline">#{t.id}</a>
-                      </td>
+                    <tr key={t.id} className="hover:bg-orange-50">
+                      <td className="py-2 pr-3"><a href={`https://${FD_DOMAIN}.freshdesk.com/a/tickets/${t.id}`} target="_blank" rel="noopener noreferrer" className="text-indigo-600 font-medium hover:underline">#{t.id}</a></td>
                       <td className="py-2 pr-3 text-slate-700 max-w-xs truncate" title={t.subject}>{t.subject}</td>
-                      <td className="py-2 pr-3">
-                        <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${FD_STATUS_COLOR[t.status]||'bg-slate-100 text-slate-600'}`}>
-                          {FD_STATUS_LABEL[t.status]||t.status}
-                        </span>
-                      </td>
-                      <td className="py-2 pr-3 text-slate-500 max-w-36 truncate" title={t.custom_fields?.cf_assunto_do_ticket}>
-                        {t.custom_fields?.cf_assunto_do_ticket||'—'}
-                      </td>
-                      <td className="py-2 pr-3 text-slate-500 max-w-36 truncate" title={t.custom_fields?.cf_processo_seletivo}>
-                        {t.custom_fields?.cf_processo_seletivo||'—'}
-                      </td>
-                      <td className="py-2 pr-3 text-slate-400 whitespace-nowrap">
-                        {new Date(t.created_at).toLocaleDateString('pt-BR')}
-                      </td>
-                      <td className="py-2">
-                        <span className="text-red-600 font-medium">
-                          {t.fr_escalated&&t.is_escalated?'1ª Resp + Resolução':t.fr_escalated?'1ª Resposta':'Resolução'}
-                        </span>
+                      <td className="py-2 pr-3 text-slate-500 whitespace-nowrap">{agentName(t.responder_id)}</td>
+                      <td className="py-2 pr-3"><span className={`px-2 py-0.5 rounded-full text-xs font-medium ${FD_STATUS_COLOR[t.status]||'bg-slate-100 text-slate-600'}`}>{FD_STATUS_LABEL[t.status]||t.status}</span></td>
+                      <td className="py-2 pr-3 text-slate-500 truncate max-w-32">{t.custom_fields?.cf_assunto_do_ticket||'—'}</td>
+                      <td className={`py-2 pr-3 text-xs font-medium ${FD_PRIORITY_COLOR[t.priority]||'text-slate-500'}`}>{FD_PRIORITY_LABEL[t.priority]||'—'}</td>
+                      <td className="py-2 pr-3 text-slate-400 whitespace-nowrap">{new Date(t.created_at).toLocaleDateString('pt-BR')}</td>
+                      <td className="py-2 text-red-600 font-medium text-xs whitespace-nowrap">
+                        {t.fr_escalated&&t.is_escalated?'1ª Resp + Resolução':t.fr_escalated?'1ª Resposta':'Resolução'}
                       </td>
                     </tr>
                   ))}
@@ -7357,59 +7588,13 @@ function CxView() {
           </div>
         )}
 
-        {/* Agent productivity */}
-        {Object.keys(metrics.byAgent).length>0&&(
-          <div className="bg-white rounded-2xl border border-slate-200 p-5">
-            <h3 className="text-sm font-semibold text-slate-700 mb-4">Produtividade por Agente</h3>
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="text-left text-slate-500 border-b border-slate-100">
-                  <th className="pb-2 pr-4 font-medium">Agente</th>
-                  <th className="pb-2 pr-4 font-medium text-center">Total</th>
-                  <th className="pb-2 pr-4 font-medium text-center">Resolvidos</th>
-                  <th className="pb-2 pr-4 font-medium text-center">Em aberto</th>
-                  <th className="pb-2 pr-4 font-medium text-center">Taxa resolução</th>
-                  <th className="pb-2 font-medium text-center">Violações SLA</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-50">
-                {Object.values(metrics.byAgent).sort((a,b)=>b.total-a.total).map(a=>{
-                  const resolRate = a.total>0?Math.round((a.resolved/a.total)*100):0;
-                  return (
-                    <tr key={a.id} className="hover:bg-slate-50">
-                      <td className="py-2.5 pr-4 text-slate-700 font-medium">
-                        {agents[a.id]||(a.id===0?'Não atribuído':`Agente #${a.id}`)}
-                      </td>
-                      <td className="py-2.5 pr-4 text-center text-slate-600 font-medium">{a.total}</td>
-                      <td className="py-2.5 pr-4 text-center text-green-600 font-medium">{a.resolved}</td>
-                      <td className="py-2.5 pr-4 text-center text-slate-400">{a.total-a.resolved}</td>
-                      <td className="py-2.5 pr-4 text-center">
-                        <span className={resolRate>=70?'text-green-600 font-medium':resolRate>=40?'text-amber-600':'text-red-500'}>
-                          {resolRate}%
-                        </span>
-                      </td>
-                      <td className="py-2.5 text-center">
-                        {a.escalated>0
-                          ?<span className="text-red-500 font-bold">{a.escalated}</span>
-                          :<span className="text-green-500">✓</span>}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-
-        {/* Footer note */}
         <p className="text-xs text-slate-400 text-center pb-4">
-          {tickets.length} tickets carregados ({periodLabel}) · Backlog total: {backlog??'…'} abertos/pendentes · Freshdesk ciadetalentos
+          {filteredTickets.length}{hasActiveFilters?` de ${tickets.length}`:''} tickets ({periodLabel}) · Backlog total: {backlog??'…'} · Freshdesk ciadetalentos
         </p>
       </>}
     </div>
   );
 }
-
 // ─── Bootstrap ────────────────────────────────────────────────────────────────
 ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
 </script>
