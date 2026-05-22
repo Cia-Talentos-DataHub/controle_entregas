@@ -818,6 +818,31 @@ const NPS_CLI_SHEET   = 'Pesquisa_cliente';
 const NPS_CDD_SHEET   = 'Pesquisa_candidato';
 const NPS_ETAPAS_ELEG = new Set(['Contínuo','Relatório Final','Projeto Concluído']);
 
+// ─── CX / Freshdesk ───────────────────────────────────────────────────────────
+const FD_DOMAIN = 'ciadetalentos';
+const FD_KEY    = 'D5vu_ZGU05ZxiFm19fVW';
+const FD_BASE   = `https://${FD_DOMAIN}.freshdesk.com/api/v2`;
+const FD_AUTH   = 'Basic ' + btoa(`${FD_KEY}:X`);
+const FD_STATUS_LABEL = {2:'Aberto',3:'Pendente',4:'Resolvido',5:'Fechado',6:'Aguard. Cliente',7:'Em Processamento'};
+const FD_STATUS_COLOR = {
+  2:'bg-blue-100 text-blue-700',  3:'bg-amber-100 text-amber-700',
+  4:'bg-green-100 text-green-700',5:'bg-slate-100 text-slate-600',
+  6:'bg-orange-100 text-orange-700',7:'bg-purple-100 text-purple-700'
+};
+// PS values to exclude from "por processo seletivo" breakdown
+const FD_PS_EXCLUDE = new Set(['Não relacionado a processo seletivo - Cadastro','Não encontrei na lista']);
+
+async function fdFetch(path) {
+  const r = await fetch(FD_BASE + path, {
+    headers: { 'Authorization': FD_AUTH, 'Content-Type': 'application/json' }
+  });
+  if (!r.ok) {
+    const txt = await r.text().catch(() => '');
+    throw new Error(`Freshdesk ${r.status}: ${txt.slice(0,250)}`);
+  }
+  return r.json();
+}
+
 const MOSKIT_COLS = [
   {key:'ID',                          label:'ID',              fk:'id',      type:'text'},
   {key:'Nome',                        label:'Nome',            fk:'nome',    type:'text'},
@@ -1957,6 +1982,19 @@ function App() {
     );
   }
 
+  // ── CX module (admin only) ──
+  if (module==='cx' && (authState.email||'').toLowerCase()===ANALYTICS_ADMIN) {
+    return (
+      <div className="min-h-screen bg-slate-50">
+        <AppHeader view={view} setView={setView} authState={authState}
+          onSignOut={signOut} projectCount={projects.length} loading={loading}
+          onRefresh={()=>loadAll(authState.token)} module={module} onHome={()=>setModule(null)}/>
+        {errorBanner}
+        <CxView/>
+      </div>
+    );
+  }
+
   // ── Calendar module ──
   if (module==='calendar') {
     return (
@@ -2071,7 +2109,7 @@ function AppHeader({view,setView,authState,onSignOut,projectCount,loading,onRefr
           )}
           <div className="w-7 h-7 bg-indigo-600 rounded-lg flex items-center justify-center text-white text-xs font-bold">CT</div>
           <span className="text-base font-bold text-slate-800">
-            {module==='pulse'?'Pulse':module==='gestao'?'Gestão A&S':module==='calendar'?'Calendário':module==='analytics'?'Analytics':module==='clientes'?'Clientes × Frentes':module==='nps'?'NPS':MODULE_CONFIGS[module]?.label||'Alocação'}
+            {module==='pulse'?'Pulse':module==='gestao'?'Gestão A&S':module==='calendar'?'Calendário':module==='analytics'?'Analytics':module==='clientes'?'Clientes × Frentes':module==='nps'?'NPS':module==='cx'?'CX':MODULE_CONFIGS[module]?.label||'Alocação'}
           </span>
           {module==='gestao'&&projectCount>0&&<span className="bg-indigo-100 text-indigo-700 text-xs px-2 py-0.5 rounded-full">{projectCount} proj.</span>}
         </div>
@@ -2095,7 +2133,7 @@ function AppHeader({view,setView,authState,onSignOut,projectCount,loading,onRefr
           )}
         </nav>
         )}
-        {(module==='pulse'||module==='calendar'||module==='analytics'||module==='nps'||module==='clientes')&&<div className="flex-1"/>}
+        {(module==='pulse'||module==='calendar'||module==='analytics'||module==='nps'||module==='clientes'||module==='cx')&&<div className="flex-1"/>}
         <div className="flex items-center gap-2 ml-auto shrink-0">
           <button onClick={onRefresh} disabled={loading} title="Atualizar dados do SharePoint"
             className="text-xs text-slate-400 hover:text-indigo-600 border border-slate-200 hover:border-indigo-200 px-2.5 py-1.5 rounded-lg transition disabled:opacity-40">
@@ -2213,6 +2251,23 @@ function HomeScreen({onSelect,authState,onSignOut,loading,onRefresh,error,onClea
             </p>
             <div className="mt-6 flex items-center text-sm font-semibold text-amber-600 group-hover:text-amber-700">
               Abrir NPS <span className="ml-1.5">→</span>
+            </div>
+          </button>}
+
+          {/* CX card — somente para o admin */}
+          {isAdmin&&<button onClick={()=>onSelect('cx')}
+            className="group bg-white rounded-2xl border-2 border-slate-200 hover:border-cyan-400 hover:shadow-xl transition-all p-8 text-left">
+            <div className="w-14 h-14 bg-cyan-100 rounded-2xl flex items-center justify-center mb-5 group-hover:bg-cyan-200 transition-colors">
+              <svg xmlns="http://www.w3.org/2000/svg" className="w-7 h-7 text-cyan-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.8">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M16.712 4.33a9.027 9.027 0 011.652 1.306c.51.51.97 1.07 1.374 1.671M6.29 20.503a9.045 9.045 0 01-1.652-1.306 9.03 9.03 0 01-1.374-1.672M7.805 2.783A9.027 9.027 0 0110.5 2.25c1.063 0 2.09.175 3.045.511m-7.47 14.522a9.003 9.003 0 01-.345-4.22m11.076 4.22a9 9 0 01-1.876 2.74M3.712 8.503a9 9 0 011.876-2.74M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+              </svg>
+            </div>
+            <h2 className="text-xl font-bold text-slate-900 mb-2">CX</h2>
+            <p className="text-sm text-slate-500 leading-relaxed">
+              Dashboard de atendimento: volume, SLA, backlog, categorias, processos seletivos e detecção de incidentes.
+            </p>
+            <div className="mt-6 flex items-center text-sm font-semibold text-cyan-600 group-hover:text-cyan-700">
+              Abrir CX <span className="ml-1.5">→</span>
             </div>
           </button>}
 
@@ -6225,7 +6280,7 @@ function AnalyticsView({logs}) {
     return Object.values(map).sort((a,b)=>b.count-a.count);
   },[filtered]);
 
-  const MODULE_LABELS = {pulse:'Pulse',gestao:'Gestão A&S',calendar:'Calendário',analytics:'Analytics',nps:'NPS',clientes:'Clientes × Frentes'};
+  const MODULE_LABELS = {pulse:'Pulse',gestao:'Gestão A&S',calendar:'Calendário',analytics:'Analytics',nps:'NPS',cx:'CX',clientes:'Clientes × Frentes'};
   const fmtDate = ts=>{ if(!ts) return '—'; const d=new Date(ts); return `${d.toLocaleDateString('pt-BR')} ${d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}`; };
   const maxCount = Math.max(...byUser.map(u=>u.count),1);
 
@@ -6889,6 +6944,468 @@ function NpsView({projects, ciclos, clientId, tenantId}) {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── CX View ─────────────────────────────────────────────────────────────────
+function CxView() {
+  const PERIODS = [{v:'1',l:'Hoje'},{v:'7',l:'7 dias'},{v:'30',l:'30 dias'}];
+  const [period,    setPeriod]      = useState('7');
+  const [tickets,   setTickets]     = useState(null);
+  const [backlog,   setBacklog]     = useState(null);
+  const [agents,    setAgents]      = useState({});
+  const [loading,   setLoading]     = useState(false);
+  const [err,       setErr]         = useState(null);
+  const [lastUpd,   setLastUpd]     = useState(null);
+  const [countdown, setCountdown]   = useState(180);
+  const periodRef = useRef(period);
+  const timerRef  = useRef(null);
+  const loadRef   = useRef(null);
+
+  useEffect(() => { periodRef.current = period; }, [period]);
+
+  async function loadData(p) {
+    setLoading(true); setErr(null);
+    try {
+      const days = parseInt(p) || 7;
+      const cutoff = new Date();
+      cutoff.setDate(cutoff.getDate() - days);
+      cutoff.setHours(0, 0, 0, 0);
+      const since = encodeURIComponent(cutoff.toISOString());
+
+      // Load agents map + backlog count + first page of tickets in parallel
+      const [agentList, backlogRes, firstPage] = await Promise.all([
+        fdFetch('/agents?per_page=100').catch(() => []),
+        fdFetch('/search/tickets?query=' + encodeURIComponent('"status:2 OR status:3"')).catch(() => ({total:0})),
+        fdFetch(`/tickets?per_page=100&page=1&updated_since=${since}&order_by=created_at&order_type=desc`),
+      ]);
+
+      // Build agent id→name map
+      const agMap = {};
+      for (const a of (agentList||[])) agMap[a.id] = a.contact?.name || `#${a.id}`;
+      setAgents(agMap);
+      setBacklog(backlogRes.total ?? 0);
+
+      // Paginate remaining tickets (up to 20 pages total)
+      let all = [...firstPage];
+      let page = 2;
+      while (page <= 20 && all[all.length-1] && new Date(all[all.length-1].created_at) >= cutoff) {
+        const more = await fdFetch(`/tickets?per_page=100&page=${page}&updated_since=${since}&order_by=created_at&order_type=desc`);
+        if (!more.length) break;
+        all = all.concat(more);
+        if (more.length < 100) break;
+        page++;
+      }
+
+      // Keep only tickets created within the period
+      setTickets(all.filter(t => new Date(t.created_at) >= cutoff));
+      setLastUpd(new Date());
+    } catch(e) {
+      setErr(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+  loadRef.current = loadData;
+
+  useEffect(() => { loadData(period); }, [period]);
+
+  // Auto-refresh every 3 min
+  useEffect(() => {
+    if (timerRef.current) clearInterval(timerRef.current);
+    timerRef.current = setInterval(() => {
+      setCountdown(c => {
+        if (c <= 1) { loadRef.current(periodRef.current); return 180; }
+        return c - 1;
+      });
+    }, 1000);
+    return () => clearInterval(timerRef.current);
+  }, []);
+
+  const metrics = useMemo(() => {
+    if (!tickets) return null;
+    const list = tickets;
+    const now  = new Date();
+    const days = parseInt(period) || 7;
+
+    // Volume
+    const total = list.length;
+    const todayStart = new Date(); todayStart.setHours(0,0,0,0);
+    const todayCount = list.filter(t => new Date(t.created_at) >= todayStart).length;
+    const last24h    = list.filter(t => new Date(t.created_at) >= new Date(now - 86400000)).length;
+    const avgDaily   = days > 0 ? total / days : total;
+    const isSpike    = last24h > Math.max(avgDaily * 2, 10) && last24h >= 5;
+
+    // SLA breach via Freshdesk escalated flags (already computed server-side)
+    const frBreached  = list.filter(t => t.fr_escalated).length;
+    const resBreached = list.filter(t => t.is_escalated).length;
+    const frTotal     = list.filter(t => t.fr_due_by).length;
+    const resTotal    = list.filter(t => t.due_by).length;
+    const frSlaRate   = frTotal  > 0 ? Math.round(((frTotal  - frBreached)  / frTotal)  * 100) : null;
+    const resSlaRate  = resTotal > 0 ? Math.round(((resTotal - resBreached) / resTotal) * 100) : null;
+
+    // Currently open + out of SLA
+    const outOfSla = list
+      .filter(t => (t.fr_escalated || t.is_escalated) && [2,3,6,7].includes(t.status))
+      .sort((a,b) => new Date(a.created_at) - new Date(b.created_at))
+      .slice(0, 25);
+
+    // Category breakdown (L1 = cf_assunto_do_ticket)
+    const byCat = {}, byDet = {};
+    for (const t of list) {
+      const c = t.custom_fields?.cf_assunto_do_ticket || 'Não categorizado';
+      const d = t.custom_fields?.cf_categoria || null;
+      byCat[c] = (byCat[c] || 0) + 1;
+      if (d) byDet[d] = (byDet[d] || 0) + 1;
+    }
+
+    // Processo seletivo
+    const byPS = {};
+    for (const t of list) {
+      const k = t.custom_fields?.cf_processo_seletivo;
+      if (k && !FD_PS_EXCLUDE.has(k)) byPS[k] = (byPS[k] || 0) + 1;
+    }
+
+    // Test issues
+    const byTeste = {};
+    for (const t of list) {
+      const k = t.custom_fields?.cf_em_qual_teste_precisa_de_ajuda;
+      if (k && k !== 'Sem correlação com teste') byTeste[k] = (byTeste[k] || 0) + 1;
+    }
+
+    // By agent
+    const byAgent = {};
+    for (const t of list) {
+      const id = t.responder_id || 0;
+      if (!byAgent[id]) byAgent[id] = {id, total:0, resolved:0, escalated:0};
+      byAgent[id].total++;
+      if ([4,5].includes(t.status)) byAgent[id].resolved++;
+      if (t.fr_escalated || t.is_escalated) byAgent[id].escalated++;
+    }
+
+    // Daily trend (show up to last 14 days)
+    const byDay = {};
+    for (const t of list) { const d = t.created_at.slice(0,10); byDay[d] = (byDay[d]||0)+1; }
+
+    // By status
+    const byStatus = {};
+    for (const t of list) byStatus[t.status] = (byStatus[t.status]||0)+1;
+
+    return {total,todayCount,last24h,avgDaily,isSpike,
+      frSlaRate,resSlaRate,frBreached,resBreached,
+      outOfSla,byCat,byDet,byPS,byTeste,byAgent,byDay,byStatus};
+  }, [tickets, period]);
+
+  // ── Sub-components (defined inside to access FD_DOMAIN) ──
+  function KpiCard({icon,label,value,sub,color='text-slate-900',bg='bg-white',border='border-slate-200'}) {
+    return (
+      <div className={`${bg} rounded-2xl border ${border} p-5`}>
+        <div className="text-2xl mb-1.5">{icon}</div>
+        <div className={`text-3xl font-bold leading-none ${color}`}>{value??'—'}</div>
+        <div className="text-xs font-medium text-slate-500 mt-1.5">{label}</div>
+        {sub&&<div className="text-xs text-slate-400 mt-0.5">{sub}</div>}
+      </div>
+    );
+  }
+
+  function HBar({label,count,max,color='bg-indigo-500'}) {
+    const pct = max>0 ? Math.round((count/max)*100) : 0;
+    return (
+      <div className="flex items-center gap-2">
+        <div className="w-36 text-xs text-slate-600 truncate shrink-0" title={label}>{label}</div>
+        <div className="flex-1 bg-slate-100 rounded-full h-2">
+          <div className={`${color} h-2 rounded-full transition-all`} style={{width:`${pct}%`}}/>
+        </div>
+        <div className="w-7 text-xs text-slate-500 text-right shrink-0">{count}</div>
+      </div>
+    );
+  }
+
+  function TrendChart({byDay}) {
+    const days = parseInt(period)||7;
+    const n    = Math.min(days, 14);
+    const now  = new Date();
+    const slots = [];
+    for (let i = n-1; i >= 0; i--) {
+      const d = new Date(now); d.setDate(d.getDate()-i);
+      const key = d.toISOString().slice(0,10);
+      slots.push({key, count:byDay[key]||0, label:`${d.getDate()}/${d.getMonth()+1}`});
+    }
+    const maxV = Math.max(...slots.map(s=>s.count),1);
+    const W=440, H=80, bW=Math.floor((W/slots.length)-2);
+    return (
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{height:'80px'}}>
+        {slots.map((s,i) => {
+          const bH  = Math.max(Math.round((s.count/maxV)*(H-22)),2);
+          const x   = i*(W/slots.length)+1;
+          const y   = H-bH-16;
+          const isToday = s.key===new Date().toISOString().slice(0,10);
+          return (
+            <g key={s.key}>
+              <rect x={x} y={y} width={bW} height={bH} fill={isToday?'#f59e0b':'#6366f1'} rx="2" opacity="0.85"/>
+              <text x={x+bW/2} y={H-3} textAnchor="middle" fontSize="8" fill="#94a3b8">{s.label}</text>
+              {s.count>0&&<text x={x+bW/2} y={y-3} textAnchor="middle" fontSize="8" fill="#475569">{s.count}</text>}
+            </g>
+          );
+        })}
+      </svg>
+    );
+  }
+
+  const slaColor = r => r===null?'text-slate-400':r>=90?'text-green-600':r>=70?'text-amber-600':'text-red-600';
+  const periodLabel = period==='1'?'hoje':`últimos ${period} dias`;
+
+  return (
+    <div className="max-w-7xl mx-auto px-4 py-6 space-y-5 fade-in">
+
+      {/* Header bar */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold text-slate-900">Dashboard CX</h1>
+          {lastUpd&&<p className="text-xs text-slate-400 mt-0.5">
+            Atualizado às {lastUpd.toLocaleTimeString('pt-BR')} · refresh em <span className="font-medium">{countdown}s</span>
+          </p>}
+        </div>
+        <div className="flex items-center gap-2">
+          {PERIODS.map(p=>(
+            <button key={p.v} onClick={()=>setPeriod(p.v)}
+              className={`px-3 py-1.5 rounded-lg text-sm font-medium transition ${period===p.v?'bg-indigo-600 text-white':'bg-white border border-slate-200 text-slate-600 hover:border-indigo-300'}`}>
+              {p.l}
+            </button>
+          ))}
+          <button onClick={()=>loadData(period)} disabled={loading}
+            className="px-3 py-1.5 rounded-lg text-sm bg-white border border-slate-200 text-slate-500 hover:text-indigo-600 hover:border-indigo-300 transition disabled:opacity-40">
+            {loading?'⏳':'🔄'}
+          </button>
+        </div>
+      </div>
+
+      {/* Error */}
+      {err&&<div className="bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3 text-sm">⚠️ {err}</div>}
+
+      {/* Loading state */}
+      {loading&&!tickets&&<div className="text-center py-24 text-slate-400">Carregando dados do Freshdesk…</div>}
+
+      {metrics&&<>
+        {/* Spike / incident alert */}
+        {metrics.isSpike&&(
+          <div className="bg-red-50 border-2 border-red-300 rounded-2xl p-4 flex items-start gap-3">
+            <span className="text-2xl">🚨</span>
+            <div>
+              <p className="font-bold text-red-700">Incidente potencial detectado</p>
+              <p className="text-sm text-red-600 mt-0.5">
+                <strong>{metrics.last24h}</strong> chamados nas últimas 24h vs. média de <strong>{Math.round(metrics.avgDaily)}/dia</strong>.
+                Verifique falhas em testes (Talkia, Recognita) ou sistemas de cadastro/agendamento.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Test spike alerts */}
+        {Object.entries(metrics.byTeste).filter(([,v])=>v>=5).length>0&&(
+          <div className="bg-amber-50 border border-amber-300 rounded-2xl p-4 flex items-start gap-3">
+            <span className="text-xl">⚠️</span>
+            <div>
+              <p className="font-semibold text-amber-800 text-sm">Alto volume de problemas com testes</p>
+              <p className="text-xs text-amber-700 mt-1">
+                {Object.entries(metrics.byTeste).filter(([,v])=>v>=5).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`${k}: ${v}`).join(' · ')}
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* KPI Cards */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
+          <KpiCard icon="📊"
+            label={`Volume (${periodLabel})`}
+            value={metrics.total}
+            sub={period!=='1'?`${metrics.todayCount} hoje`:undefined}/>
+          <KpiCard icon="🗂️"
+            label="Backlog atual"
+            value={backlog??'…'}
+            sub="abertos + pendentes"
+            bg={backlog>30?'bg-red-50':'bg-white'}
+            color={backlog>30?'text-red-600':'text-slate-900'}
+            border={backlog>30?'border-red-200':'border-slate-200'}/>
+          <KpiCard icon="⚡"
+            label="SLA 1ª Resposta"
+            value={metrics.frSlaRate!==null?`${metrics.frSlaRate}%`:'—'}
+            sub={`${metrics.frBreached} violação${metrics.frBreached!==1?'ões':''}`}
+            color={slaColor(metrics.frSlaRate)}/>
+          <KpiCard icon="✅"
+            label="SLA Resolução"
+            value={metrics.resSlaRate!==null?`${metrics.resSlaRate}%`:'—'}
+            sub={`${metrics.resBreached} violação${metrics.resBreached!==1?'ões':''}`}
+            color={slaColor(metrics.resSlaRate)}/>
+          <KpiCard icon="🚨"
+            label="Fora do SLA (abertos)"
+            value={metrics.outOfSla.length}
+            bg={metrics.outOfSla.length>0?'bg-orange-50':'bg-white'}
+            color={metrics.outOfSla.length>0?'text-orange-600':'text-slate-900'}
+            border={metrics.outOfSla.length>0?'border-orange-200':'border-slate-200'}/>
+        </div>
+
+        {/* Volume trend */}
+        <div className="bg-white rounded-2xl border border-slate-200 p-5">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-semibold text-slate-700">Tendência de Volume</h3>
+            <span className="text-xs text-slate-400">Barra amarela = hoje</span>
+          </div>
+          <TrendChart byDay={metrics.byDay}/>
+        </div>
+
+        {/* Breakdowns row */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {/* Por Categoria */}
+          <div className="bg-white rounded-2xl border border-slate-200 p-5">
+            <h3 className="text-sm font-semibold text-slate-700 mb-4">Por Categoria</h3>
+            <div className="space-y-2.5">
+              {Object.entries(metrics.byCat).sort((a,b)=>b[1]-a[1]).map(([k,v])=>(
+                <HBar key={k} label={k} count={v} max={Math.max(...Object.values(metrics.byCat))} color="bg-indigo-500"/>
+              ))}
+              {!Object.keys(metrics.byCat).length&&<p className="text-xs text-slate-400">Sem dados</p>}
+            </div>
+          </div>
+
+          {/* Por Processo Seletivo */}
+          <div className="bg-white rounded-2xl border border-slate-200 p-5">
+            <h3 className="text-sm font-semibold text-slate-700 mb-4">Por Processo Seletivo</h3>
+            <div className="space-y-2.5">
+              {Object.entries(metrics.byPS).sort((a,b)=>b[1]-a[1]).slice(0,8).map(([k,v])=>(
+                <HBar key={k} label={k} count={v} max={Math.max(...Object.values(metrics.byPS))} color="bg-sky-500"/>
+              ))}
+              {!Object.keys(metrics.byPS).length&&<p className="text-xs text-slate-400">Sem dados de processo seletivo</p>}
+            </div>
+          </div>
+
+          {/* Por Tipo de Teste */}
+          <div className="bg-white rounded-2xl border border-slate-200 p-5">
+            <h3 className="text-sm font-semibold text-slate-700 mb-4">Problemas por Teste</h3>
+            <div className="space-y-2.5">
+              {Object.entries(metrics.byTeste).sort((a,b)=>b[1]-a[1]).map(([k,v])=>(
+                <HBar key={k} label={k} count={v} max={Math.max(...Object.values(metrics.byTeste),1)} color="bg-rose-400"/>
+              ))}
+              {!Object.keys(metrics.byTeste).length&&(
+                <p className="text-xs text-slate-400">Nenhum problema de teste no período ✓</p>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Subcat breakdown (detalhamento) */}
+        {Object.keys(metrics.byDet).length>0&&(
+          <div className="bg-white rounded-2xl border border-slate-200 p-5">
+            <h3 className="text-sm font-semibold text-slate-700 mb-4">Principais Problemas (Detalhamento)</h3>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {Object.entries(metrics.byDet).sort((a,b)=>b[1]-a[1]).slice(0,12).map(([k,v])=>(
+                <HBar key={k} label={k} count={v} max={Math.max(...Object.values(metrics.byDet))} color="bg-violet-400"/>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Tickets fora do SLA */}
+        {metrics.outOfSla.length>0&&(
+          <div className="bg-white rounded-2xl border border-orange-200 p-5">
+            <h3 className="text-sm font-semibold text-orange-700 mb-4">🚨 Tickets Fora do SLA — Ação Necessária</h3>
+            <div className="overflow-x-auto scroll-table">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-left text-slate-500 border-b border-slate-100">
+                    <th className="pb-2 pr-3 font-medium">#</th>
+                    <th className="pb-2 pr-3 font-medium">Assunto</th>
+                    <th className="pb-2 pr-3 font-medium">Status</th>
+                    <th className="pb-2 pr-3 font-medium">Categoria</th>
+                    <th className="pb-2 pr-3 font-medium">Processo Seletivo</th>
+                    <th className="pb-2 pr-3 font-medium">Criado em</th>
+                    <th className="pb-2 font-medium">SLA violado</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-50">
+                  {metrics.outOfSla.map(t=>(
+                    <tr key={t.id} className="hover:bg-orange-50 transition-colors">
+                      <td className="py-2 pr-3">
+                        <a href={`https://${FD_DOMAIN}.freshdesk.com/a/tickets/${t.id}`} target="_blank" rel="noopener noreferrer"
+                          className="text-indigo-600 font-medium hover:underline">#{t.id}</a>
+                      </td>
+                      <td className="py-2 pr-3 text-slate-700 max-w-xs truncate" title={t.subject}>{t.subject}</td>
+                      <td className="py-2 pr-3">
+                        <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${FD_STATUS_COLOR[t.status]||'bg-slate-100 text-slate-600'}`}>
+                          {FD_STATUS_LABEL[t.status]||t.status}
+                        </span>
+                      </td>
+                      <td className="py-2 pr-3 text-slate-500 max-w-36 truncate" title={t.custom_fields?.cf_assunto_do_ticket}>
+                        {t.custom_fields?.cf_assunto_do_ticket||'—'}
+                      </td>
+                      <td className="py-2 pr-3 text-slate-500 max-w-36 truncate" title={t.custom_fields?.cf_processo_seletivo}>
+                        {t.custom_fields?.cf_processo_seletivo||'—'}
+                      </td>
+                      <td className="py-2 pr-3 text-slate-400 whitespace-nowrap">
+                        {new Date(t.created_at).toLocaleDateString('pt-BR')}
+                      </td>
+                      <td className="py-2">
+                        <span className="text-red-600 font-medium">
+                          {t.fr_escalated&&t.is_escalated?'1ª Resp + Resolução':t.fr_escalated?'1ª Resposta':'Resolução'}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* Agent productivity */}
+        {Object.keys(metrics.byAgent).length>0&&(
+          <div className="bg-white rounded-2xl border border-slate-200 p-5">
+            <h3 className="text-sm font-semibold text-slate-700 mb-4">Produtividade por Agente</h3>
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-left text-slate-500 border-b border-slate-100">
+                  <th className="pb-2 pr-4 font-medium">Agente</th>
+                  <th className="pb-2 pr-4 font-medium text-center">Total</th>
+                  <th className="pb-2 pr-4 font-medium text-center">Resolvidos</th>
+                  <th className="pb-2 pr-4 font-medium text-center">Em aberto</th>
+                  <th className="pb-2 pr-4 font-medium text-center">Taxa resolução</th>
+                  <th className="pb-2 font-medium text-center">Violações SLA</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-50">
+                {Object.values(metrics.byAgent).sort((a,b)=>b.total-a.total).map(a=>{
+                  const resolRate = a.total>0?Math.round((a.resolved/a.total)*100):0;
+                  return (
+                    <tr key={a.id} className="hover:bg-slate-50">
+                      <td className="py-2.5 pr-4 text-slate-700 font-medium">
+                        {agents[a.id]||(a.id===0?'Não atribuído':`Agente #${a.id}`)}
+                      </td>
+                      <td className="py-2.5 pr-4 text-center text-slate-600 font-medium">{a.total}</td>
+                      <td className="py-2.5 pr-4 text-center text-green-600 font-medium">{a.resolved}</td>
+                      <td className="py-2.5 pr-4 text-center text-slate-400">{a.total-a.resolved}</td>
+                      <td className="py-2.5 pr-4 text-center">
+                        <span className={resolRate>=70?'text-green-600 font-medium':resolRate>=40?'text-amber-600':'text-red-500'}>
+                          {resolRate}%
+                        </span>
+                      </td>
+                      <td className="py-2.5 text-center">
+                        {a.escalated>0
+                          ?<span className="text-red-500 font-bold">{a.escalated}</span>
+                          :<span className="text-green-500">✓</span>}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* Footer note */}
+        <p className="text-xs text-slate-400 text-center pb-4">
+          {tickets.length} tickets carregados ({periodLabel}) · Backlog total: {backlog??'…'} abertos/pendentes · Freshdesk ciadetalentos
+        </p>
+      </>}
     </div>
   );
 }
