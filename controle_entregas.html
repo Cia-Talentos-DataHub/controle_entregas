@@ -1128,16 +1128,20 @@ async function _getOrCreateDistItem(token, siteUrl) {
   throw new Error(`Erro ao criar dist item: ${postRes.status} ${t.slice(0,150)}`);
 }
 async function fetchDistFile(token, siteUrl) {
-  try {
-    const item = await _findDistItem(token, siteUrl);
-    if (!item) return {distributions:{},localProjects:[]};
-    const base = _spListBase(siteUrl, SP_LIST_NAME);
-    const attRes = await fetch(`${base}/items(${item.Id})/AttachmentFiles('${DIST_ATT_NAME}')/$value`, {
-      headers:{'Authorization':`Bearer ${token}`,'Accept':'text/plain'},
-    });
-    if (!attRes.ok) return {distributions:{},localProjects:[]};
-    return JSON.parse(await attRes.text());
-  } catch { return {distributions:{},localProjects:[]}; }
+  // "Arquivo não existe ainda" é diferente de "erro de rede/auth".
+  // Somente retorna objeto vazio quando é 1º uso (sem item ou 404 no attachment).
+  // Para qualquer outro erro, lança — assim loadAll pode bloquear saves e avisar o usuário.
+  const item = await _findDistItem(token, siteUrl);
+  if (!item) return {distributions:{},localProjects:[]};  // 1º uso, sem dados ainda
+  const base = _spListBase(siteUrl, SP_LIST_NAME);
+  const attRes = await fetch(`${base}/items(${item.Id})/AttachmentFiles('${DIST_ATT_NAME}')/$value`, {
+    headers:{'Authorization':`Bearer ${token}`,'Accept':'text/plain'},
+  });
+  if (attRes.status === 404) return {distributions:{},localProjects:[]};  // attachment ainda não criado
+  if (!attRes.ok) throw new Error(`Erro ao ler dist.json do SharePoint: ${attRes.status}`);
+  const text = await attRes.text();
+  try { return JSON.parse(text); }
+  catch { throw new Error('dist.json está corrompido (JSON inválido). Contate o suporte antes de continuar.'); }
 }
 async function saveDistFile(token, siteUrl, data) {
   const base   = _spListBase(siteUrl, SP_LIST_NAME);
@@ -1413,6 +1417,18 @@ function App() {
   const distDataRef = useRef(distData);
   distDataRef.current = distData; // atualiza a cada render, antes de qualquer callback
 
+  // ── saveLockRef: impede saves concorrentes ao dist.json ──────────────────────
+  // Dois saves ao mesmo arquivo em paralelo → o último sobrescreve o primeiro.
+  // Qualquer função que escreva no dist.json deve adquirir este lock antes de
+  // iniciar e liberá-lo no finally.
+  const saveLockRef = useRef(false);
+
+  // ── distFetchBlockedRef: bloqueia saves quando fetchDistFile falhou ───────────
+  // Se o dist.json não pôde ser lido do SP (rede, auth), qualquer save subsequente
+  // sobrescreveria todos os dados com um objeto vazio. Este flag bloqueia saves
+  // até que um loadAll bem-sucedido confirme o estado real do SP.
+  const distFetchBlockedRef = useRef(false);
+
   // Only persist config locally when it wasn't baked into APP_CONFIG
   useEffect(()=>{ if (!APP_CONFIG.clientId) saveLocal({clientId,tenantId}); },[clientId,tenantId]);
 
@@ -1481,23 +1497,39 @@ function App() {
       // antes de fetchSPList (evita race condition e campos inexistentes no $select)
       await fetchHeadPctCols(token, SP_SITE_URL, SP_LIST_NAME);
       const choices = await fetchSPChoices(token, SP_SITE_URL, SP_LIST_NAME);
-      const [spItems, dist, team, hteam, kateam] = await Promise.all([
+      // fetchDistFile lança em erros reais (rede/auth/JSON corrompido).
+      // Separamos do Promise.all para tratar sem abortar o carregamento dos projetos SP.
+      let dist; let distError = null;
+      try {
+        dist = await fetchDistFile(token, SP_SITE_URL);
+        distFetchBlockedRef.current = false; // carregou com sucesso — desbloqueia saves
+      } catch(distE) {
+        distError = distE.message;
+        distFetchBlockedRef.current = true;  // bloqueia saves até próximo loadAll bem-sucedido
+        dist = null;  // não sobrescreve o estado atual
+      }
+      const [spItems, team, hteam, kateam] = await Promise.all([
         fetchSPList(token, SP_SITE_URL, SP_LIST_NAME),
-        fetchDistFile(token, SP_SITE_URL),
         fetchTeamMembers(token, SP_SITE_URL),
         fetchHeadMembers(token, SP_SITE_URL),
         fetchKAMembers(token, SP_SITE_URL),
       ]);
       setSpChoices(choices||{});
-      setDistData(dist);
+      if (dist !== null) {
+        // Só atualiza estado de distribuições quando o fetch foi bem-sucedido
+        setDistData(dist);
+        setExtraAllocations(dist.extraAllocations||[]);
+        setVacations(dist.vacations||[]);
+      }
       setTeamMembers(team.members);
       setTeamDescriptivos(team.descriptivos||{});
       setHeadMembers(hteam.members);
       setHeadDescriptivos(hteam.descriptivos||{});
       setKaMembers(kateam);
-      setProjects(mergeProjectsWithDist(spItems, dist));
-      setExtraAllocations(dist.extraAllocations||[]);  // shared via dist.json in SP
-      setVacations(dist.vacations||[]);               // shared via dist.json in SP
+      setProjects(mergeProjectsWithDist(spItems, dist || distDataRef.current));
+      if (distError) {
+        setError(`⚠️ Alocações/férias não carregadas: ${distError}\nSalvamentos bloqueados até recarregar com sucesso.`);
+      }
     } catch(e) {
       // Diagnostic: try to list all visible lists to find correct name
       let diagMsg = 'Erro ao carregar dados: '+e.message;
@@ -1521,6 +1553,9 @@ function App() {
   // Usa distDataRef.current (sempre atualizado) para evitar sobrescrever dados
   // salvos por outro callback antes de um re-render completar.
   const saveExtraAllocs = useCallback(async(newExtras)=>{
+    if (distFetchBlockedRef.current) { setSaveMsg({type:'error', text:'❌ Dados não carregados do SP. Recarregue antes de salvar.'}); setTimeout(()=>setSaveMsg(null),7000); throw new Error('Dist fetch blocked'); }
+    if (saveLockRef.current) { setSaveMsg({type:'warn', text:'⏳ Aguarde o salvamento anterior terminar.'}); setTimeout(()=>setSaveMsg(null),4000); throw new Error('Save in progress'); }
+    saveLockRef.current = true;
     const prevDist = distDataRef.current;
     const newDist = {...prevDist, extraAllocations: newExtras};
     distDataRef.current = newDist;
@@ -1536,16 +1571,19 @@ function App() {
       setSaveMsg({type:'error', text:`❌ Erro ao salvar alocações: ${e.message}. Tente novamente.`});
       throw e;
     } finally {
+      saveLockRef.current = false;
       setSaving(false);
       setTimeout(()=>setSaveMsg(null), 7000);
     }
   },[authState.token]);
 
   const saveVacations = useCallback(async(newVacs)=>{
-    // Guarda estado anterior para rollback em caso de falha
+    if (distFetchBlockedRef.current) { setSaveMsg({type:'error', text:'❌ Dados não carregados do SP. Recarregue antes de salvar.'}); setTimeout(()=>setSaveMsg(null),7000); throw new Error('Dist fetch blocked'); }
+    if (saveLockRef.current) { setSaveMsg({type:'warn', text:'⏳ Aguarde o salvamento anterior terminar.'}); setTimeout(()=>setSaveMsg(null),4000); throw new Error('Save in progress'); }
+    saveLockRef.current = true;
     const prevDist = distDataRef.current;
     const newDist = {...prevDist, vacations: newVacs};
-    distDataRef.current = newDist;  // atualiza ref imediatamente (safe para saves concorrentes)
+    distDataRef.current = newDist;
     setSaving(true); setSaveMsg(null);
     try {
       const tok = await getWriteToken();
@@ -1555,20 +1593,23 @@ function App() {
       setDistData(newDist);
       setSaveMsg({type:'success', text:'✅ Férias salvas no SharePoint.'});
     } catch(e) {
-      // Rollback da ref para não contaminar saves subsequentes com dado não gravado
       distDataRef.current = prevDist;
       setSaveMsg({type:'error', text:`❌ Erro ao salvar férias: ${e.message}. Tente novamente.`});
-      throw e;  // re-throw: permite que o modal saiba que falhou e não feche/confirme
+      throw e;  // re-throw: modal permanece aberto e exibe erro
     } finally {
+      saveLockRef.current = false;
       setSaving(false);
       setTimeout(()=>setSaveMsg(null), 7000);
     }
   },[authState.token]);
 
   // ── Analytics event logger ────────────────────────────────────────────────
-  // Grava no dist.json (fire-and-forget). Cada tipo de evento é logado uma vez por sessão.
+  // Grava entrada de analytics no dist.json. Fire-and-forget — nunca bloqueia o fluxo.
+  // NÃO adquire o saveLock: é chamado sempre APÓS o save principal (que já liberou o lock),
+  // garantindo que não há save concorrente com dados reais nesse momento.
   const logEvent = useCallback(async(action, detail='')=>{
     if (!authState.isAuth || !authState.token) return;
+    if (distFetchBlockedRef.current) return; // não gravar analytics se dist não foi carregado
     const key = detail ? `${action}:${detail}` : action;
     if (sessionLoggedRef.current.has(key)) return; // já logado nesta sessão
     sessionLoggedRef.current.add(key);
@@ -1577,16 +1618,17 @@ function App() {
         email:  authState.email||'',
         name:   authState.user||'',
         action,
-        detail, // módulo acessado, tipo de save, etc.
+        detail,
         ts:     new Date().toISOString(),
       };
+      const tok = await getWriteToken(); // renova token para evitar 401 no fire-and-forget
       const cur  = distDataRef.current;
       const logs = [...(cur.analytics||[]), entry].slice(-ANALYTICS_MAX);
       const newDist = {...cur, analytics: logs};
       distDataRef.current = newDist;
       setDistData(newDist);
-      await saveDistFile(authState.token, SP_SITE_URL, newDist);
-    } catch { /* falha silenciosa — não interrompe o fluxo */ }
+      await saveDistFile(tok, SP_SITE_URL, newDist);
+    } catch { /* falha silenciosa — analytics não são críticos */ }
   },[authState]);
 
   const signInAndFetch = useCallback(async()=>{
@@ -1644,10 +1686,22 @@ function App() {
       setTimeout(()=>setSaveMsg(null),7000);
       return;
     }
+    if (distFetchBlockedRef.current) {
+      setSaveMsg({type:'error', text:'❌ Dados não carregados do SP. Recarregue antes de salvar.'});
+      setTimeout(()=>setSaveMsg(null),7000);
+      return;
+    }
+    if (saveLockRef.current) {
+      setSaveMsg({type:'warn', text:'⏳ Aguarde o salvamento anterior terminar.'});
+      setTimeout(()=>setSaveMsg(null),4000);
+      return;
+    }
+    saveLockRef.current = true;
+    const prevDist = distDataRef.current;  // salva para rollback
 
     setSaving(true); setSaveMsg(null);
+    let savedSuccessfully = false;
     try {
-      // Renova token antes de qualquer escrita (evita 401 por token expirado após >1h)
       const tok = await getWriteToken();
 
       // Usa distDataRef.current para preservar férias/extras salvos anteriormente
@@ -1663,13 +1717,11 @@ function App() {
         const payload = buildSPPayload(project);
         if (project.spId) {
           await patchSPItem(tok, SP_SITE_URL, SP_LIST_NAME, project.spId, payload);
-          setProjects(prev=>prev.map(p=>p.id===project.id ? {...project} : p));
         } else {
           const maxIndice = projectsRef.current
             .filter(p=>p.source==='sharepoint')
             .map(p=>Number(p.indice)||0)
             .reduce((a,b)=>Math.max(a,b), 0);
-          // Passo 1: busca o indice máximo real direto do SP (evita stale state)
           let freshMaxIndice = maxIndice;
           try {
             const base = _spListBase(SP_SITE_URL, SP_LIST_NAME);
@@ -1679,63 +1731,87 @@ function App() {
             const topItem = (idxRes.value||[])[0];
             if (topItem) freshMaxIndice = Math.max(freshMaxIndice, Number(topItem.indice)||0);
           } catch {}
-          // CREATE com Title único via timestamp — evita SPDuplicateValuesFoundException
           const tempTitle = `__new_${Date.now()}__`;
           const created = await createSPItem(tok, SP_SITE_URL, SP_LIST_NAME, {
             Title: tempTitle,
             indice: freshMaxIndice + 1,
           });
           const newId = created.Id||created.id;
-          // Passo 2: PATCH com todos os dados reais (title, client, status, fases, analistas…)
-          const patchPayload = { ...payload };  // já inclui Nome_Programa, Title, Cliente, Status_Programa
+          const patchPayload = { ...payload };
           await patchSPItem(tok, SP_SITE_URL, SP_LIST_NAME, newId, patchPayload);
-          const saved   = {...project, spId:newId, id:String(newId), source:'sharepoint'};
-          setProjects(prev=>[...prev, saved]);
-          project = saved; // update reference for dist save below
+          project = {...project, spId:newId, id:String(newId), source:'sharepoint'};
         }
-        // Save per-analyst AND per-head distributions for this SP project
+        // Save distributions
         const dist={};
         PHASES.forEach(ph=>{ dist[ph.key]=project.phases[ph.key]?.pcts||[]; });
         newDist.distributions[String(project.spId)] = dist;
         const headDist={};
         PHASES.forEach(ph=>{ headDist[ph.key]=project.headPhases?.[ph.key]?.pcts||[]; });
         newDist.headDistributions[String(project.spId)] = headDist;
-        setSaveMsg({type:'success', text:'✓ Salvo no SharePoint.'});
-        logEvent('save','projeto');
 
       } else {
-        // ── Local / tool-only project → stored entirely in dist file ──
+        // ── Local project → stored entirely in dist file ──
         const finalId = project.id?.startsWith('proj_')||project.id?.startsWith('local_')
           ? project.id : 'local_'+Date.now();
         const localProj = {...project, id:finalId, spId:null, source:'local'};
         const idx = newDist.localProjects.findIndex(p=>p.id===localProj.id);
-        if (idx>=0) {
-          newDist.localProjects[idx] = localProj;
-          setProjects(prev=>prev.map(p=>p.id===localProj.id ? localProj : p));
+        if (idx>=0) newDist.localProjects[idx] = localProj;
+        else        newDist.localProjects.push(localProj);
+        project = localProj;
+      }
+
+      // Grava dist.json ANTES de atualizar o estado React
+      distDataRef.current = newDist;
+      await saveDistFile(tok, SP_SITE_URL, newDist);
+
+      // Só atualiza UI após confirmação do SP
+      setDistData(newDist);
+      if (project.source==='sharepoint') {
+        if (project.spId && projects.find(p=>p.id===project.id)) {
+          setProjects(prev=>prev.map(p=>p.id===project.id ? {...project} : p));
         } else {
-          newDist.localProjects.push(localProj);
-          setProjects(prev=>[...prev, localProj]);
+          setProjects(prev=>[...prev, project]);
+        }
+        setSaveMsg({type:'success', text:'✓ Salvo no SharePoint.'});
+      } else {
+        if (projects.find(p=>p.id===project.id)) {
+          setProjects(prev=>prev.map(p=>p.id===project.id ? {...project} : p));
+        } else {
+          setProjects(prev=>[...prev, project]);
         }
         setSaveMsg({type:'success', text:'✓ Projeto salvo na ferramenta (visível para todos).'});
       }
-
-      // Write updated dist file to SharePoint
-      distDataRef.current = newDist;
-      await saveDistFile(tok, SP_SITE_URL, newDist);
-      setDistData(newDist);
+      savedSuccessfully = true;
+      setShowEdit(null);  // fecha modal apenas em sucesso
+      // logEvent APÓS o save principal — evita race condition com saveDistFile concorrente
+      logEvent('save','projeto');
 
     } catch(e) {
+      distDataRef.current = prevDist;  // rollback ref em caso de falha
       setSaveMsg({type:'error', text:'Erro ao salvar: '+e.message});
     } finally {
+      saveLockRef.current = false;
       setSaving(false);
-      setShowEdit(null);
-      setTimeout(()=>setSaveMsg(null),5000);
+      if (!savedSuccessfully) setTimeout(()=>setSaveMsg(null),8000);
+      else setTimeout(()=>setSaveMsg(null),5000);
     }
-  },[authState]);  // distData removido — lido via distDataRef.current
+  },[authState, projects]);  // projects needed for setProjects logic after saveDistFile
 
   // ── Save Pulse (full-field PATCH from PulseView) ──
   const savePulse = useCallback(async(project)=>{
     if (!authState.isAuth || !project.spId) return;
+    if (distFetchBlockedRef.current) {
+      setSaveMsg({type:'error', text:'❌ Dados não carregados do SP. Recarregue antes de salvar.'});
+      setTimeout(()=>setSaveMsg(null),7000);
+      return;
+    }
+    if (saveLockRef.current) {
+      setSaveMsg({type:'warn', text:'⏳ Aguarde o salvamento anterior terminar.'});
+      setTimeout(()=>setSaveMsg(null),4000);
+      return;
+    }
+    saveLockRef.current = true;
+    const prevDist = distDataRef.current;
     setSaving(true); setSaveMsg(null);
     try {
       const payload = {
@@ -1832,6 +1908,7 @@ function App() {
       newDist.headDistributions[String(project.spId)] = headDistEntry;
       distDataRef.current = newDist;
       await saveDistFile(tok, SP_SITE_URL, newDist);
+      // Só atualiza UI após confirmação do SP
       setDistData(newDist);
       setProjects(prev=>prev.map(p=>p.id===project.id ? {...project} : p));
       if (_spUnresolved.length>0) {
@@ -1840,14 +1917,17 @@ function App() {
       } else {
         setSaveMsg({type:'success', text:'✓ Salvo no SharePoint.'});
       }
+      // logEvent APÓS o save principal — evita race condition com saveDistFile concorrente
       logEvent('save','pulse');
     } catch(e) {
+      distDataRef.current = prevDist;  // rollback ref em falha
       setSaveMsg({type:'error', text:'Erro ao salvar: '+e.message});
     } finally {
+      saveLockRef.current = false;
       setSaving(false);
       setTimeout(()=>setSaveMsg(null), 8000);
     }
-  },[authState, extraAllocations, vacations]);  // safeguard: preserva férias/extras do estado React
+  },[authState, extraAllocations, vacations]);  // extraAllocations/vacations como fallback de safeguard
 
   // ── Suggestions ──
   function getSuggestions(proj, phKey) {
