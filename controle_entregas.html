@@ -1525,7 +1525,16 @@ function App() {
     distDataRef.current = newDist;          // atualiza ref imediatamente
     setExtraAllocations(newExtras);
     setDistData(newDist);
-    await saveDistFile(authState.token, SP_SITE_URL, newDist);
+    setSaving(true); setSaveMsg(null);
+    try {
+      await saveDistFile(authState.token, SP_SITE_URL, newDist);
+      setSaveMsg({type:'success', text:'✅ Alocações extras salvas no SharePoint.'});
+    } catch(e) {
+      setSaveMsg({type:'error', text:`❌ Erro ao salvar alocações: ${e.message}. Recarregue e tente novamente.`});
+    } finally {
+      setSaving(false);
+      setTimeout(()=>setSaveMsg(null), 7000);
+    }
   },[authState.token]);
 
   const saveVacations = useCallback(async(newVacs)=>{
@@ -1533,7 +1542,19 @@ function App() {
     distDataRef.current = newDist;          // atualiza ref imediatamente
     setVacations(newVacs);
     setDistData(newDist);
-    await saveDistFile(authState.token, SP_SITE_URL, newDist);
+    setSaving(true); setSaveMsg(null);
+    try {
+      await saveDistFile(authState.token, SP_SITE_URL, newDist);
+      setSaveMsg({type:'success', text:'✅ Férias salvas no SharePoint.'});
+    } catch(e) {
+      // Reverte estado local para não exibir dado que não foi salvo
+      const prev = {...distDataRef.current, vacations: distDataRef.current.vacations||[]};
+      // Não reverte a lista local (UX) mas avisa claramente
+      setSaveMsg({type:'error', text:`❌ Erro ao salvar férias: ${e.message}. Recarregue e tente novamente.`});
+    } finally {
+      setSaving(false);
+      setTimeout(()=>setSaveMsg(null), 7000);
+    }
   },[authState.token]);
 
   // ── Analytics event logger ────────────────────────────────────────────────
