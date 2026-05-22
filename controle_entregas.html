@@ -1527,7 +1527,8 @@ function App() {
     setDistData(newDist);
     setSaving(true); setSaveMsg(null);
     try {
-      await saveDistFile(authState.token, SP_SITE_URL, newDist);
+      const tok = await getWriteToken();
+      await saveDistFile(tok, SP_SITE_URL, newDist);
       setSaveMsg({type:'success', text:'✅ Alocações extras salvas no SharePoint.'});
     } catch(e) {
       setSaveMsg({type:'error', text:`❌ Erro ao salvar alocações: ${e.message}. Recarregue e tente novamente.`});
@@ -1544,7 +1545,8 @@ function App() {
     setDistData(newDist);
     setSaving(true); setSaveMsg(null);
     try {
-      await saveDistFile(authState.token, SP_SITE_URL, newDist);
+      const tok = await getWriteToken();
+      await saveDistFile(tok, SP_SITE_URL, newDist);
       setSaveMsg({type:'success', text:'✅ Férias salvas no SharePoint.'});
     } catch(e) {
       // Reverte estado local para não exibir dado que não foi salvo
@@ -1604,6 +1606,22 @@ function App() {
     setDistData({distributions:{},localProjects:[]});
   },[clientId,tenantId]);
 
+  // ── Token refresh helper ──
+  // Renova o token silenciosamente antes de qualquer escrita no SP.
+  // O MSAL usa o cache se o token ainda for válido (cheap) ou faz refresh automático se expirou.
+  // Isso evita o erro 401 que ocorre quando o usuário fica >1h sem recarregar o app.
+  const getWriteToken = useCallback(async()=>{
+    try {
+      const {token} = await acquireToken(clientId, tenantId);
+      // Atualiza authState se o token mudou (evita stale para próximas operações)
+      if (token !== authState.token) setAuthState(prev=>({...prev, token}));
+      return token;
+    } catch {
+      // Se o silent refresh falhar, usa o token atual e deixa o erro de SP aparecer normalmente
+      return authState.token;
+    }
+  },[clientId, tenantId, authState.token]);
+
   // ── Save Project ──
   // SP projects:    PATCH/POST List_Pulse  +  update distributions in dist file
   // Local projects: save full project obj in dist file (shared via SP, no new SP columns)
@@ -1623,6 +1641,9 @@ function App() {
 
     setSaving(true); setSaveMsg(null);
     try {
+      // Renova token antes de qualquer escrita (evita 401 por token expirado após >1h)
+      const tok = await getWriteToken();
+
       // Usa distDataRef.current para preservar férias/extras salvos anteriormente
       const newDist = {
         ...distDataRef.current,
@@ -1635,7 +1656,7 @@ function App() {
         // ── SP project ──
         const payload = buildSPPayload(project);
         if (project.spId) {
-          await patchSPItem(authState.token, SP_SITE_URL, SP_LIST_NAME, project.spId, payload);
+          await patchSPItem(tok, SP_SITE_URL, SP_LIST_NAME, project.spId, payload);
           setProjects(prev=>prev.map(p=>p.id===project.id ? {...project} : p));
         } else {
           const maxIndice = projectsRef.current
@@ -1646,7 +1667,7 @@ function App() {
           let freshMaxIndice = maxIndice;
           try {
             const base = _spListBase(SP_SITE_URL, SP_LIST_NAME);
-            const idxRes = await spFetch(authState.token,
+            const idxRes = await spFetch(tok,
               `${base}/items?$select=indice&$orderby=indice desc&$top=1&$filter=Title ne '${DIST_MARKER}'`
             );
             const topItem = (idxRes.value||[])[0];
@@ -1654,14 +1675,14 @@ function App() {
           } catch {}
           // CREATE com Title único via timestamp — evita SPDuplicateValuesFoundException
           const tempTitle = `__new_${Date.now()}__`;
-          const created = await createSPItem(authState.token, SP_SITE_URL, SP_LIST_NAME, {
+          const created = await createSPItem(tok, SP_SITE_URL, SP_LIST_NAME, {
             Title: tempTitle,
             indice: freshMaxIndice + 1,
           });
           const newId = created.Id||created.id;
           // Passo 2: PATCH com todos os dados reais (title, client, status, fases, analistas…)
           const patchPayload = { ...payload };  // já inclui Nome_Programa, Title, Cliente, Status_Programa
-          await patchSPItem(authState.token, SP_SITE_URL, SP_LIST_NAME, newId, patchPayload);
+          await patchSPItem(tok, SP_SITE_URL, SP_LIST_NAME, newId, patchPayload);
           const saved   = {...project, spId:newId, id:String(newId), source:'sharepoint'};
           setProjects(prev=>[...prev, saved]);
           project = saved; // update reference for dist save below
@@ -1694,7 +1715,7 @@ function App() {
 
       // Write updated dist file to SharePoint
       distDataRef.current = newDist;
-      await saveDistFile(authState.token, SP_SITE_URL, newDist);
+      await saveDistFile(tok, SP_SITE_URL, newDist);
       setDistData(newDist);
 
     } catch(e) {
@@ -1778,8 +1799,10 @@ function App() {
           if (headCol) payload[headCol]     = pctToSP(headTotal);
         }
       });
+      // Renova token antes de qualquer escrita (evita 401 por token expirado após >1h)
+      const tok = await getWriteToken();
       console.log('🔵 savePulse payload:', JSON.stringify(payload, null, 2));
-      await patchSPItem(authState.token, SP_SITE_URL, SP_LIST_NAME, project.spId, payload);
+      await patchSPItem(tok, SP_SITE_URL, SP_LIST_NAME, project.spId, payload);
       // Usa distDataRef.current para garantir que férias/extras salvos antes não sejam perdidos.
       // SAFEGUARD: preserva vacations e extraAllocations do estado React (fonte de verdade)
       // para evitar sobrescrita acidental caso distDataRef ainda seja o estado inicial vazio.
@@ -1802,7 +1825,7 @@ function App() {
       PHASES.forEach(ph=>{ headDistEntry[ph.key]=project.headPhases?.[ph.key]?.pcts||[]; });
       newDist.headDistributions[String(project.spId)] = headDistEntry;
       distDataRef.current = newDist;
-      await saveDistFile(authState.token, SP_SITE_URL, newDist);
+      await saveDistFile(tok, SP_SITE_URL, newDist);
       setDistData(newDist);
       setProjects(prev=>prev.map(p=>p.id===project.id ? {...project} : p));
       if (_spUnresolved.length>0) {
