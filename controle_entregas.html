@@ -7291,27 +7291,59 @@ function CxView() {
   }
 
   function TrendChart({byDay}) {
-    const n   = Math.min(parseInt(period)||7,14);
+    const n   = Math.min(parseInt(period)||7, 30);
     const now = new Date();
+    const todayKey = now.toISOString().slice(0,10);
+    const DAYS_PT  = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
     const slots = [];
-    for (let i=n-1;i>=0;i--) {
-      const d=new Date(now); d.setDate(d.getDate()-i);
-      const key=d.toISOString().slice(0,10);
-      slots.push({key,count:byDay[key]||0,label:`${d.getDate()}/${d.getMonth()+1}`});
+    for (let i=n-1; i>=0; i--) {
+      const d = new Date(now); d.setDate(d.getDate()-i);
+      const key   = d.toISOString().slice(0,10);
+      const day   = DAYS_PT[d.getDay()];
+      const date  = `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}`;
+      // Para períodos longos (>7 dias) só mostra rótulo a cada 3 dias para não aglomerar
+      const showLabel = n<=7 || i===n-1 || i===0 || i%(n<=14?2:4)===0;
+      slots.push({key, count:byDay[key]||0, day, date, showLabel});
     }
-    const maxV=Math.max(...slots.map(s=>s.count),1);
-    const W=460,H=90,bW=Math.floor((W/slots.length)-2);
+    const maxV = Math.max(...slots.map(s=>s.count), 1);
+    const W = 560, H = 160;
+    const BOTTOM = 36;   // espaço para rótulos
+    const TOP    = 14;   // espaço para valores
+    const chartH = H - BOTTOM - TOP;
+    const slotW  = W / slots.length;
+    const bW     = Math.max(Math.floor(slotW * 0.65), 4);
     return (
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{height:'90px'}}>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{height:'160px'}}>
+        {/* grid lines */}
+        {[0.25,0.5,0.75,1].map(r=>{
+          const y = TOP + chartH*(1-r);
+          return <line key={r} x1={0} y1={y} x2={W} y2={y} stroke="#f1f5f9" strokeWidth="1"/>;
+        })}
         {slots.map((s,i)=>{
-          const bH=Math.max(Math.round((s.count/maxV)*(H-22)),2);
-          const x=i*(W/slots.length)+1, y=H-bH-16;
-          const isToday=s.key===new Date().toISOString().slice(0,10);
+          const bH  = Math.max(Math.round((s.count/maxV)*chartH), s.count>0?3:0);
+          const cx  = i*slotW + slotW/2;
+          const barX = cx - bW/2;
+          const barY = TOP + chartH - bH;
+          const isToday = s.key === todayKey;
           return (
             <g key={s.key}>
-              <rect x={x} y={y} width={bW} height={bH} fill={isToday?'#f59e0b':'#6366f1'} rx="2" opacity="0.85"/>
-              <text x={x+bW/2} y={H-3} textAnchor="middle" fontSize="8" fill="#94a3b8">{s.label}</text>
-              {s.count>0&&<text x={x+bW/2} y={y-3} textAnchor="middle" fontSize="8" fill="#475569">{s.count}</text>}
+              {/* barra */}
+              <rect x={barX} y={barY} width={bW} height={bH}
+                fill={isToday?'#f59e0b':'#6366f1'} rx="3" opacity="0.88"/>
+              {/* valor acima da barra */}
+              {s.count>0&&(
+                <text x={cx} y={barY-4} textAnchor="middle" fontSize="11" fontWeight="600"
+                  fill={isToday?'#b45309':'#4f46e5'}>{s.count}</text>
+              )}
+              {/* rótulo abaixo: dia da semana */}
+              {s.showLabel&&(
+                <text x={cx} y={H-20} textAnchor="middle" fontSize="11" fill={isToday?'#b45309':'#64748b'}
+                  fontWeight={isToday?'700':'400'}>{isToday?'Hoje':s.day}</text>
+              )}
+              {/* data */}
+              {s.showLabel&&(
+                <text x={cx} y={H-7} textAnchor="middle" fontSize="10" fill={isToday?'#d97706':'#94a3b8'}>{s.date}</text>
+              )}
             </g>
           );
         })}
@@ -7588,7 +7620,7 @@ function CxView() {
           <div className="bg-white rounded-2xl border border-slate-200 p-5">
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-sm font-semibold text-slate-700">Tendência de Volume</h3>
-              <span className="text-xs text-slate-400">🟡 hoje</span>
+              <span className="text-xs text-slate-400">🟡 hoje · <span className="capitalize">{viewLabel}</span></span>
             </div>
             <TrendChart byDay={metrics.byDay}/>
           </div>
