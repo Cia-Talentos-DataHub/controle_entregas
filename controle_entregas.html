@@ -7097,10 +7097,13 @@ const FD_PRIORITY_LABEL = {1:'Baixa',2:'Média',3:'Alta',4:'Urgente'};
 const FD_PRIORITY_COLOR = {1:'text-slate-500',2:'text-blue-600',3:'text-orange-600',4:'text-red-600'};
 
 function CxView() {
-  const PERIODS = [{v:'1',l:'Hoje'},{v:'7',l:'7 dias'},{v:'30',l:'30 dias'}];
+  const PERIODS  = [{v:'1',l:'Hoje'},{v:'7',l:'7 dias'},{v:'30',l:'30 dias'}];
   const NO_FILTER = 'all';
+  // 'created' = tickets criados no período | 'updated' = tickets com qualquer movimentação no período
+  const VIEW_MODES = [{v:'created',l:'Criados no período'},{v:'updated',l:'Movimentados no período'}];
 
   const [period,    setPeriod]    = useState('7');
+  const [viewMode,  setViewMode]  = useState('created');
   const [filters,   setFilters]   = useState({status:NO_FILTER,agente:NO_FILTER,categoria:NO_FILTER,ps:NO_FILTER,priority:NO_FILTER});
   const [tickets,   setTickets]   = useState(null);
   const [backlog,   setBacklog]   = useState(null);
@@ -7108,11 +7111,13 @@ function CxView() {
   const [err,       setErr]       = useState(null);
   const [lastUpd,   setLastUpd]   = useState(null);
   const [countdown, setCountdown] = useState(180);
-  const periodRef = useRef(period);
-  const timerRef  = useRef(null);
-  const loadRef   = useRef(null);
+  const periodRef   = useRef(period);
+  const viewModeRef = useRef(viewMode);
+  const timerRef    = useRef(null);
+  const loadRef     = useRef(null);
 
-  useEffect(()=>{ periodRef.current = period; },[period]);
+  useEffect(()=>{ periodRef.current   = period;   },[period]);
+  useEffect(()=>{ viewModeRef.current = viewMode; },[viewMode]);
 
   function agentName(id) { return FD_AGENT_NAMES[id] || (id ? `Agente #${id}` : 'Não atribuído'); }
   function setFilter(key, val) {
@@ -7121,37 +7126,46 @@ function CxView() {
   function clearFilters() { setFilters({status:NO_FILTER,agente:NO_FILTER,categoria:NO_FILTER,ps:NO_FILTER,priority:NO_FILTER}); }
   const hasActiveFilters = Object.values(filters).some(v=>v!==NO_FILTER);
 
-  async function loadData(p) {
+  async function loadData(p, m) {
+    const mode = m || viewModeRef.current || 'created';
     setLoading(true); setErr(null);
     try {
       const days   = parseInt(p)||7;
       const cutoff = new Date();
-      cutoff.setDate(cutoff.getDate()-days);
+      // FIX off-by-one: "Hoje" (days=1) → cutoff = hoje 00:00:00; "7 dias" → 7 dias completos, etc.
+      cutoff.setDate(cutoff.getDate() - (days - 1));
       cutoff.setHours(0,0,0,0);
-      const since  = encodeURIComponent(cutoff.toISOString());
+      const since     = encodeURIComponent(cutoff.toISOString());
+      const orderField = mode === 'updated' ? 'updated_at' : 'created_at';
 
       const [backlogRes, firstPage] = await Promise.all([
         fdFetch('/search/tickets?query='+encodeURIComponent('"status:2 OR status:3"')).catch(()=>({total:0})),
-        fdFetch(`/tickets?per_page=100&page=1&include=stats&updated_since=${since}&order_by=created_at&order_type=desc`),
+        fdFetch(`/tickets?per_page=100&page=1&include=stats&updated_since=${since}&order_by=${orderField}&order_type=desc`),
       ]);
       setBacklog(backlogRes.total??0);
 
       let all = [...firstPage], page = 2;
-      while (page<=20 && all[all.length-1] && new Date(all[all.length-1].created_at)>=cutoff) {
-        const more = await fdFetch(`/tickets?per_page=100&page=${page}&include=stats&updated_since=${since}&order_by=created_at&order_type=desc`);
+      while (page<=20 && all[all.length-1]) {
+        const lastDate = new Date(mode==='updated' ? all[all.length-1].updated_at : all[all.length-1].created_at);
+        if (lastDate < cutoff) break;
+        const more = await fdFetch(`/tickets?per_page=100&page=${page}&include=stats&updated_since=${since}&order_by=${orderField}&order_type=desc`);
         if (!more.length) break;
         all = all.concat(more);
         if (more.length<100) break;
         page++;
       }
-      setTickets(all.filter(t=>new Date(t.created_at)>=cutoff));
+      // Filtra ao período usando o campo correto para a visão
+      const result = mode==='updated'
+        ? all.filter(t=>new Date(t.updated_at)>=cutoff)
+        : all.filter(t=>new Date(t.created_at)>=cutoff);
+      setTickets(result);
       setLastUpd(new Date());
     } catch(e) { setErr(e.message); }
     finally    { setLoading(false); }
   }
-  loadRef.current = loadData;
+  loadRef.current = (p) => loadData(p, viewModeRef.current);
 
-  useEffect(()=>{ loadData(period); },[period]);
+  useEffect(()=>{ loadData(period, viewMode); },[period, viewMode]);
   useEffect(()=>{
     if (timerRef.current) clearInterval(timerRef.current);
     timerRef.current = setInterval(()=>{
@@ -7193,8 +7207,10 @@ function CxView() {
     const days  = parseInt(period)||7;
     const total = list.length;
     const todayStart = new Date(); todayStart.setHours(0,0,0,0);
-    const todayCount = list.filter(t=>new Date(t.created_at)>=todayStart).length;
-    const last24h    = list.filter(t=>new Date(t.created_at)>=new Date(now-86400000)).length;
+    // usa o campo de data correto conforme a visão ativa
+    const dateOf = t => new Date(viewMode==='updated' ? t.updated_at : t.created_at);
+    const todayCount = list.filter(t=>dateOf(t)>=todayStart).length;
+    const last24h    = list.filter(t=>dateOf(t)>=new Date(now-86400000)).length;
     const avgDaily   = days>0?total/days:total;
     const isSpike    = last24h>Math.max(avgDaily*2,10)&&last24h>=5;
 
@@ -7238,13 +7254,15 @@ function CxView() {
       if(isOpen(t)&&!t.stats?.first_responded_at) byAgent[aid].semResp++;
       byStatus[t.status]=(byStatus[t.status]||0)+1;
       byPriority[t.priority]=(byPriority[t.priority]||0)+1;
-      const dd=t.created_at.slice(0,10); byDay[dd]=(byDay[dd]||0)+1;
+      // byDay usa o campo correto conforme a visão (created_at ou updated_at)
+      const dd=(viewMode==='updated'?t.updated_at:t.created_at).slice(0,10);
+      byDay[dd]=(byDay[dd]||0)+1;
     }
     return {total,todayCount,last24h,avgDaily,isSpike,
       frSlaRate,resSlaRate,frBreached,resBreached,
       outOfSla,semResposta,waitBuckets,aguardandoMais,semResolucao,avgHorasResolucao,
       byCat,byDet,byPS,byTeste,byAgent,byStatus,byPriority,byDay};
-  },[filteredTickets,period]);
+  },[filteredTickets,period,viewMode]);
 
   // ── Chart sub-components ──
   function KpiCard({icon,label,value,sub,color='text-slate-900',bg='bg-white',border='border-slate-200'}) {
@@ -7328,6 +7346,7 @@ function CxView() {
 
   const slaColor  = r=>r===null?'text-slate-400':r>=90?'text-green-600':r>=70?'text-amber-600':'text-red-600';
   const periodLabel = period==='1'?'hoje':`últimos ${period} dias`;
+  const viewLabel   = viewMode==='updated'?'movimentados':'criados';
   const activeFilterCount = Object.values(filters).filter(v=>v!==NO_FILTER).length;
 
   if (loading&&!tickets) return <div className="text-center py-24 text-slate-400 fade-in">Carregando dados do Freshdesk…</div>;
@@ -7344,13 +7363,24 @@ function CxView() {
           </p>}
         </div>
         <div className="flex items-center gap-2 flex-wrap">
+          {/* Toggle de visão: criados vs movimentados */}
+          <div className="flex rounded-lg border border-slate-200 overflow-hidden text-sm">
+            {VIEW_MODES.map(vm=>(
+              <button key={vm.v} onClick={()=>setViewMode(vm.v)}
+                className={`px-3 py-1.5 font-medium transition ${viewMode===vm.v?'bg-cyan-600 text-white':'bg-white text-slate-600 hover:bg-slate-50'}`}>
+                {vm.l}
+              </button>
+            ))}
+          </div>
+          <div className="w-px h-6 bg-slate-200 mx-1"/>
+          {/* Seletor de período */}
           {PERIODS.map(p=>(
             <button key={p.v} onClick={()=>setPeriod(p.v)}
               className={`px-3 py-1.5 rounded-lg text-sm font-medium transition ${period===p.v?'bg-indigo-600 text-white':'bg-white border border-slate-200 text-slate-600 hover:border-indigo-300'}`}>
               {p.l}
             </button>
           ))}
-          <button onClick={()=>loadData(period)} disabled={loading}
+          <button onClick={()=>loadData(period, viewMode)} disabled={loading}
             className="px-3 py-1.5 rounded-lg text-sm bg-white border border-slate-200 text-slate-500 hover:text-indigo-600 hover:border-indigo-300 transition disabled:opacity-40">
             {loading?'⏳':'🔄'}
           </button>
@@ -7468,8 +7498,8 @@ function CxView() {
 
         {/* ── KPI cards ── */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <KpiCard icon="📊" label={`Volume (${periodLabel})`} value={metrics.total}
-            sub={period!=='1'?`${metrics.todayCount} hoje`:undefined}/>
+          <KpiCard icon="📊" label={`Volume ${viewLabel} (${periodLabel})`} value={metrics.total}
+            sub={period!=='1'?`${metrics.todayCount} ${viewMode==='updated'?'atualizados':'criados'} hoje`:undefined}/>
           <KpiCard icon="🗂️" label="Backlog atual" value={backlog??'…'} sub="abertos + pendentes"
             bg={backlog>30?'bg-red-50':'bg-white'} color={backlog>30?'text-red-600':'text-slate-900'}
             border={backlog>30?'border-red-200':'border-slate-200'}/>
@@ -7719,7 +7749,7 @@ function CxView() {
         )}
 
         <p className="text-xs text-slate-400 text-center pb-4">
-          {filteredTickets.length}{hasActiveFilters?` de ${tickets.length}`:''} tickets ({periodLabel}) · Backlog total: {backlog??'…'} · Freshdesk ciadetalentos
+          {filteredTickets.length}{hasActiveFilters?` de ${tickets.length}`:''} tickets {viewLabel} ({periodLabel}) · Backlog total: {backlog??'…'} · Freshdesk ciadetalentos
         </p>
       </>}
     </div>
