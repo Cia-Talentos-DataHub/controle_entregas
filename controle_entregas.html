@@ -2493,13 +2493,18 @@ function AlocacaoSimplificadaView({clientId, tenantId}) {
     finally { setLoading(false); }
   }
 
-  const { projCol, peopleCols, displayRows } = React.useMemo(()=>{
-    if (!rows||!rows.length) return {projCol:'',peopleCols:[],displayRows:[]};
+  const { projCol, projLabel, peopleCols, displayRows } = React.useMemo(()=>{
+    if (!rows||!rows.length) return {projCol:'',projLabel:'Projeto',peopleCols:[],displayRows:[]};
     const allCols = Object.keys(rows[0]);
-    const projCol = allCols[0]||'Projeto';
+    // Preserva a chave real mesmo se for '' (célula A1 vazia — comum em tabelas de alocação)
+    const projCol   = allCols[0] !== undefined ? allCols[0] : '';
+    const projLabel = projCol || 'Projeto'; // rótulo de exibição
     const peopleCols = allCols.slice(1).filter(c=>String(c).trim());
-    const displayRows = rows.filter(r=>r[projCol]&&String(r[projCol]).trim());
-    return {projCol, peopleCols, displayRows};
+    const displayRows = rows.filter(r=>{
+      const v = r[projCol];
+      return v !== null && v !== undefined && String(v).trim() !== '';
+    });
+    return {projCol, projLabel, peopleCols, displayRows};
   },[rows]);
 
   function fmtPct(v) {
@@ -2559,7 +2564,7 @@ function AlocacaoSimplificadaView({clientId, tenantId}) {
               <thead>
                 <tr className="bg-slate-50 border-b border-slate-200">
                   <th className="text-left px-4 py-3 font-semibold text-slate-600 whitespace-nowrap sticky left-0 bg-slate-50 z-10 border-r border-slate-200 min-w-52">
-                    {projCol}
+                    {projLabel}
                   </th>
                   {peopleCols.map(col=>(
                     <th key={col} className="px-3 py-3 font-semibold text-slate-600 text-center whitespace-nowrap min-w-28">
