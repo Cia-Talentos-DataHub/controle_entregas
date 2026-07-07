@@ -824,7 +824,7 @@ const NPS_STATUS_ELEG  = new Set(['Finalizado','Relatório Final']); // EB / C&D
 const NPS_ALVO_REL = "/sites/Public/Documentos Partilhados/CIA/GeralCT/Globe (Gestão)/Projeto 80.20/Pesquisa/Pesquisa_Cliente_Alvo.xlsx";
 // ─── Alocação Simplificada ────────────────────────────────────────────────────
 const ALLOC_SIMPL_REL   = '/sites/Public/Documentos Partilhados/CIA/GeralCT/Alocações/Previsao_alocacao_2o_semestre_2026.xlsx';
-const ALLOC_SIMPL_SHEET = 'Visão Projetos';
+const ALLOC_SIMPL_SHEET = 'Visão Analista'; // aba padrão — pode ser alterada no seletor
 
 // ─── SurveyMonkey CSAT ────────────────────────────────────────────────────────
 const SM_TOKEN   = 'fkRXaMG1ciJ9NYhhSaSTCAtb1pJaGAkA6ZebpfoKrBC8r-tfhLcYE7MzmTJieN5aSizCarz1HHUwnZ25j8.CyHEKH48b0q4oJ.hy4eiEvQYCLfJQqOoiGQoW2baUkmcX';
@@ -2492,21 +2492,28 @@ function AlocacaoSimplificadaView({clientId, tenantId}) {
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState(null);
   const [lastUpd, setLastUpd] = useState(null);
-  const [sheetMeta, setSheetMeta] = useState(null); // {sheetNames, sheetUsed}
+  const [sheetMeta,     setSheetMeta]     = useState(null);       // {sheetNames, sheetUsed}
+  const [selectedSheet, setSelectedSheet] = useState(ALLOC_SIMPL_SHEET);
 
-  useEffect(()=>{ load(); },[]);
+  useEffect(()=>{ load(selectedSheet); },[]);
 
-  async function load() {
+  async function load(sheet) {
     setLoading(true); setError(null);
     try {
       const data = await fetchExcelSheet(
-        clientId, tenantId, ALLOC_SIMPL_REL, ALLOC_SIMPL_SHEET,
+        clientId, tenantId, ALLOC_SIMPL_REL, sheet||selectedSheet,
         meta => setSheetMeta(meta)
       );
       setRows(data);
       setLastUpd(new Date());
     } catch(e) { setError(e.message); }
     finally { setLoading(false); }
+  }
+
+  function handleSheetChange(name) {
+    setSelectedSheet(name);
+    setRows(null);
+    load(name);
   }
 
   // Derivados: colunas, linhas de dados, colunas de mês
@@ -2565,24 +2572,26 @@ function AlocacaoSimplificadaView({clientId, tenantId}) {
           <h2 className="text-lg font-bold text-slate-800">Alocação Simplificada</h2>
           {lastUpd&&<p className="text-xs text-slate-400 mt-0.5">Atualizado às {lastUpd.toLocaleTimeString('pt-BR')} · leitura ao vivo do Excel</p>}
         </div>
-        <button onClick={load} disabled={loading}
-          className="text-xs border border-slate-200 px-3 py-1.5 rounded-lg text-slate-600 hover:border-indigo-300 hover:text-indigo-600 transition disabled:opacity-40 flex items-center gap-1.5">
-          {loading?'⏳ Carregando…':'🔄 Atualizar Excel'}
-        </button>
+        <div className="flex items-center gap-2">
+          {sheetMeta&&sheetMeta.sheetNames.length>1&&(
+            <select value={selectedSheet} onChange={e=>handleSheetChange(e.target.value)}
+              className="text-xs border border-slate-200 rounded-lg px-2 py-1.5 text-slate-600 bg-white focus:border-indigo-400 focus:outline-none cursor-pointer">
+              {sheetMeta.sheetNames.map(s=>(
+                <option key={s} value={s}>{s}</option>
+              ))}
+            </select>
+          )}
+          <button onClick={()=>load(selectedSheet)} disabled={loading}
+            className="text-xs border border-slate-200 px-3 py-1.5 rounded-lg text-slate-600 hover:border-indigo-300 hover:text-indigo-600 transition disabled:opacity-40 flex items-center gap-1.5">
+            {loading?'⏳ Carregando…':'🔄 Atualizar Excel'}
+          </button>
+        </div>
       </div>
 
       {error&&<div className="bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3 text-sm mb-5">⚠️ {error}</div>}
       {!rows&&!error&&!loading&&<div className="text-center text-slate-400 py-12">Nenhum dado carregado.</div>}
       {rows&&!dataRows.length&&!error&&<div className="text-center text-slate-400 py-12">Aba «{ALLOC_SIMPL_SHEET}» sem linhas com dados.</div>}
-      {sheetMeta&&(
-        <div className="mb-4 bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-xs text-slate-500">
-          <span className="font-medium text-slate-700">Aba lida:</span> <span className="text-indigo-700 font-semibold">{sheetMeta.sheetUsed}</span>
-          {sheetMeta.sheetUsed!==ALLOC_SIMPL_SHEET&&(
-            <span className="ml-2 text-amber-600">⚠️ Buscando «{ALLOC_SIMPL_SHEET}» — não encontrada exatamente</span>
-          )}
-          <span className="ml-3 text-slate-400">Abas disponíveis: {sheetMeta.sheetNames.join(' · ')}</span>
-        </div>
-      )}
+
 
       {dataRows.length>0&&(
         <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
