@@ -824,7 +824,7 @@ const NPS_STATUS_ELEG  = new Set(['Finalizado','Relatório Final']); // EB / C&D
 const NPS_ALVO_REL = "/sites/Public/Documentos Partilhados/CIA/GeralCT/Globe (Gestão)/Projeto 80.20/Pesquisa/Pesquisa_Cliente_Alvo.xlsx";
 // ─── Alocação Simplificada ────────────────────────────────────────────────────
 const ALLOC_SIMPL_REL   = '/sites/Public/Documentos Partilhados/CIA/GeralCT/Alocações/Previsao_alocacao_2o_semestre_2026.xlsx';
-const ALLOC_SIMPL_SHEET = 'Visão Analista'; // aba padrão — pode ser alterada no seletor
+const ALLOC_SIMPL_SHEET = 'Visão Projetos'; // aba do Excel lida para consolidação
 
 // ─── SurveyMonkey CSAT ────────────────────────────────────────────────────────
 const SM_TOKEN   = 'fkRXaMG1ciJ9NYhhSaSTCAtb1pJaGAkA6ZebpfoKrBC8r-tfhLcYE7MzmTJieN5aSizCarz1HHUwnZ25j8.CyHEKH48b0q4oJ.hy4eiEvQYCLfJQqOoiGQoW2baUkmcX';
@@ -939,7 +939,7 @@ async function acquireTokenForResource(clientId, tenantId, scope) {
 }
 // ─── Graph API / Excel helpers ────────────────────────────────────────────────
 // onMeta opcional: onMeta({sheetNames, sheetUsed}) — para diagnóstico
-async function fetchExcelSheet(clientId, tenantId, serverRelUrl, sheetName, onMeta) {
+async function fetchExcelSheet(clientId, tenantId, serverRelUrl, sheetName, onMeta, opts={}) {
   // Usa SharePoint REST API (mesmo padrão do Moskit CSV) + SheetJS para parsear o xlsx
   const token = await acquireTokenForResource(clientId, tenantId, MOSKIT_SP_SCOPE);
   const safeRel = serverRelUrl.replace(/'/g, "''");
@@ -961,9 +961,18 @@ async function fetchExcelSheet(clientId, tenantId, serverRelUrl, sheetName, onMe
   if (onMeta) onMeta({sheetNames: workbook.SheetNames, sheetUsed: sheetToUse});
   const sheet = workbook.Sheets[sheetToUse];
   const rawData = XLSX.utils.sheet_to_json(sheet, {header:1, defval:''});
-  if (rawData.length < 2) return [];
-  const headers = rawData[0].map(h => String(h==null?'':h).trim());
-  return rawData.slice(1)
+  if (rawData.length < 1) return [];
+  // Auto-detect header row: pick row 0..5 with most non-empty cells
+  let headerRowIdx = 0;
+  if (opts.autoHeader) {
+    let best = 0;
+    for (let i = 0; i < Math.min(6, rawData.length); i++) {
+      const cnt = rawData[i].filter(v => v !== null && v !== undefined && String(v).trim() !== '').length;
+      if (cnt > best) { best = cnt; headerRowIdx = i; }
+    }
+  }
+  const headers = rawData[headerRowIdx].map(h => String(h==null?'':h).trim());
+  return rawData.slice(headerRowIdx + 1)
     .filter(r => r.some(v => v!==null && v!==''))
     .map(row => {
       const obj = {};
@@ -2488,68 +2497,125 @@ function App() {
 const _MONTHS_PT = /^(jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez|janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)$/i;
 
 function AlocacaoSimplificadaView({clientId, tenantId}) {
-  const [rows,    setRows]    = useState(null);
+  const [rawRows, setRawRows] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState(null);
   const [lastUpd, setLastUpd] = useState(null);
-  const [sheetMeta,     setSheetMeta]     = useState(null);       // {sheetNames, sheetUsed}
-  const [selectedSheet, setSelectedSheet] = useState(ALLOC_SIMPL_SHEET);
 
-  useEffect(()=>{ load(selectedSheet); },[]);
+  useEffect(()=>{ load(); },[]);
 
-  async function load(sheet) {
+  async function load() {
     setLoading(true); setError(null);
     try {
       const data = await fetchExcelSheet(
-        clientId, tenantId, ALLOC_SIMPL_REL, sheet||selectedSheet,
-        meta => setSheetMeta(meta)
+        clientId, tenantId, ALLOC_SIMPL_REL, ALLOC_SIMPL_SHEET,
+        null, {autoHeader:true}
       );
-      setRows(data);
+      setRawRows(data);
       setLastUpd(new Date());
     } catch(e) { setError(e.message); }
     finally { setLoading(false); }
   }
 
-  function handleSheetChange(name) {
-    setSelectedSheet(name);
-    setRows(null);
-    load(name);
-  }
+  // ── Detect columns & consolidate ──────────────────────────────────────────
+  const {consolidated, monthCols, detected, diagError} = React.useMemo(()=>{
+    if (!rawRows||!rawRows.length) return {consolidated:[],monthCols:[],detected:{},diagError:null};
+    const allCols = Object.keys(rawRows[0]);
 
-  // Derivados: colunas, linhas de dados, colunas de mês
-  const {cols, dataRows, monthColSet} = React.useMemo(()=>{
-    if (!rows||!rows.length) return {cols:[],dataRows:[],monthColSet:new Set()};
-    const cols = Object.keys(rows[0]);
-    // Filtra linhas onde pelo menos uma célula tem conteúdo
-    const dataRows = rows.filter(r=>cols.some(c=>{
-      const v=r[c]; return v!==null&&v!==undefined&&String(v).trim()!=='';
-    }));
-    // Detecta colunas de mês pelo cabeçalho
-    const monthColSet = new Set(cols.filter(c=>_MONTHS_PT.test(String(c).trim())));
-    // Se não encontrou por nome, detecta colunas numéricas (onde ≥50% dos valores são números)
-    if (monthColSet.size===0 && dataRows.length>0) {
-      cols.forEach(c=>{
-        const vals = dataRows.map(r=>r[c]).filter(v=>v!==''&&v!==null&&v!==undefined);
-        const numCount = vals.filter(v=>typeof v==='number'||(!isNaN(parseFloat(String(v).replace(',','.')))&&String(v).trim()!=='')).length;
-        if (vals.length>0 && numCount/vals.length>=0.5) monthColSet.add(c);
-      });
+    // Month cols
+    const monthCols = allCols.filter(c=>_MONTHS_PT.test(String(c).trim()));
+
+    // Non-month text cols
+    const textCols = allCols.filter(c=>!_MONTHS_PT.test(String(c).trim())&&String(c).trim());
+
+    // Heuristic: find project, person, category, visao cols
+    const find = (patterns) => textCols.find(c=>patterns.some(p=>p.test(String(c).toLowerCase())));
+    const projCol   = find([/proj/,/cliente/,/trabalho.*nome/,/nome.*proj/]) || textCols[0] || '';
+    const personCol = find([/analista/,/consultor/,/pessoa/,/nome/,/respons/,/colabor/]) || textCols[1] || '';
+    const catCol    = find([/categ/,/etapa/,/status/,/fase/,/tipo/,/chance/]) || textCols[2] || '';
+    const visaoCol  = find([/vis[aã]o/,/cargo/,/fun[cç][aã]o/,/perfil/]) || '';
+
+    const detected = {projCol,personCol,catCol,visaoCol,monthCols};
+
+    if (!personCol || monthCols.length===0) {
+      return {consolidated:[],monthCols,detected,
+        diagError:`Colunas detectadas: [${textCols.join(', ')}] — meses: [${monthCols.join(', ')}]`};
     }
-    return {cols, dataRows, monthColSet};
-  },[rows]);
 
-  function fmtPct(v) {
-    if (v===null||v===undefined||v==='') return null;
-    const s = String(v).replace('%','').replace(',','.').trim();
-    const n = parseFloat(s);
-    if (isNaN(n)) return null;
-    // SheetJS: células % formatadas vêm como fração (0.5 = 50%); inteiros usados direto
-    const pct = (n>0&&n<1) ? Math.round(n*100) : Math.round(n);
-    return pct;  // pode ser 0
-  }
+    // ── Parse percentage value ──
+    function parsePct(v) {
+      if (v===null||v===undefined||v==='') return 0;
+      if (typeof v==='number') return v>0&&v<1 ? Math.round(v*100) : Math.round(v);
+      const n = parseFloat(String(v).replace('%','').replace(',','.'));
+      return isNaN(n)?0:(n>0&&n<1?Math.round(n*100):Math.round(n));
+    }
+
+    // ── Group rawRows by (person, category) ──
+    const groups = {};  // key → {person, category, visao, projects:Set, months:{}}
+    rawRows.forEach(row=>{
+      const person   = String(row[personCol]||'').trim();
+      const category = String(row[catCol]||'').trim();
+      const project  = String(row[projCol]||'').trim();
+      const visao    = visaoCol ? String(row[visaoCol]||'').trim() : '';
+      if (!person) return;
+      const key = `${person}|||${category}`;
+      if (!groups[key]) {
+        groups[key] = {person, category, visao, projects:new Set(), months:{}};
+        monthCols.forEach(m=>{ groups[key].months[m]=0; });
+      }
+      if (!groups[key].visao && visao) groups[key].visao = visao;
+      if (project) groups[key].projects.add(project);
+      monthCols.forEach(m=>{ groups[key].months[m] += parsePct(row[m]); });
+    });
+
+    // ── Order categories ──
+    const catOrder = ['em trabalho','altíssima chance','alta chance','média chance'];
+    function catRank(cat) {
+      const cl = cat.toLowerCase();
+      const i = catOrder.findIndex(c=>cl.includes(c.split(' ')[0])&&cl.includes(c.split(' ').slice(-1)[0]));
+      return i===-1 ? 99 : i;
+    }
+
+    // ── Build consolidated rows grouped by person ──
+    const byPerson = {};
+    Object.values(groups).forEach(g=>{
+      if (!byPerson[g.person]) byPerson[g.person]={person:g.person,visao:g.visao,cats:[]};
+      if (!byPerson[g.person].visao && g.visao) byPerson[g.person].visao=g.visao;
+      byPerson[g.person].cats.push(g);
+    });
+
+    const consolidated = [];
+    Object.values(byPerson).forEach(({person,visao,cats})=>{
+      // Sort categories
+      cats.sort((a,b)=>catRank(a.category)-catRank(b.category)||(a.category<b.category?-1:1));
+
+      // Total row
+      const totalMonths={};
+      const totalProjs=new Set();
+      monthCols.forEach(m=>{ totalMonths[m]=0; });
+      cats.forEach(c=>{
+        c.projects.forEach(p=>totalProjs.add(p));
+        monthCols.forEach(m=>{ totalMonths[m]+=c.months[m]; });
+      });
+
+      consolidated.push({
+        isTotal:true, person, visao:visao||'Analista', category:'Total',
+        projects:[...totalProjs], months:totalMonths,
+      });
+      cats.forEach(c=>{
+        consolidated.push({
+          isTotal:false, person, visao:c.visao||visao||'Analista', category:c.category,
+          projects:[...c.projects], months:c.months,
+        });
+      });
+    });
+
+    return {consolidated, monthCols, detected, diagError:null};
+  },[rawRows]);
 
   function pctBadge(pct, isTotal) {
-    if (pct===null) return <span className="text-slate-200 text-xs">—</span>;
-    if (pct===0)    return <span className="text-slate-300 text-xs">0%</span>;
+    if (!pct && pct!==0) return <span className="text-slate-200 text-xs">—</span>;
+    if (pct===0) return <span className="text-slate-300 text-xs">0%</span>;
     const cls = pct>=100?'bg-red-100 text-red-700':
                 pct>=80 ?'bg-orange-100 text-orange-700':
                 pct>=50 ?'bg-amber-50 text-amber-700':
@@ -2557,13 +2623,7 @@ function AlocacaoSimplificadaView({clientId, tenantId}) {
     return <span className={`inline-block px-1.5 py-0.5 rounded text-xs font-medium ${cls}${isTotal?' font-bold':''}`}>{pct}%</span>;
   }
 
-  function isTotalRow(row) {
-    return Object.values(row).some(v=>String(v||'').trim().toLowerCase()==='total');
-  }
-
-  if (loading&&!rows) return <div className="text-center py-24 text-slate-400 fade-in">A carregar Excel do SharePoint…</div>;
-
-  const visibleCols = cols.filter(c=>String(c).trim()!=='');
+  if (loading&&!rawRows) return <div className="text-center py-24 text-slate-400 fade-in">A carregar Excel do SharePoint…</div>;
 
   return (
     <div className="fade-in px-4 pb-10 mt-4">
@@ -2572,75 +2632,63 @@ function AlocacaoSimplificadaView({clientId, tenantId}) {
           <h2 className="text-lg font-bold text-slate-800">Alocação Simplificada</h2>
           {lastUpd&&<p className="text-xs text-slate-400 mt-0.5">Atualizado às {lastUpd.toLocaleTimeString('pt-BR')} · leitura ao vivo do Excel</p>}
         </div>
-        <div className="flex items-center gap-2">
-          {sheetMeta&&sheetMeta.sheetNames.length>1&&(
-            <select value={selectedSheet} onChange={e=>handleSheetChange(e.target.value)}
-              className="text-xs border border-slate-200 rounded-lg px-2 py-1.5 text-slate-600 bg-white focus:border-indigo-400 focus:outline-none cursor-pointer">
-              {sheetMeta.sheetNames.map(s=>(
-                <option key={s} value={s}>{s}</option>
-              ))}
-            </select>
-          )}
-          <button onClick={()=>load(selectedSheet)} disabled={loading}
-            className="text-xs border border-slate-200 px-3 py-1.5 rounded-lg text-slate-600 hover:border-indigo-300 hover:text-indigo-600 transition disabled:opacity-40 flex items-center gap-1.5">
-            {loading?'⏳ Carregando…':'🔄 Atualizar Excel'}
-          </button>
-        </div>
+        <button onClick={load} disabled={loading}
+          className="text-xs border border-slate-200 px-3 py-1.5 rounded-lg text-slate-600 hover:border-indigo-300 hover:text-indigo-600 transition disabled:opacity-40 flex items-center gap-1.5">
+          {loading?'⏳ Carregando…':'🔄 Atualizar Excel'}
+        </button>
       </div>
 
-      {error&&<div className="bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3 text-sm mb-5">⚠️ {error}</div>}
-      {!rows&&!error&&!loading&&<div className="text-center text-slate-400 py-12">Nenhum dado carregado.</div>}
-      {rows&&!dataRows.length&&!error&&<div className="text-center text-slate-400 py-12">Aba «{ALLOC_SIMPL_SHEET}» sem linhas com dados.</div>}
+      {error&&<div className="bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3 text-sm mb-4">⚠️ {error}</div>}
 
+      {diagError&&(
+        <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-xl px-4 py-3 text-xs mb-4">
+          <span className="font-semibold">⚠️ Não foi possível consolidar — estrutura da aba não reconhecida.</span><br/>
+          {diagError}
+        </div>
+      )}
 
-      {dataRows.length>0&&(
+      {!rawRows&&!error&&!loading&&<div className="text-center text-slate-400 py-12">Nenhum dado carregado.</div>}
+      {rawRows&&!consolidated.length&&!error&&!diagError&&<div className="text-center text-slate-400 py-12">Sem dados para consolidar.</div>}
+
+      {consolidated.length>0&&(
         <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
           <div className="overflow-x-auto">
             <table className="text-xs border-collapse w-full">
               <thead>
-                <tr className="bg-slate-700 border-b border-slate-600">
-                  {visibleCols.map((col,ci)=>{
-                    const isMon = monthColSet.has(col);
-                    const isFirst = ci===0;
-                    return (
-                      <th key={col} className={`py-2.5 font-semibold text-white whitespace-nowrap
-                        ${isFirst?'text-left px-4 sticky left-0 bg-slate-700 z-10 border-r border-slate-600 min-w-28':''}
-                        ${!isFirst&&!isMon?'text-left px-3 min-w-32':''}
-                        ${isMon?'text-center px-2 min-w-16':''}`}>
-                        {col}
-                      </th>
-                    );
-                  })}
+                <tr className="bg-slate-700">
+                  <th className="text-left px-3 py-2.5 font-semibold text-white whitespace-nowrap sticky left-0 bg-slate-700 z-10 border-r border-slate-600 min-w-20">Visão</th>
+                  <th className="text-left px-3 py-2.5 font-semibold text-white whitespace-nowrap min-w-28">Pessoa</th>
+                  <th className="text-left px-3 py-2.5 font-semibold text-white whitespace-nowrap min-w-32">Categoria / Etapa</th>
+                  <th className="text-left px-3 py-2.5 font-semibold text-white whitespace-nowrap min-w-48">Projetos consolidados</th>
+                  {monthCols.map(m=>(
+                    <th key={m} className="text-center px-2 py-2.5 font-semibold text-white whitespace-nowrap min-w-14">{m}</th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
-                {dataRows.map((row,ri)=>{
-                  const isTotal = isTotalRow(row);
+                {consolidated.map((row,i)=>{
+                  const bg = row.isTotal?'bg-emerald-50':'';
+                  const border = row.isTotal?'border-t-2 border-emerald-200':'border-b border-slate-100';
                   return (
-                    <tr key={ri} className={`border-b border-slate-100 transition-colors ${isTotal?'bg-emerald-50 border-emerald-200':'hover:bg-slate-50'}`}>
-                      {visibleCols.map((col,ci)=>{
-                        const val = row[col];
-                        const strVal = String(val===null||val===undefined?'':val).trim();
-                        const isMon = monthColSet.has(col);
-                        const isFirst = ci===0;
-
-                        if (isMon) {
-                          const pct = fmtPct(val);
-                          return (
-                            <td key={col} className={`px-2 py-2 text-center whitespace-nowrap ${isTotal?'bg-emerald-50':''}`}>
-                              {pctBadge(pct, isTotal)}
-                            </td>
-                          );
-                        }
-                        return (
-                          <td key={col} className={`px-3 py-2 whitespace-nowrap max-w-xs
-                            ${isFirst?`sticky left-0 z-10 border-r border-slate-100 px-4 ${isTotal?'bg-emerald-50':'bg-white'} font-medium text-slate-700`:''}
-                            ${!isFirst?`text-slate-600 ${isTotal?'font-semibold text-slate-800':''}`:''}`}
-                            title={strVal.length>40?strVal:undefined}>
-                            <span className="block truncate max-w-xs">{strVal||<span className="text-slate-200">—</span>}</span>
-                          </td>
-                        );
-                      })}
+                    <tr key={i} className={`${border} ${bg} transition-colors ${row.isTotal?'':'hover:bg-slate-50'}`}>
+                      <td className={`px-3 py-2 whitespace-nowrap sticky left-0 z-10 border-r border-slate-100 ${row.isTotal?'bg-emerald-50 font-semibold text-slate-800':'bg-white text-slate-500'}`}>
+                        {row.visao||'—'}
+                      </td>
+                      <td className={`px-3 py-2 whitespace-nowrap ${row.isTotal?'font-bold text-slate-900':'text-slate-700'}`}>
+                        {row.person}
+                      </td>
+                      <td className={`px-3 py-2 whitespace-nowrap ${row.isTotal?'font-bold text-slate-900':'text-slate-600'}`}>
+                        {row.category}
+                      </td>
+                      <td className={`px-3 py-2 max-w-xs text-slate-600 ${row.isTotal?'font-semibold':''}`}
+                          title={row.projects.join('; ')}>
+                        <span className="block truncate">{row.projects.length?row.projects.join('; '):<span className="text-slate-300">—</span>}</span>
+                      </td>
+                      {monthCols.map(m=>(
+                        <td key={m} className={`px-2 py-2 text-center whitespace-nowrap ${row.isTotal?'bg-emerald-50':''}`}>
+                          {pctBadge(row.months[m], row.isTotal)}
+                        </td>
+                      ))}
                     </tr>
                   );
                 })}
@@ -2648,8 +2696,12 @@ function AlocacaoSimplificadaView({clientId, tenantId}) {
             </table>
           </div>
           <div className="px-4 py-2.5 border-t border-slate-100 text-xs text-slate-400 flex items-center justify-between">
-            <span>{dataRows.filter(r=>!isTotalRow(r)).length} linhas · {dataRows.filter(isTotalRow).length} totais</span>
-            <span>Previsao_alocacao_2o_semestre_2026.xlsx → {ALLOC_SIMPL_SHEET}</span>
+            <span>
+              {consolidated.filter(r=>r.isTotal).length} pessoas ·
+              {' '}{consolidated.filter(r=>!r.isTotal).length} linhas ·
+              {' '}fonte: {ALLOC_SIMPL_REL.split('/').pop()} → {ALLOC_SIMPL_SHEET}
+            </span>
+            {detected.personCol&&<span className="text-slate-300">pessoa: {detected.personCol} · cat: {detected.catCol}</span>}
           </div>
         </div>
       )}
