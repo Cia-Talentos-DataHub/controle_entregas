@@ -950,7 +950,11 @@ async function fetchExcelSheet(clientId, tenantId, serverRelUrl, sheetName) {
   }
   const buffer = await res.arrayBuffer();
   const workbook = XLSX.read(buffer, {type:'array'});
-  const sheetToUse = workbook.SheetNames.find(s=>s===sheetName) || workbook.SheetNames[0];
+  // Matching robusto: exato → case-insensitive sem acentos → 1ª aba
+  const _normSheet = s => String(s||'').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  const sheetToUse = workbook.SheetNames.find(s=>s===sheetName)
+                  || workbook.SheetNames.find(s=>_normSheet(s)===_normSheet(sheetName))
+                  || workbook.SheetNames[0];
   const sheet = workbook.Sheets[sheetToUse];
   const rawData = XLSX.utils.sheet_to_json(sheet, {header:1, defval:''});
   if (rawData.length < 2) return [];
@@ -2474,7 +2478,11 @@ function App() {
   );
 }
 
-// ─── Alocação Simplificada — lê Excel do SP ao vivo, sem cache ───────────────
+// ─── Alocação Simplificada — lê Excel do SP ao vivo e exibe como tabela ───────
+// Estrutura esperada: Visão | Pessoa | Categoria/Etapa | Projetos consolidados | Jan | Fev | …
+// Linhas de "Total" são destacadas; colunas de mês têm badges coloridos por %.
+const _MONTHS_PT = /^(jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez|janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)$/i;
+
 function AlocacaoSimplificadaView({clientId, tenantId}) {
   const [rows,    setRows]    = useState(null);
   const [loading, setLoading] = useState(false);
@@ -2493,50 +2501,54 @@ function AlocacaoSimplificadaView({clientId, tenantId}) {
     finally { setLoading(false); }
   }
 
-  const { projCol, projLabel, peopleCols, displayRows } = React.useMemo(()=>{
-    if (!rows||!rows.length) return {projCol:'',projLabel:'Projeto',peopleCols:[],displayRows:[]};
-    const allCols = Object.keys(rows[0]);
-    // Preserva a chave real mesmo se for '' (célula A1 vazia — comum em tabelas de alocação)
-    const projCol   = allCols[0] !== undefined ? allCols[0] : '';
-    const projLabel = projCol || 'Projeto'; // rótulo de exibição
-    const peopleCols = allCols.slice(1).filter(c=>String(c).trim());
-    const displayRows = rows.filter(r=>{
-      const v = r[projCol];
-      return v !== null && v !== undefined && String(v).trim() !== '';
-    });
-    return {projCol, projLabel, peopleCols, displayRows};
+  // Derivados: colunas, linhas de dados, colunas de mês
+  const {cols, dataRows, monthColSet} = React.useMemo(()=>{
+    if (!rows||!rows.length) return {cols:[],dataRows:[],monthColSet:new Set()};
+    const cols = Object.keys(rows[0]);
+    // Filtra linhas onde pelo menos uma célula tem conteúdo
+    const dataRows = rows.filter(r=>cols.some(c=>{
+      const v=r[c]; return v!==null&&v!==undefined&&String(v).trim()!=='';
+    }));
+    // Detecta colunas de mês pelo cabeçalho
+    const monthColSet = new Set(cols.filter(c=>_MONTHS_PT.test(String(c).trim())));
+    // Se não encontrou por nome, detecta colunas numéricas (onde ≥50% dos valores são números)
+    if (monthColSet.size===0 && dataRows.length>0) {
+      cols.forEach(c=>{
+        const vals = dataRows.map(r=>r[c]).filter(v=>v!==''&&v!==null&&v!==undefined);
+        const numCount = vals.filter(v=>typeof v==='number'||(!isNaN(parseFloat(String(v).replace(',','.')))&&String(v).trim()!=='')).length;
+        if (vals.length>0 && numCount/vals.length>=0.5) monthColSet.add(c);
+      });
+    }
+    return {cols, dataRows, monthColSet};
   },[rows]);
 
   function fmtPct(v) {
     if (v===null||v===undefined||v==='') return null;
     const s = String(v).replace('%','').replace(',','.').trim();
     const n = parseFloat(s);
-    if (isNaN(n)||n===0) return null;
-    // SheetJS retorna frações para células % do Excel (0.5 = 50%); inteiros maiores já são %
-    const pct = n>0&&n<=1 ? Math.round(n*100) : Math.round(n);
-    return pct>0 ? pct : null;
+    if (isNaN(n)) return null;
+    // SheetJS: células % formatadas vêm como fração (0.5 = 50%); inteiros usados direto
+    const pct = (n>0&&n<1) ? Math.round(n*100) : Math.round(n);
+    return pct;  // pode ser 0
   }
 
-  function pctBadge(pct) {
-    if (!pct) return null;
-    const cls = pct>=100?'bg-red-100 text-red-700 font-bold':
-                pct>=80 ?'bg-orange-100 text-orange-700 font-semibold':
+  function pctBadge(pct, isTotal) {
+    if (pct===null) return <span className="text-slate-200 text-xs">—</span>;
+    if (pct===0)    return <span className="text-slate-300 text-xs">0%</span>;
+    const cls = pct>=100?'bg-red-100 text-red-700':
+                pct>=80 ?'bg-orange-100 text-orange-700':
                 pct>=50 ?'bg-amber-50 text-amber-700':
-                pct>=20 ?'bg-green-50 text-green-700':'text-slate-400';
-    return <span className={`inline-block px-1.5 py-0.5 rounded text-xs ${cls}`}>{pct}%</span>;
+                pct>=20 ?'bg-green-50 text-green-700':'bg-slate-50 text-slate-500';
+    return <span className={`inline-block px-1.5 py-0.5 rounded text-xs font-medium ${cls}${isTotal?' font-bold':''}`}>{pct}%</span>;
   }
 
-  const totals = React.useMemo(()=>{
-    const t={};
-    for (const col of peopleCols) {
-      let sum=0;
-      for (const r of displayRows) { const p=fmtPct(r[col]); if(p) sum+=p; }
-      t[col]=sum;
-    }
-    return t;
-  },[displayRows,peopleCols]);
+  function isTotalRow(row) {
+    return Object.values(row).some(v=>String(v||'').trim().toLowerCase()==='total');
+  }
 
   if (loading&&!rows) return <div className="text-center py-24 text-slate-400 fade-in">A carregar Excel do SharePoint…</div>;
+
+  const visibleCols = cols.filter(c=>String(c).trim()!=='');
 
   return (
     <div className="fade-in px-4 pb-10 mt-4">
@@ -2552,65 +2564,65 @@ function AlocacaoSimplificadaView({clientId, tenantId}) {
       </div>
 
       {error&&<div className="bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3 text-sm mb-5">⚠️ {error}</div>}
-
       {!rows&&!error&&!loading&&<div className="text-center text-slate-400 py-12">Nenhum dado carregado.</div>}
+      {rows&&!dataRows.length&&!error&&<div className="text-center text-slate-400 py-12">Aba «{ALLOC_SIMPL_SHEET}» sem linhas com dados.</div>}
 
-      {rows&&!displayRows.length&&!error&&<div className="text-center text-slate-400 py-12">Aba «Visão Projetos» sem linhas.</div>}
-
-      {displayRows.length>0&&(
+      {dataRows.length>0&&(
         <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
           <div className="overflow-x-auto">
             <table className="text-xs border-collapse w-full">
               <thead>
-                <tr className="bg-slate-50 border-b border-slate-200">
-                  <th className="text-left px-4 py-3 font-semibold text-slate-600 whitespace-nowrap sticky left-0 bg-slate-50 z-10 border-r border-slate-200 min-w-52">
-                    {projLabel}
-                  </th>
-                  {peopleCols.map(col=>(
-                    <th key={col} className="px-3 py-3 font-semibold text-slate-600 text-center whitespace-nowrap min-w-28">
-                      {col}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {displayRows.map((row,i)=>(
-                  <tr key={i} className="hover:bg-slate-50 transition-colors">
-                    <td className="px-4 py-2.5 font-medium text-slate-800 sticky left-0 bg-white z-10 border-r border-slate-100 whitespace-nowrap max-w-72 truncate"
-                        title={String(row[projCol]||'')}>
-                      {String(row[projCol]||'').trim()}
-                    </td>
-                    {peopleCols.map(col=>{
-                      const pct=fmtPct(row[col]);
-                      return (
-                        <td key={col} className="px-3 py-2.5 text-center whitespace-nowrap">
-                          {pct ? pctBadge(pct) : <span className="text-slate-200">—</span>}
-                        </td>
-                      );
-                    })}
-                  </tr>
-                ))}
-              </tbody>
-              <tfoot>
-                <tr className="bg-indigo-50 border-t-2 border-indigo-100 font-semibold">
-                  <td className="px-4 py-2.5 text-slate-700 sticky left-0 bg-indigo-50 z-10 border-r border-indigo-100 text-xs">
-                    Total alocado
-                  </td>
-                  {peopleCols.map(col=>{
-                    const total=totals[col];
-                    const cls=total>=100?'text-red-700 font-bold':total>=80?'text-orange-600 font-semibold':total>0?'text-slate-700':'text-slate-300';
+                <tr className="bg-slate-700 border-b border-slate-600">
+                  {visibleCols.map((col,ci)=>{
+                    const isMon = monthColSet.has(col);
+                    const isFirst = ci===0;
                     return (
-                      <td key={col} className={`px-3 py-2.5 text-center whitespace-nowrap text-xs ${cls}`}>
-                        {total>0?`${total}%`:'—'}
-                      </td>
+                      <th key={col} className={`py-2.5 font-semibold text-white whitespace-nowrap
+                        ${isFirst?'text-left px-4 sticky left-0 bg-slate-700 z-10 border-r border-slate-600 min-w-28':''}
+                        ${!isFirst&&!isMon?'text-left px-3 min-w-32':''}
+                        ${isMon?'text-center px-2 min-w-16':''}`}>
+                        {col}
+                      </th>
                     );
                   })}
                 </tr>
-              </tfoot>
+              </thead>
+              <tbody>
+                {dataRows.map((row,ri)=>{
+                  const isTotal = isTotalRow(row);
+                  return (
+                    <tr key={ri} className={`border-b border-slate-100 transition-colors ${isTotal?'bg-emerald-50 border-emerald-200':'hover:bg-slate-50'}`}>
+                      {visibleCols.map((col,ci)=>{
+                        const val = row[col];
+                        const strVal = String(val===null||val===undefined?'':val).trim();
+                        const isMon = monthColSet.has(col);
+                        const isFirst = ci===0;
+
+                        if (isMon) {
+                          const pct = fmtPct(val);
+                          return (
+                            <td key={col} className={`px-2 py-2 text-center whitespace-nowrap ${isTotal?'bg-emerald-50':''}`}>
+                              {pctBadge(pct, isTotal)}
+                            </td>
+                          );
+                        }
+                        return (
+                          <td key={col} className={`px-3 py-2 whitespace-nowrap max-w-xs
+                            ${isFirst?`sticky left-0 z-10 border-r border-slate-100 px-4 ${isTotal?'bg-emerald-50':'bg-white'} font-medium text-slate-700`:''}
+                            ${!isFirst?`text-slate-600 ${isTotal?'font-semibold text-slate-800':''}`:''}`}
+                            title={strVal.length>40?strVal:undefined}>
+                            <span className="block truncate max-w-xs">{strVal||<span className="text-slate-200">—</span>}</span>
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  );
+                })}
+              </tbody>
             </table>
           </div>
           <div className="px-4 py-2.5 border-t border-slate-100 text-xs text-slate-400 flex items-center justify-between">
-            <span>{displayRows.length} projetos · {peopleCols.length} pessoas</span>
+            <span>{dataRows.filter(r=>!isTotalRow(r)).length} linhas · {dataRows.filter(isTotalRow).length} totais</span>
             <span>Previsao_alocacao_2o_semestre_2026.xlsx → {ALLOC_SIMPL_SHEET}</span>
           </div>
         </div>
