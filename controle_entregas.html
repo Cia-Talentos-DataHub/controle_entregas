@@ -938,7 +938,8 @@ async function acquireTokenForResource(clientId, tenantId, scope) {
   }
 }
 // ─── Graph API / Excel helpers ────────────────────────────────────────────────
-async function fetchExcelSheet(clientId, tenantId, serverRelUrl, sheetName) {
+// onMeta opcional: onMeta({sheetNames, sheetUsed}) — para diagnóstico
+async function fetchExcelSheet(clientId, tenantId, serverRelUrl, sheetName, onMeta) {
   // Usa SharePoint REST API (mesmo padrão do Moskit CSV) + SheetJS para parsear o xlsx
   const token = await acquireTokenForResource(clientId, tenantId, MOSKIT_SP_SCOPE);
   const safeRel = serverRelUrl.replace(/'/g, "''");
@@ -950,11 +951,14 @@ async function fetchExcelSheet(clientId, tenantId, serverRelUrl, sheetName) {
   }
   const buffer = await res.arrayBuffer();
   const workbook = XLSX.read(buffer, {type:'array'});
-  // Matching robusto: exato → case-insensitive sem acentos → 1ª aba
-  const _normSheet = s => String(s||'').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  // Matching em 4 etapas: exato → sem acentos/case → sem espaços+acentos → 1ª aba
+  const _ns  = s => String(s||'').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  const _ns2 = s => _ns(s).replace(/[\s_-]+/g,'');
   const sheetToUse = workbook.SheetNames.find(s=>s===sheetName)
-                  || workbook.SheetNames.find(s=>_normSheet(s)===_normSheet(sheetName))
+                  || workbook.SheetNames.find(s=>_ns(s)===_ns(sheetName))
+                  || workbook.SheetNames.find(s=>_ns2(s)===_ns2(sheetName))
                   || workbook.SheetNames[0];
+  if (onMeta) onMeta({sheetNames: workbook.SheetNames, sheetUsed: sheetToUse});
   const sheet = workbook.Sheets[sheetToUse];
   const rawData = XLSX.utils.sheet_to_json(sheet, {header:1, defval:''});
   if (rawData.length < 2) return [];
@@ -2488,13 +2492,17 @@ function AlocacaoSimplificadaView({clientId, tenantId}) {
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState(null);
   const [lastUpd, setLastUpd] = useState(null);
+  const [sheetMeta, setSheetMeta] = useState(null); // {sheetNames, sheetUsed}
 
   useEffect(()=>{ load(); },[]);
 
   async function load() {
     setLoading(true); setError(null);
     try {
-      const data = await fetchExcelSheet(clientId, tenantId, ALLOC_SIMPL_REL, ALLOC_SIMPL_SHEET);
+      const data = await fetchExcelSheet(
+        clientId, tenantId, ALLOC_SIMPL_REL, ALLOC_SIMPL_SHEET,
+        meta => setSheetMeta(meta)
+      );
       setRows(data);
       setLastUpd(new Date());
     } catch(e) { setError(e.message); }
@@ -2566,6 +2574,15 @@ function AlocacaoSimplificadaView({clientId, tenantId}) {
       {error&&<div className="bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3 text-sm mb-5">⚠️ {error}</div>}
       {!rows&&!error&&!loading&&<div className="text-center text-slate-400 py-12">Nenhum dado carregado.</div>}
       {rows&&!dataRows.length&&!error&&<div className="text-center text-slate-400 py-12">Aba «{ALLOC_SIMPL_SHEET}» sem linhas com dados.</div>}
+      {sheetMeta&&(
+        <div className="mb-4 bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-xs text-slate-500">
+          <span className="font-medium text-slate-700">Aba lida:</span> <span className="text-indigo-700 font-semibold">{sheetMeta.sheetUsed}</span>
+          {sheetMeta.sheetUsed!==ALLOC_SIMPL_SHEET&&(
+            <span className="ml-2 text-amber-600">⚠️ Buscando «{ALLOC_SIMPL_SHEET}» — não encontrada exatamente</span>
+          )}
+          <span className="ml-3 text-slate-400">Abas disponíveis: {sheetMeta.sheetNames.join(' · ')}</span>
+        </div>
+      )}
 
       {dataRows.length>0&&(
         <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
