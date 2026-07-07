@@ -981,6 +981,29 @@ async function fetchExcelSheet(clientId, tenantId, serverRelUrl, sheetName, onMe
     });
 }
 
+// ── fetchSheetRaw: retorna array bruto de arrays (header:1) sem converter em objetos ──
+// Necessário para sheets com colunas duplicadas (ex: "Jul" aparece para Head e para Analista)
+async function fetchSheetRaw(clientId, tenantId, serverRelUrl, sheetName) {
+  const token = await acquireTokenForResource(clientId, tenantId, MOSKIT_SP_SCOPE);
+  const safeRel = serverRelUrl.replace(/'/g, "''");
+  const url = `${MOSKIT_SITE_URL}/_api/web/GetFileByServerRelativeUrl('${safeRel}')/$value`;
+  const res = await fetch(url, {headers:{'Authorization':`Bearer ${token}`}});
+  if (!res.ok) {
+    const t = await res.text().catch(()=>'');
+    throw new Error(`SP ${res.status}: ${t.slice(0,300)}`);
+  }
+  const buffer = await res.arrayBuffer();
+  const workbook = XLSX.read(buffer, {type:'array'});
+  const _ns  = s => String(s||'').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  const _ns2 = s => _ns(s).replace(/[\s_-]+/g,'');
+  const sheetToUse = workbook.SheetNames.find(s=>s===sheetName)
+                  || workbook.SheetNames.find(s=>_ns(s)===_ns(sheetName))
+                  || workbook.SheetNames.find(s=>_ns2(s)===_ns2(sheetName))
+                  || workbook.SheetNames[0];
+  const sheet = workbook.Sheets[sheetToUse];
+  return XLSX.utils.sheet_to_json(sheet, {header:1, defval:''});
+}
+
 function calcNpsMetrics(rows, scoreCol) {
   const valid = rows.filter(r => {
     const v = r[scoreCol];
@@ -2491,127 +2514,197 @@ function App() {
   );
 }
 
-// ─── Alocação Simplificada — lê Excel do SP ao vivo e exibe como tabela ───────
-// Estrutura esperada: Visão | Pessoa | Categoria/Etapa | Projetos consolidados | Jan | Fev | …
-// Linhas de "Total" são destacadas; colunas de mês têm badges coloridos por %.
-const _MONTHS_PT = /^(jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez|janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)$/i;
+// ─── Alocação Simplificada — parser especializado de "Visão Projetos" ──────────
+// Estrutura da sheet:
+//   Projetos | Etapa | Head | Jul | Ago | ... | Analista | Jul | Ago | ...
+// Cada linha = 1 projeto · 1 Head · 1 Analista (ambos opcionais)
+// Os meses são duplicados no header (Jul aparece 2x), por isso usamos fetchSheetRaw
+// e trabalhamos com índices de coluna em vez de nomes.
 
+// ── parseViaoProjetos: converte array bruto em linhas por pessoa ──────────────
+function parseViaoProjetos(raw) {
+  if (!raw || raw.length < 2) return {rows:[], monthLabels:[], diagMsg:'Planilha vazia'};
+
+  const monthRe = /^(jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)/i;
+  const norm = v => String(v==null?'':v).trim();
+
+  // ── Encontrar linha de cabeçalho: contém "Head" E "Analista" ──
+  let hdrIdx = -1, hdrRow = null;
+  for (let i = 0; i < Math.min(6, raw.length); i++) {
+    const r = raw[i].map(norm);
+    if (r.some(v=>/^head$/i.test(v)) && r.some(v=>/^analista$/i.test(v))) {
+      hdrIdx = i; hdrRow = r; break;
+    }
+  }
+  // Fallback: linha com "Head" + "Projetos"
+  if (!hdrRow) {
+    for (let i = 0; i < Math.min(6, raw.length); i++) {
+      const r = raw[i].map(norm);
+      if (r.some(v=>/^head$/i.test(v)) && r.some(v=>/^proj/i.test(v))) {
+        hdrIdx = i; hdrRow = r; break;
+      }
+    }
+  }
+  if (!hdrRow) {
+    const preview = raw[0]?.slice(0,8).map(norm).filter(v=>v).join(' | ');
+    return {rows:[], monthLabels:[], diagMsg:`Colunas "Head" e "Analista" não encontradas. Linha 0: ${preview}`};
+  }
+
+  // Verificar se os meses estão nessa linha ou na próxima
+  const hdrHasMonths = hdrRow.some(v => monthRe.test(v));
+  let monthRow  = hdrRow;
+  let dataStart = hdrIdx + 1;
+  if (!hdrHasMonths && hdrIdx + 1 < raw.length) {
+    const nextRow = raw[hdrIdx + 1].map(norm);
+    if (nextRow.some(v => monthRe.test(v))) {
+      monthRow  = nextRow;
+      dataStart = hdrIdx + 2;
+    }
+  }
+
+  // ── Índices das colunas-chave ──
+  const projIdx     = hdrRow.findIndex(v => /^proj/i.test(v));
+  const etapaIdx    = hdrRow.findIndex(v => /^etapa|^fase|^categ|^status/i.test(v));
+  const headIdx     = hdrRow.findIndex(v => /^head$/i.test(v));
+  const analistaIdx = hdrRow.findIndex(v => /^analista$/i.test(v));
+
+  // ── Colunas de mês para Head e para Analista (por posição) ──
+  const headMonthCols = [];
+  const endOfHead = analistaIdx > headIdx ? analistaIdx : monthRow.length;
+  for (let c = headIdx + 1; c < endOfHead; c++) {
+    if (monthRe.test(monthRow[c])) headMonthCols.push({idx:c, label:monthRow[c]});
+  }
+  const analistaMonthCols = [];
+  for (let c = analistaIdx + 1; c < monthRow.length; c++) {
+    if (monthRe.test(monthRow[c])) analistaMonthCols.push({idx:c, label:monthRow[c]});
+  }
+
+  // Rótulos canônicos (usa o grupo com mais meses como referência)
+  const monthLabels = (headMonthCols.length >= analistaMonthCols.length ? headMonthCols : analistaMonthCols)
+    .map(m => m.label);
+
+  if (monthLabels.length === 0) {
+    return {rows:[], monthLabels:[], diagMsg:`Colunas de mês não encontradas. Cabeçalho: ${hdrRow.filter(v=>v).join(' | ')}`};
+  }
+
+  // ── Parser de percentual ──
+  function parsePct(v) {
+    if (v===null||v===undefined||v==='') return 0;
+    if (typeof v==='number') return v>0&&v<1 ? Math.round(v*100) : Math.round(v);
+    const n = parseFloat(String(v).replace('%','').replace(',','.'));
+    return isNaN(n)?0:(n>0&&n<1?Math.round(n*100):Math.round(n));
+  }
+
+  // ── Iterar linhas de dados com fill-down em Projeto e Etapa ──
+  let lastProjeto = '', lastEtapa = '';
+  const rows = [];
+
+  for (let r = dataStart; r < raw.length; r++) {
+    const row = raw[r];
+    if (!row.some(v => v!==null && v!==undefined && v!=='')) continue;
+
+    const projeto = projIdx >= 0 ? norm(row[projIdx]) : '';
+    const etapa   = etapaIdx >= 0 ? norm(row[etapaIdx]) : '';
+    if (projeto) lastProjeto = projeto;
+    if (etapa)   lastEtapa   = etapa;
+
+    const headName     = headIdx >= 0     ? norm(row[headIdx])     : '';
+    const analistaName = analistaIdx >= 0 ? norm(row[analistaIdx]) : '';
+    if (!headName && !analistaName) continue;
+
+    const makeMonths = (colDefs) => {
+      const m = {};
+      monthLabels.forEach(ml => { m[ml] = 0; });
+      colDefs.forEach(({idx, label}) => { m[label] = (m[label]||0) + parsePct(row[idx]); });
+      return m;
+    };
+
+    if (headName)     rows.push({projeto:lastProjeto, etapa:lastEtapa, person:headName,     visao:'Head',     months:makeMonths(headMonthCols)});
+    if (analistaName) rows.push({projeto:lastProjeto, etapa:lastEtapa, person:analistaName, visao:'Analista', months:makeMonths(analistaMonthCols)});
+  }
+
+  return {rows, monthLabels};
+}
+
+// ── Componente principal ──────────────────────────────────────────────────────
 function AlocacaoSimplificadaView({clientId, tenantId}) {
-  const [rawRows, setRawRows] = useState(null);
+  const [data,    setData]    = useState(null);   // {rows, monthLabels}
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState(null);
+  const [diagMsg, setDiagMsg] = useState(null);
   const [lastUpd, setLastUpd] = useState(null);
 
-  useEffect(()=>{ load(); },[]);
+  useEffect(()=>{ load(); }, []);
 
   async function load() {
-    setLoading(true); setError(null);
+    setLoading(true); setError(null); setDiagMsg(null);
     try {
-      const data = await fetchExcelSheet(
-        clientId, tenantId, ALLOC_SIMPL_REL, ALLOC_SIMPL_SHEET,
-        null, {autoHeader:true}
-      );
-      setRawRows(data);
+      const rawData = await fetchSheetRaw(clientId, tenantId, ALLOC_SIMPL_REL, ALLOC_SIMPL_SHEET);
+      const result  = parseViaoProjetos(rawData);
+      if (result.diagMsg) setDiagMsg(result.diagMsg);
+      setData(result);
       setLastUpd(new Date());
     } catch(e) { setError(e.message); }
     finally { setLoading(false); }
   }
 
-  // ── Detect columns & consolidate ──────────────────────────────────────────
-  const {consolidated, monthCols, detected, diagError} = React.useMemo(()=>{
-    if (!rawRows||!rawRows.length) return {consolidated:[],monthCols:[],detected:{},diagError:null};
-    const allCols = Object.keys(rawRows[0]);
+  // ── Consolidação por (pessoa, etapa) ──────────────────────────────────────
+  const {consolidated, monthLabels} = React.useMemo(()=>{
+    if (!data || !data.rows || !data.rows.length) return {consolidated:[], monthLabels:data?.monthLabels||[]};
+    const {rows, monthLabels} = data;
 
-    // Month cols
-    const monthCols = allCols.filter(c=>_MONTHS_PT.test(String(c).trim()));
-
-    // Non-month text cols
-    const textCols = allCols.filter(c=>!_MONTHS_PT.test(String(c).trim())&&String(c).trim());
-
-    // Heuristic: find project, person, category, visao cols
-    const find = (patterns) => textCols.find(c=>patterns.some(p=>p.test(String(c).toLowerCase())));
-    const projCol   = find([/proj/,/cliente/,/trabalho.*nome/,/nome.*proj/]) || textCols[0] || '';
-    const personCol = find([/analista/,/consultor/,/pessoa/,/nome/,/respons/,/colabor/]) || textCols[1] || '';
-    const catCol    = find([/categ/,/etapa/,/status/,/fase/,/tipo/,/chance/]) || textCols[2] || '';
-    const visaoCol  = find([/vis[aã]o/,/cargo/,/fun[cç][aã]o/,/perfil/]) || '';
-
-    const detected = {projCol,personCol,catCol,visaoCol,monthCols};
-
-    if (!personCol || monthCols.length===0) {
-      return {consolidated:[],monthCols,detected,
-        diagError:`Colunas detectadas: [${textCols.join(', ')}] — meses: [${monthCols.join(', ')}]`};
+    function catRank(etapa) {
+      const el = etapa.toLowerCase();
+      if (/em trabalho/i.test(el))                 return 0;
+      if (/alt[ií]ssima/i.test(el))                return 1;
+      if (/alta chance/i.test(el))                 return 2;
+      if (/m[eé]dia chance/i.test(el))             return 3;
+      return 4;
     }
 
-    // ── Parse percentage value ──
-    function parsePct(v) {
-      if (v===null||v===undefined||v==='') return 0;
-      if (typeof v==='number') return v>0&&v<1 ? Math.round(v*100) : Math.round(v);
-      const n = parseFloat(String(v).replace('%','').replace(',','.'));
-      return isNaN(n)?0:(n>0&&n<1?Math.round(n*100):Math.round(n));
-    }
-
-    // ── Group rawRows by (person, category) ──
-    const groups = {};  // key → {person, category, visao, projects:Set, months:{}}
-    rawRows.forEach(row=>{
-      const person   = String(row[personCol]||'').trim();
-      const category = String(row[catCol]||'').trim();
-      const project  = String(row[projCol]||'').trim();
-      const visao    = visaoCol ? String(row[visaoCol]||'').trim() : '';
-      if (!person) return;
-      const key = `${person}|||${category}`;
+    // Agrupar por (person, etapa)
+    const groups = {};
+    rows.forEach(row => {
+      const key = `${row.person}|||${row.etapa}`;
       if (!groups[key]) {
-        groups[key] = {person, category, visao, projects:new Set(), months:{}};
-        monthCols.forEach(m=>{ groups[key].months[m]=0; });
+        groups[key] = {person:row.person, etapa:row.etapa, visao:row.visao, projects:new Set(), months:{}};
+        monthLabels.forEach(m => { groups[key].months[m] = 0; });
       }
-      if (!groups[key].visao && visao) groups[key].visao = visao;
-      if (project) groups[key].projects.add(project);
-      monthCols.forEach(m=>{ groups[key].months[m] += parsePct(row[m]); });
+      if (row.projeto) groups[key].projects.add(row.projeto);
+      monthLabels.forEach(m => { groups[key].months[m] = (groups[key].months[m]||0) + (row.months[m]||0); });
     });
 
-    // ── Order categories ──
-    const catOrder = ['em trabalho','altíssima chance','alta chance','média chance'];
-    function catRank(cat) {
-      const cl = cat.toLowerCase();
-      const i = catOrder.findIndex(c=>cl.includes(c.split(' ')[0])&&cl.includes(c.split(' ').slice(-1)[0]));
-      return i===-1 ? 99 : i;
-    }
-
-    // ── Build consolidated rows grouped by person ──
+    // Agrupar por pessoa
     const byPerson = {};
-    Object.values(groups).forEach(g=>{
-      if (!byPerson[g.person]) byPerson[g.person]={person:g.person,visao:g.visao,cats:[]};
-      if (!byPerson[g.person].visao && g.visao) byPerson[g.person].visao=g.visao;
+    Object.values(groups).forEach(g => {
+      if (!byPerson[g.person]) byPerson[g.person] = {person:g.person, visao:g.visao, cats:[]};
       byPerson[g.person].cats.push(g);
     });
 
-    const consolidated = [];
-    Object.values(byPerson).forEach(({person,visao,cats})=>{
-      // Sort categories
-      cats.sort((a,b)=>catRank(a.category)-catRank(b.category)||(a.category<b.category?-1:1));
-
-      // Total row
-      const totalMonths={};
-      const totalProjs=new Set();
-      monthCols.forEach(m=>{ totalMonths[m]=0; });
-      cats.forEach(c=>{
-        c.projects.forEach(p=>totalProjs.add(p));
-        monthCols.forEach(m=>{ totalMonths[m]+=c.months[m]; });
-      });
-
-      consolidated.push({
-        isTotal:true, person, visao:visao||'Analista', category:'Total',
-        projects:[...totalProjs], months:totalMonths,
-      });
-      cats.forEach(c=>{
-        consolidated.push({
-          isTotal:false, person, visao:c.visao||visao||'Analista', category:c.category,
-          projects:[...c.projects], months:c.months,
-        });
-      });
+    // Ordenar pessoas: Head primeiro, depois alpha
+    const sortedPeople = Object.values(byPerson).sort((a,b) => {
+      if (a.visao !== b.visao) return a.visao==='Head' ? -1 : 1;
+      return a.person.localeCompare(b.person, 'pt-BR');
     });
 
-    return {consolidated, monthCols, detected, diagError:null};
-  },[rawRows]);
+    const consolidated = [];
+    sortedPeople.forEach(({person, visao, cats}) => {
+      cats.sort((a,b) => catRank(a.etapa) - catRank(b.etapa) || (a.etapa < b.etapa ? -1 : 1));
+
+      const totalMonths = {};
+      const totalProjs  = new Set();
+      monthLabels.forEach(m => { totalMonths[m] = 0; });
+      cats.forEach(c => {
+        c.projects.forEach(p => totalProjs.add(p));
+        monthLabels.forEach(m => { totalMonths[m] += c.months[m]||0; });
+      });
+
+      consolidated.push({isTotal:true,  person, visao, etapa:'Total', projects:[...totalProjs], months:totalMonths});
+      cats.forEach(c => consolidated.push({isTotal:false, person, visao:c.visao||visao, etapa:c.etapa, projects:[...c.projects], months:{...c.months}}));
+    });
+
+    return {consolidated, monthLabels};
+  }, [data]);
 
   function pctBadge(pct, isTotal) {
     if (!pct && pct!==0) return <span className="text-slate-200 text-xs">—</span>;
@@ -2623,34 +2716,31 @@ function AlocacaoSimplificadaView({clientId, tenantId}) {
     return <span className={`inline-block px-1.5 py-0.5 rounded text-xs font-medium ${cls}${isTotal?' font-bold':''}`}>{pct}%</span>;
   }
 
-  if (loading&&!rawRows) return <div className="text-center py-24 text-slate-400 fade-in">A carregar Excel do SharePoint…</div>;
+  if (loading && !data) return <div className="text-center py-24 text-slate-400 fade-in">A carregar Excel do SharePoint…</div>;
 
   return (
     <div className="fade-in px-4 pb-10 mt-4">
       <div className="flex items-center justify-between flex-wrap gap-3 mb-5">
         <div>
           <h2 className="text-lg font-bold text-slate-800">Alocação Simplificada</h2>
-          {lastUpd&&<p className="text-xs text-slate-400 mt-0.5">Atualizado às {lastUpd.toLocaleTimeString('pt-BR')} · leitura ao vivo do Excel</p>}
+          {lastUpd && <p className="text-xs text-slate-400 mt-0.5">Atualizado às {lastUpd.toLocaleTimeString('pt-BR')} · leitura ao vivo do Excel</p>}
         </div>
         <button onClick={load} disabled={loading}
           className="text-xs border border-slate-200 px-3 py-1.5 rounded-lg text-slate-600 hover:border-indigo-300 hover:text-indigo-600 transition disabled:opacity-40 flex items-center gap-1.5">
-          {loading?'⏳ Carregando…':'🔄 Atualizar Excel'}
+          {loading ? '⏳ Carregando…' : '🔄 Atualizar Excel'}
         </button>
       </div>
 
-      {error&&<div className="bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3 text-sm mb-4">⚠️ {error}</div>}
-
-      {diagError&&(
+      {error && <div className="bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3 text-sm mb-4">⚠️ {error}</div>}
+      {diagMsg && (
         <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-xl px-4 py-3 text-xs mb-4">
-          <span className="font-semibold">⚠️ Não foi possível consolidar — estrutura da aba não reconhecida.</span><br/>
-          {diagError}
+          <span className="font-semibold">⚠️ Estrutura não reconhecida:</span> {diagMsg}
         </div>
       )}
+      {!data && !error && !loading && <div className="text-center text-slate-400 py-12">Nenhum dado carregado.</div>}
+      {data && !consolidated.length && !error && <div className="text-center text-slate-400 py-12">Sem dados para consolidar.</div>}
 
-      {!rawRows&&!error&&!loading&&<div className="text-center text-slate-400 py-12">Nenhum dado carregado.</div>}
-      {rawRows&&!consolidated.length&&!error&&!diagError&&<div className="text-center text-slate-400 py-12">Sem dados para consolidar.</div>}
-
-      {consolidated.length>0&&(
+      {consolidated.length > 0 && (
         <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
           <div className="overflow-x-auto">
             <table className="text-xs border-collapse w-full">
@@ -2658,35 +2748,36 @@ function AlocacaoSimplificadaView({clientId, tenantId}) {
                 <tr className="bg-slate-700">
                   <th className="text-left px-3 py-2.5 font-semibold text-white whitespace-nowrap sticky left-0 bg-slate-700 z-10 border-r border-slate-600 min-w-20">Visão</th>
                   <th className="text-left px-3 py-2.5 font-semibold text-white whitespace-nowrap min-w-28">Pessoa</th>
-                  <th className="text-left px-3 py-2.5 font-semibold text-white whitespace-nowrap min-w-32">Categoria / Etapa</th>
+                  <th className="text-left px-3 py-2.5 font-semibold text-white whitespace-nowrap min-w-36">Etapa</th>
                   <th className="text-left px-3 py-2.5 font-semibold text-white whitespace-nowrap min-w-48">Projetos consolidados</th>
-                  {monthCols.map(m=>(
+                  {monthLabels.map(m => (
                     <th key={m} className="text-center px-2 py-2.5 font-semibold text-white whitespace-nowrap min-w-14">{m}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {consolidated.map((row,i)=>{
-                  const bg = row.isTotal?'bg-emerald-50':'';
-                  const border = row.isTotal?'border-t-2 border-emerald-200':'border-b border-slate-100';
+                {consolidated.map((row, i) => {
+                  const border = row.isTotal ? 'border-t-2 border-emerald-200' : 'border-b border-slate-100';
                   return (
-                    <tr key={i} className={`${border} ${bg} transition-colors ${row.isTotal?'':'hover:bg-slate-50'}`}>
+                    <tr key={i} className={`${border} ${row.isTotal?'bg-emerald-50':''} transition-colors ${row.isTotal?'':'hover:bg-slate-50'}`}>
                       <td className={`px-3 py-2 whitespace-nowrap sticky left-0 z-10 border-r border-slate-100 ${row.isTotal?'bg-emerald-50 font-semibold text-slate-800':'bg-white text-slate-500'}`}>
-                        {row.visao||'—'}
+                        {row.visao || '—'}
                       </td>
                       <td className={`px-3 py-2 whitespace-nowrap ${row.isTotal?'font-bold text-slate-900':'text-slate-700'}`}>
                         {row.person}
                       </td>
                       <td className={`px-3 py-2 whitespace-nowrap ${row.isTotal?'font-bold text-slate-900':'text-slate-600'}`}>
-                        {row.category}
+                        {row.etapa}
                       </td>
                       <td className={`px-3 py-2 max-w-xs text-slate-600 ${row.isTotal?'font-semibold':''}`}
                           title={row.projects.join('; ')}>
-                        <span className="block truncate">{row.projects.length?row.projects.join('; '):<span className="text-slate-300">—</span>}</span>
+                        <span className="block truncate">
+                          {row.projects.length ? row.projects.join('; ') : <span className="text-slate-300">—</span>}
+                        </span>
                       </td>
-                      {monthCols.map(m=>(
+                      {monthLabels.map(m => (
                         <td key={m} className={`px-2 py-2 text-center whitespace-nowrap ${row.isTotal?'bg-emerald-50':''}`}>
-                          {pctBadge(row.months[m], row.isTotal)}
+                          {pctBadge(row.months[m]||0, row.isTotal)}
                         </td>
                       ))}
                     </tr>
@@ -2695,13 +2786,10 @@ function AlocacaoSimplificadaView({clientId, tenantId}) {
               </tbody>
             </table>
           </div>
-          <div className="px-4 py-2.5 border-t border-slate-100 text-xs text-slate-400 flex items-center justify-between">
-            <span>
-              {consolidated.filter(r=>r.isTotal).length} pessoas ·
-              {' '}{consolidated.filter(r=>!r.isTotal).length} linhas ·
-              {' '}fonte: {ALLOC_SIMPL_REL.split('/').pop()} → {ALLOC_SIMPL_SHEET}
-            </span>
-            {detected.personCol&&<span className="text-slate-300">pessoa: {detected.personCol} · cat: {detected.catCol}</span>}
+          <div className="px-4 py-2.5 border-t border-slate-100 text-xs text-slate-400">
+            {consolidated.filter(r=>r.isTotal).length} pessoas ·{' '}
+            {consolidated.filter(r=>!r.isTotal).length} linhas de etapa ·{' '}
+            fonte: {ALLOC_SIMPL_REL.split('/').pop()} → {ALLOC_SIMPL_SHEET}
           </div>
         </div>
       )}
