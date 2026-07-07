@@ -2654,20 +2654,29 @@ function AlocacaoSimplificadaView({clientId, tenantId}) {
     const {rows, monthLabels} = data;
 
     function catRank(etapa) {
-      const el = etapa.toLowerCase();
-      if (/em trabalho/i.test(el))                 return 0;
-      if (/alt[ií]ssima/i.test(el))                return 1;
-      if (/alta chance/i.test(el))                 return 2;
-      if (/m[eé]dia chance/i.test(el))             return 3;
+      if (etapa === 'Em trabalho')      return 0;
+      if (etapa === 'Altíssima Chance') return 1;
+      if (etapa === 'Alta Chance')      return 2;
+      if (etapa === 'Média Chance')     return 3;
       return 4;
     }
 
-    // Agrupar por (person, etapa)
+    // Normalizar etapa: apenas Altíssima / Alta / Média Chance mantêm nome;
+    // todo o resto vira "Em trabalho"
+    function normalizeEtapa(etapa) {
+      if (/alt[ií]ssima/i.test(etapa))     return 'Altíssima Chance';
+      if (/alta chance/i.test(etapa))       return 'Alta Chance';
+      if (/m[eé]dia chance/i.test(etapa))  return 'Média Chance';
+      return 'Em trabalho';
+    }
+
+    // Agrupar por (person, etapa normalizada)
     const groups = {};
     rows.forEach(row => {
-      const key = `${row.person}|||${row.etapa}`;
+      const etapaNorm = normalizeEtapa(row.etapa);
+      const key = `${row.person}|||${etapaNorm}`;
       if (!groups[key]) {
-        groups[key] = {person:row.person, etapa:row.etapa, visao:row.visao, projects:new Set(), months:{}};
+        groups[key] = {person:row.person, etapa:etapaNorm, visao:row.visao, projects:new Set(), months:{}};
         monthLabels.forEach(m => { groups[key].months[m] = 0; });
       }
       if (row.projeto) groups[key].projects.add(row.projeto);
@@ -2742,9 +2751,9 @@ function AlocacaoSimplificadaView({clientId, tenantId}) {
 
       {consolidated.length > 0 && (
         <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-          <div className="overflow-x-auto">
+          <div className="overflow-auto max-h-[72vh]">
             <table className="text-xs border-collapse w-full">
-              <thead>
+              <thead className="sticky top-0 z-20">
                 <tr className="bg-slate-700">
                   <th className="text-left px-3 py-2.5 font-semibold text-white whitespace-nowrap sticky left-0 bg-slate-700 z-10 border-r border-slate-600 min-w-20">Visão</th>
                   <th className="text-left px-3 py-2.5 font-semibold text-white whitespace-nowrap min-w-28">Pessoa</th>
