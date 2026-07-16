@@ -2803,8 +2803,8 @@ async function loadCandSMResponses() {
 }
 
 // Normalizes Excel rows into unified candidate rows \u2014 formato longo (long format)
-// Estrutura: C\u00d3DIGO | PROCESSO_SELETIVO | TIPO_PESQUISA | CODIGO_CANDIDATO | PERGUNTA | RESPOSTA | SUB_RESPOSTA
-// Cada linha = uma resposta de uma pergunta. Agrupa por C\u00d3DIGO (respondente).
+// Estrutura: C\u00d3DIGO (processo) | PROCESSO_SELETIVO | TIPO_PESQUISA | CODIGO_CANDIDATO | PERGUNTA | RESPOSTA | SUB_RESPOSTA
+// Chave de agrupamento: (CODIGO_CANDIDATO + '|' + C\u00d3DIGO) \u2192 1 respondente por processo
 // Returns {rows, diag}
 function normalizeCandExcelRows(excelRows) {
   if (!excelRows || !excelRows.length) return { rows: [], diag: {} };
@@ -2812,52 +2812,68 @@ function normalizeCandExcelRows(excelRows) {
   const norm = s => (s||'').toString().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]/g,'');
   const find = patterns => cols.find(c => patterns.some(p => norm(c).includes(norm(p))));
 
-  // Detecta colunas pelo nome normalizado
-  const codigoCol   = find(['codigo']) || cols[0];           // C\u00d3DIGO (respondente)
-  const processoCol = find(['processo_seletivo','processosel','processo','programa','vaga']);
-  const perguntaCol = find(['pergunta']);
-  const respostaCol = find(['resposta']);                     // RESPOSTA (antes de SUB_RESPOSTA)
+  const codigoProcesso = cols[0];                                       // C\u00d3DIGO (processo/lote)
+  const candidatoCol   = find(['codigo_candidato','candidato']);         // CODIGO_CANDIDATO (respondente)
+  const processoCol    = find(['processo_seletivo','processosel','processo','programa','vaga']);
+  const perguntaCol    = find(['pergunta']);
+  const respostaCol    = find(['resposta']);                             // RESPOSTA (antes de SUB_RESPOSTA)
 
-  // Formato longo: tem coluna PERGUNTA + RESPOSTA
   if (!perguntaCol || !respostaCol) {
-    console.warn('[CandExcel] Formato n\u00e3o reconhecido \u2014 sem coluna PERGUNTA/RESPOSTA');
     return { rows: [], diag: { error: 'Colunas PERGUNTA/RESPOSTA n\u00e3o encontradas.' } };
   }
 
-  // Agrupa todas as linhas de um mesmo respondente por C\u00d3DIGO
-  const byCode = {};
+  // Composite key: CODIGO_CANDIDATO + '|' + C\u00d3DIGO \u2192 1 grupo por respondente por processo
+  const byKey = {};
   excelRows.forEach(row => {
-    const cod = String(row[codigoCol] ?? '');
-    if (!cod || cod === 'undefined') return;
-    if (!byCode[cod]) byCode[cod] = { rows: [], processo: String(row[processoCol] || '').trim() };
-    byCode[cod].rows.push(row);
+    const cand = String(row[candidatoCol] ?? row[codigoProcesso] ?? '');
+    const cod  = String(row[codigoProcesso] ?? '');
+    const key  = cand + '|' + cod;
+    if (!cand) return;
+    if (!byKey[key]) byKey[key] = { processo: String(row[processoCol] || '').trim(), answers: {} };
+    const pergNorm = norm(row[perguntaCol] || '');
+    const resp     = String(row[respostaCol] ?? '').trim();
+    if (pergNorm && !(pergNorm in byKey[key].answers)) {
+      byKey[key].answers[pergNorm] = resp;
+    }
   });
 
-  // Encontra a linha de uma pergunta que cont\u00e9m o padr\u00e3o normalizado
-  const matchQ = (rows, pattern) => rows.find(r => norm(r[perguntaCol] || '').includes(pattern));
+  const getAns = (answers, pattern) => {
+    const k = Object.keys(answers).find(k => k.includes(pattern));
+    return k != null ? answers[k] : null;
+  };
+  const p15 = (val) => { if (val == null) return null; const n = parseInt(val, 10); return (!isNaN(n) && n >= 1 && n <= 5) ? n : null; };
 
-  const result = Object.values(byCode).map(({ rows, processo }) => {
-    // NPS: "Qual a probabilidade de voc\u00ea recomendar a Cia de Talentos para um amigo(a)?"
-    const npsRow    = matchQ(rows, 'recomendar');
-    // Impress\u00e3o: "Suas impress\u00f5es sobre esta etapa (orienta\u00e7\u00f5es, formato etc)"
-    const imprRow   = matchQ(rows, 'impressoes');
-    // Facilidade: "Facilidade para acessar e realizar a sua inscri\u00e7\u00e3o"
-    const facilRow  = matchQ(rows, 'facilidade');
-    // Coment\u00e1rio: "Quer deixar alguma sugest\u00e3o ou coment\u00e1rio sobre os itens acima?"
-    const commRow   = matchQ(rows, 'sugestao') || matchQ(rows, 'comentario');
+  // Normaliza labels de experi\u00eancia comparada (varia\u00e7\u00f5es de capitaliza\u00e7\u00e3o/espa\u00e7o)
+  const normExp = s => {
+    if (!s) return null;
+    const t = s.trim();
+    const l = t.toLowerCase();
+    if (l.startsWith('prefiro esta'))    return 'Prefiro esta';
+    if (l.startsWith('prefiro outras') || l.startsWith('prefiro outra')) return 'Prefiro outras';
+    if (l.startsWith('s') && l.includes('o semelhante')) return 'S\u00e3o semelhantes';
+    if (l.includes('1a vez') || l.includes('primeira vez')) return 'Primeira vez neste tipo';
+    if (l === 'melhor') return 'Melhor';
+    if (l === 'igual')  return 'Igual';
+    if (l === 'pior')   return 'Pior';
+    if (l.includes('saberia dizer'))     return 'N\u00e3o saberia dizer';
+    return t;
+  };
 
-    const npsVal    = npsRow    ? parseInt(npsRow[respostaCol],    10) : NaN;
-    const imprVal   = imprRow   ? parseInt(imprRow[respostaCol],   10) : NaN;
-    const facilVal  = facilRow  ? parseInt(facilRow[respostaCol],  10) : NaN;
-
+  const result = Object.values(byKey).map(({ processo, answers }) => {
+    const npsStr = getAns(answers, 'recomendar');
+    const npsVal = npsStr != null ? parseInt(npsStr, 10) : NaN;
     return {
-      programa:   processo,
-      nps:        (!isNaN(npsVal)  && npsVal  >= 0 && npsVal  <= 10) ? npsVal  : null,
-      impressao:  (!isNaN(imprVal) && imprVal >= 1 && imprVal <=  5) ? imprVal : null,
-      facilidade: (!isNaN(facilVal)&& facilVal>= 1 && facilVal<=  5) ? facilVal: null,
-      comentario: commRow ? String(commRow[respostaCol] || '').trim() : '',
-      data:       '',
-      source:     'Excel'
+      programa:       processo,
+      nps:            (!isNaN(npsVal) && npsVal >= 0 && npsVal <= 10) ? npsVal : null,
+      impressao:      p15(getAns(answers, 'impressoes')),
+      facilidade:     p15(getAns(answers, 'facilidade')),
+      conduta:        p15(getAns(answers, 'conduziu')),
+      representantes: p15(getAns(answers, 'representantes')),
+      informacoes:    p15(getAns(answers, 'informa')),
+      experiencia:    normExp(getAns(answers, 'comparada')),
+      comentario:     getAns(answers, 'sugestao') || getAns(answers, 'comentario') || '',
+      data:           '',
+      source:         'Excel'
     };
   }).filter(r => r.nps !== null);
 
@@ -11843,10 +11859,27 @@ function NpsView({
     const detratores  = withNps.filter(r => r.nps <= 6).length;
     const npsScore    = total ? Math.round(((promotores - detratores) / total) * 100) : null;
     const zona        = npsZona(npsScore);
-    const imprVals  = filtered.map(r=>r.impressao).filter(v=>v!=null);
-    const facilVals = filtered.map(r=>r.facilidade).filter(v=>v!=null);
-    const avgImpr  = imprVals.length  ? (imprVals.reduce((a,b)=>a+b,0)/imprVals.length).toFixed(2)  : null;
-    const avgFacil = facilVals.length ? (facilVals.reduce((a,b)=>a+b,0)/facilVals.length).toFixed(2) : null;
+    const imprVals      = filtered.map(r=>r.impressao).filter(v=>v!=null);
+    const facilVals     = filtered.map(r=>r.facilidade).filter(v=>v!=null);
+    const condutaVals   = filtered.map(r=>r.conduta).filter(v=>v!=null);
+    const representVals = filtered.map(r=>r.representantes).filter(v=>v!=null);
+    const infoVals      = filtered.map(r=>r.informacoes).filter(v=>v!=null);
+    const avgImpr      = imprVals.length      ? (imprVals.reduce((a,b)=>a+b,0)/imprVals.length).toFixed(2)           : null;
+    const avgFacil     = facilVals.length     ? (facilVals.reduce((a,b)=>a+b,0)/facilVals.length).toFixed(2)         : null;
+    const avgConduta   = condutaVals.length   ? (condutaVals.reduce((a,b)=>a+b,0)/condutaVals.length).toFixed(2)     : null;
+    const avgRepresent = representVals.length ? (representVals.reduce((a,b)=>a+b,0)/representVals.length).toFixed(2) : null;
+    const avgInfo      = infoVals.length      ? (infoVals.reduce((a,b)=>a+b,0)/infoVals.length).toFixed(2)           : null;
+    const ratingMetrics = [
+      avgImpr      && {label:'Impressões sobre a etapa',                       avg:avgImpr,      count:imprVals.length},
+      avgFacil     && {label:'Facilidade de inscrição',                         avg:avgFacil,     count:facilVals.length},
+      avgConduta   && {label:'Condução pela Cia de Talentos',                   avg:avgConduta,   count:condutaVals.length},
+      avgRepresent && {label:'Participação dos representantes da empresa',       avg:avgRepresent, count:representVals.length},
+      avgInfo      && {label:'Informações sobre a empresa e o programa',        avg:avgInfo,      count:infoVals.length},
+    ].filter(Boolean);
+    const expMap = {};
+    filtered.forEach(r => { if (r.experiencia) expMap[r.experiencia] = (expMap[r.experiencia]||0)+1; });
+    const expTotal   = Object.values(expMap).reduce((a,b)=>a+b,0);
+    const expEntries = Object.entries(expMap).sort((a,b)=>b[1]-a[1]);
     const dist = Array.from({length:11},(_,i)=>({label:String(i),count:withNps.filter(r=>r.nps===i).length}));
     const distMax = Math.max(...dist.map(d=>d.count),1);
     const byProg = {};
@@ -11901,16 +11934,19 @@ function NpsView({
         avgImpr ? React.createElement(NpsKpiCard,{label:'Impressão etapa',value:avgImpr+'/5',sub:`${imprVals.length} resp.`,color:'#7c3aed'})
                 : React.createElement(NpsKpiCard,{label:'Facilidade acesso',value:avgFacil?avgFacil+'/5':null,sub:'média geral',color:'#0891b2'})
       ),
-      (avgImpr||avgFacil) && React.createElement('div',{className:'grid grid-cols-2 gap-3 mb-5'},
-        avgImpr && React.createElement('div',{className:'bg-white border border-slate-200 rounded-xl p-4'},
-          React.createElement('p',{className:'text-xs font-semibold text-slate-500 mb-1'},'Suas impressões sobre esta etapa'),
-          React.createElement('p',{className:'text-3xl font-bold text-violet-600'},avgImpr),
-          React.createElement('p',{className:'text-xs text-slate-400 mt-0.5'},`média em escala 1-5 · ${imprVals.length} respostas`)
-        ),
-        avgFacil && React.createElement('div',{className:'bg-white border border-slate-200 rounded-xl p-4'},
-          React.createElement('p',{className:'text-xs font-semibold text-slate-500 mb-1'},'Facilidade para acessar e realizar esta etapa'),
-          React.createElement('p',{className:'text-3xl font-bold text-cyan-600'},avgFacil),
-          React.createElement('p',{className:'text-xs text-slate-400 mt-0.5'},`média em escala 1-5 · ${facilVals.length} respostas`)
+      ratingMetrics.length > 0 && React.createElement('div',{className:'bg-white border border-slate-200 rounded-xl p-5 mb-5'},
+        React.createElement('h3',{className:'text-sm font-semibold text-slate-700 mb-4'},'Avaliações das etapas (escala 1–5)'),
+        React.createElement('div',{className:'space-y-3'},
+          ratingMetrics.map((m,i) => React.createElement('div',{key:i},
+            React.createElement('div',{className:'flex justify-between text-xs mb-1'},
+              React.createElement('span',{className:'text-slate-600'},m.label),
+              React.createElement('span',{className:'font-semibold text-slate-700'},m.avg+'/5')
+            ),
+            React.createElement('div',{className:'h-2 bg-slate-100 rounded-full overflow-hidden'},
+              React.createElement('div',{className:'h-full rounded-full',style:{width:(parseFloat(m.avg)/5*100)+'%',background:'#7c3aed'}})
+            ),
+            React.createElement('p',{className:'text-[10px] text-slate-400 mt-0.5'},m.count.toLocaleString('pt-BR')+' respostas')
+          ))
         )
       ),
       React.createElement('div',{className:'bg-white border border-slate-200 rounded-xl p-5 mb-5'},
@@ -11931,6 +11967,24 @@ function NpsView({
           React.createElement('span',{className:'flex items-center gap-1'},React.createElement('span',{className:'w-3 h-3 rounded inline-block',style:{background:'#fcd34d'}}),'Neutros (7-8)'),
           React.createElement('span',{className:'flex items-center gap-1'},React.createElement('span',{className:'w-3 h-3 rounded inline-block',style:{background:'#86efac'}}),'Promotores (9-10)')
         )
+      ),
+      expEntries.length > 0 && React.createElement('div',{className:'bg-white border border-slate-200 rounded-xl p-5 mb-5'},
+        React.createElement('h3',{className:'text-sm font-semibold text-slate-700 mb-4'},'Experiência comparada a outros processos seletivos'),
+        React.createElement('div',{className:'space-y-3'},
+          expEntries.map(([label,count]) => {
+            const pct = expTotal ? Math.round((count/expTotal)*100) : 0;
+            return React.createElement('div',{key:label},
+              React.createElement('div',{className:'flex justify-between text-xs mb-1'},
+                React.createElement('span',{className:'text-slate-600'},label),
+                React.createElement('span',{className:'text-slate-500 font-medium'},pct+'% ('+count.toLocaleString('pt-BR')+')')
+              ),
+              React.createElement('div',{className:'h-2.5 bg-slate-100 rounded-full overflow-hidden'},
+                React.createElement('div',{className:'h-full rounded-full',style:{width:pct+'%',background:'#f59e0b',transition:'width 0.3s'}})
+              )
+            );
+          })
+        ),
+        React.createElement('p',{className:'text-[10px] text-slate-400 mt-3'},expTotal.toLocaleString('pt-BR')+' respostas')
       ),
       topProgs.length > 0 && React.createElement('div',{className:'bg-white border border-slate-200 rounded-xl p-5 mb-5'},
         React.createElement('h3',{className:'text-sm font-semibold text-slate-700 mb-4'},'Top programas por volume (mín. 3 respostas NPS)'),
