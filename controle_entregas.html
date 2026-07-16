@@ -2810,7 +2810,7 @@ function normalizeCandExcelRows(excelRows) {
   const candidatoCol   = find(['codigo_candidato','candidato']);         // CODIGO_CANDIDATO (respondente)
   const processoCol    = find(['processo_seletivo','processosel','processo','programa','vaga']);
   const tipoPesqCol    = find(['tipo_pesquisa','tipopesquisa']);         // TIPO_PESQUISA
-  const idAtsCol       = find(['id_programa_ats','idprogramaats','idprogramaats','id programa ats','idats']); // ID Programa ATS
+  const idAtsCol       = find(['programaats','iddoprogramaats','idprogramaats','id programa ats','idprograma','idats']); // ID Programa ATS — 'programaats' matches both 'ID Programa ATS' e 'ID_do_Programa_ATS'
   const perguntaCol    = find(['pergunta']);
   const respostaCol    = find(['resposta']);                             // RESPOSTA (antes de SUB_RESPOSTA)
 
@@ -2894,7 +2894,14 @@ function normalizeCandExcelRows(excelRows) {
     };
   });
 
-  return { rows: result, diag: { totalInput: excelRows.length, cols } };
+  const nullCandCount = excelRows.filter(row => !String(row[candidatoCol] ?? row[cols[0]] ?? '')).length;
+  return { rows: result, diag: {
+    totalInput: excelRows.length,
+    uniqueRespondents: result.length,
+    nullCandSkipped: nullCandCount,
+    colsDetected: { candidatoCol, processoCol, idAtsCol, tipoPesqCol },
+    cols
+  }};
 }
 
 // ─── App ──────────────────────────────────────────────────────────────────────
@@ -11028,12 +11035,19 @@ function NpsView({
   }, [candRows, projects]);
 
   const candProgOpts     = useMemo(() => [...new Set((candRows||[]).map(r=>r.programa).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'pt-BR')), [candRows]);
-  // Opções de dimensão derivadas somente do atsToProject (match por ATS ID — fonte confiável do SP)
-  const candCicloOpts    = useMemo(() => [...new Set(Object.values(atsToProject).map(p=>p.ciclo).filter(Boolean))].sort(), [atsToProject]);
-  const candSemestreOpts = useMemo(() => [...new Set(Object.values(atsToProject).map(p=>p.semestre).filter(Boolean))].sort(), [atsToProject]);
-  const candPublicoOpts  = useMemo(() => [...new Set(Object.values(atsToProject).map(p=>p.publico).filter(Boolean))].sort(), [atsToProject]);
-  const candProdutoOpts  = useMemo(() => [...new Set(Object.values(atsToProject).map(p=>p.produto).filter(Boolean))].sort(), [atsToProject]);
-  const candTipoOpts     = useMemo(() => [...new Set(Object.values(atsToProject).map(p=>p.tipoProg).filter(Boolean))].sort(), [atsToProject]);
+  // Opções de dimensão: união de atsToProject (Excel, primário) + progToProject (SM, fallback)
+  // O LOOKUP do filtro ainda usa atsToProject → progToProject em cascata — aqui só expandimos as opções
+  const _candDimProjects = useMemo(() => {
+    const byId = {};
+    Object.values(progToProject).forEach(p => { byId[p.id] = p; });
+    Object.values(atsToProject).forEach(p => { byId[p.id] = p; }); // ATS sobrescreve (mais confiável)
+    return Object.values(byId);
+  }, [atsToProject, progToProject]);
+  const candCicloOpts    = useMemo(() => [...new Set(_candDimProjects.map(p=>p.ciclo).filter(Boolean))].sort(), [_candDimProjects]);
+  const candSemestreOpts = useMemo(() => [...new Set(_candDimProjects.map(p=>p.semestre).filter(Boolean))].sort(), [_candDimProjects]);
+  const candPublicoOpts  = useMemo(() => [...new Set(_candDimProjects.map(p=>p.publico).filter(Boolean))].sort(), [_candDimProjects]);
+  const candProdutoOpts  = useMemo(() => [...new Set(_candDimProjects.map(p=>p.produto).filter(Boolean))].sort(), [_candDimProjects]);
+  const candTipoOpts     = useMemo(() => [...new Set(_candDimProjects.map(p=>p.tipoProg).filter(Boolean))].sort(), [_candDimProjects]);
   const candTipoPesqOpts = useMemo(() => [...new Set((candRows||[]).map(r=>r.tipoPesquisa).filter(Boolean))].sort(), [candRows]);
   const [showInspector, setShowInspector] = useState(false);
 
@@ -12023,6 +12037,17 @@ function NpsView({
       React.createElement('div',{className:'flex items-center gap-2 mb-4 text-xs text-slate-400 flex-wrap'},
         React.createElement('span',{className:'bg-blue-50 text-blue-600 border border-blue-200 rounded-full px-2.5 py-0.5 font-medium'},`SurveyMonkey: ${smCount.toLocaleString('pt-BR')} resp.`),
         React.createElement('span',{className:'bg-green-50 text-green-600 border border-green-200 rounded-full px-2.5 py-0.5 font-medium'},`Excel 80.20: ${excelCount.toLocaleString('pt-BR')} resp.`),
+        candExcelDiag && React.createElement('span',{
+          title: [
+            `Linhas brutas no Excel: ${(candExcelDiag.totalInput||0).toLocaleString('pt-BR')}`,
+            `Respondentes únicos: ${(candExcelDiag.uniqueRespondents||0).toLocaleString('pt-BR')}`,
+            `Sem candidato (ignorados): ${candExcelDiag.nullCandSkipped||0}`,
+            `Coluna CODIGO_CANDIDATO: ${candExcelDiag.colsDetected?.candidatoCol||'❌ não encontrada'}`,
+            `Coluna ID Programa ATS: ${candExcelDiag.colsDetected?.idAtsCol||'❌ não encontrada'}`,
+            `Coluna TIPO_PESQUISA: ${candExcelDiag.colsDetected?.tipoPesqCol||'❌ não encontrada'}`,
+          ].join('\n'),
+          className:'bg-slate-50 text-slate-400 border border-slate-200 rounded-full px-2.5 py-0.5 cursor-help font-medium'
+        },'ℹ Excel diag (hover)'),
         React.createElement('span',{className:'text-slate-300'},'·'),
         React.createElement('span',null,`${filtered.length.toLocaleString('pt-BR')} exibindo (filtro aplicado)`)
       ),
