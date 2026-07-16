@@ -10906,9 +10906,46 @@ function NpsView({
   const [candLoading, setCandLoading] = useState(false);
   const [candErr,     setCandErr]     = useState(null);
   const [candProg,    setCandProg]    = useState('');
-  const [candFiltro,  setCandFiltro]  = useState('');
-  const [candSource,  setCandSource]  = useState('all');
+  const [candFiltro,    setCandFiltro]    = useState([]);   // array para multi-select
+  const [candSource,    setCandSource]    = useState('all');
   const [candExcelDiag, setCandExcelDiag] = useState(null);
+  const [fCandCiclo,    setFCandCiclo]    = useState([]);
+  const [fCandSemestre, setFCandSemestre] = useState([]);
+  const [fCandPublico,  setFCandPublico]  = useState([]);
+  const [fCandProduto,  setFCandProduto]  = useState([]);
+  const [fCandTipo,     setFCandTipo]     = useState([]);
+
+  // Faz matching fuzzy entre nome do programa (Excel/SM) e projeto do SP
+  const progToProject = useMemo(() => {
+    if (!candRows || !projects.length) return {};
+    const normStr = s => (s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^a-z0-9 ]/g,'').trim();
+    const stopWords = new Set(['de','da','do','dos','das','para','com','em','na','no','nos','nas','um','uma','e','o','a','os','as','por','que','programa','processo','seletivo','track','trainees']);
+    const words = s => normStr(s).split(/\s+/).filter(w => w.length >= 2 && !stopWords.has(w));
+    const map = {};
+    const uniqueProgs = [...new Set(candRows.map(r => r.programa).filter(Boolean))];
+    uniqueProgs.forEach(prog => {
+      const progWords = new Set(words(prog));
+      if (!progWords.size) return;
+      let bestMatch = null, bestScore = 0;
+      projects.forEach(p => {
+        const projWords = words(p.title);
+        if (!projWords.length) return;
+        const overlap = projWords.filter(w => progWords.has(w)).length;
+        if (!overlap) return;
+        const score = overlap / Math.max(projWords.length, progWords.size, 1);
+        if (score > bestScore) { bestScore = score; bestMatch = p; }
+      });
+      if (bestScore >= 0.2 && bestMatch) map[prog] = bestMatch;
+    });
+    return map;
+  }, [candRows, projects]);
+
+  const candProgOpts     = useMemo(() => [...new Set((candRows||[]).map(r=>r.programa).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'pt-BR')), [candRows]);
+  const candCicloOpts    = useMemo(() => [...new Set(Object.values(progToProject).map(p=>p.ciclo).filter(Boolean))].sort(), [progToProject]);
+  const candSemestreOpts = useMemo(() => [...new Set(Object.values(progToProject).map(p=>p.semestre).filter(Boolean))].sort(), [progToProject]);
+  const candPublicoOpts  = useMemo(() => [...new Set(Object.values(progToProject).map(p=>p.publico).filter(Boolean))].sort(), [progToProject]);
+  const candProdutoOpts  = useMemo(() => [...new Set(Object.values(progToProject).map(p=>p.produto).filter(Boolean))].sort(), [progToProject]);
+  const candTipoOpts     = useMemo(() => [...new Set(Object.values(progToProject).map(p=>p.tipoProg).filter(Boolean))].sort(), [progToProject]);
   const [showInspector, setShowInspector] = useState(false);
 
   // Carregar Excel CLI ao montar (as_eb é aba padrão)
@@ -11849,7 +11886,15 @@ function NpsView({
     if (!candRows) return React.createElement('div',{className:'text-center text-slate-400 py-12'},'Nenhum dado carregado.');
     const filtered = candRows.filter(r => {
       if (candSource !== 'all' && r.source !== candSource) return false;
-      if (candFiltro && r.programa !== candFiltro) return false;
+      if (candFiltro.length && !candFiltro.includes(r.programa)) return false;
+      if (fCandCiclo.length || fCandSemestre.length || fCandPublico.length || fCandProduto.length || fCandTipo.length) {
+        const proj = progToProject[r.programa];
+        if (fCandCiclo.length    && (!proj || !fCandCiclo.includes(proj.ciclo)))       return false;
+        if (fCandSemestre.length && (!proj || !fCandSemestre.includes(proj.semestre))) return false;
+        if (fCandPublico.length  && (!proj || !fCandPublico.includes(proj.publico)))   return false;
+        if (fCandProduto.length  && (!proj || !fCandProduto.includes(proj.produto)))   return false;
+        if (fCandTipo.length     && (!proj || !fCandTipo.includes(proj.tipoProg)))     return false;
+      }
       return true;
     });
     const withNps = filtered.filter(r => r.nps !== null && r.nps >= 0 && r.nps <= 10);
@@ -11902,28 +11947,27 @@ function NpsView({
         React.createElement('span',{className:'text-slate-300'},'·'),
         React.createElement('span',null,`${filtered.length.toLocaleString('pt-BR')} exibindo (filtro aplicado)`)
       ),
-      React.createElement('div',{className:'flex flex-wrap gap-3 mb-5 bg-white border border-slate-200 rounded-xl p-4 items-end'},
+      React.createElement('div',{className:'flex flex-wrap gap-2 mb-5 bg-white border border-slate-200 rounded-xl p-3 items-end'},
+        React.createElement('div',{className:'text-xs text-slate-400 self-center mr-1 font-medium'},'Filtros:'),
         React.createElement('div',{className:'flex flex-col gap-1'},
           React.createElement('label',{className:'text-xs font-medium text-slate-500'},'Fonte'),
-          React.createElement('select',{value:candSource,onChange:e=>setCandSource(e.target.value),className:'text-sm border border-slate-200 rounded-lg px-3 py-1.5 bg-white'},
-            React.createElement('option',{value:'all'},'Todas as fontes'),
+          React.createElement('select',{value:candSource,onChange:e=>setCandSource(e.target.value),className:'text-sm border border-slate-200 rounded-lg px-2 py-1.5 bg-white'},
+            React.createElement('option',{value:'all'},'Todas'),
             React.createElement('option',{value:'SM'},'SurveyMonkey'),
             React.createElement('option',{value:'Excel'},'Excel 80.20')
           )
         ),
-        React.createElement('div',{className:'flex flex-col gap-1'},
-          React.createElement('label',{className:'text-xs font-medium text-slate-500'},'Programa'),
-          React.createElement('select',{
-            value: candFiltro,
-            onChange: e => setCandFiltro(e.target.value),
-            className: 'text-sm border border-slate-200 rounded-lg px-3 py-1.5 bg-white min-w-[220px]'
-          },
-            React.createElement('option',{value:''},'Todos os programas'),
-            Array.from(new Set(candRows.map(r=>r.programa).filter(Boolean))).sort((a,b)=>a.localeCompare(b,'pt-BR')).map(p =>
-              React.createElement('option',{key:p, value:p}, p)
-            )
-          )
-        )
+        React.createElement(MultiSelect,{label:'Programa',value:candFiltro,onChange:setCandFiltro,opts:candProgOpts}),
+        candCicloOpts.length    > 0 && React.createElement(MultiSelect,{label:'Ciclo',       value:fCandCiclo,    onChange:setFCandCiclo,    opts:candCicloOpts}),
+        candSemestreOpts.length > 0 && React.createElement(MultiSelect,{label:'Semestre',    value:fCandSemestre, onChange:setFCandSemestre, opts:candSemestreOpts}),
+        candPublicoOpts.length  > 0 && React.createElement(MultiSelect,{label:'Público',     value:fCandPublico,  onChange:setFCandPublico,  opts:candPublicoOpts}),
+        candProdutoOpts.length  > 0 && React.createElement(MultiSelect,{label:'Produto',     value:fCandProduto,  onChange:setFCandProduto,  opts:candProdutoOpts}),
+        candTipoOpts.length     > 0 && React.createElement(MultiSelect,{label:'Tipo Progr.', value:fCandTipo,     onChange:setFCandTipo,     opts:candTipoOpts}),
+        (candFiltro.length||fCandCiclo.length||fCandSemestre.length||fCandPublico.length||fCandProduto.length||fCandTipo.length) &&
+          React.createElement('button',{
+            onClick:()=>{setCandFiltro([]);setFCandCiclo([]);setFCandSemestre([]);setFCandPublico([]);setFCandProduto([]);setFCandTipo([]);},
+            className:'text-xs text-red-500 hover:text-red-700 self-end pb-1.5 whitespace-nowrap'
+          },'✕ Limpar filtros')
       ),
       React.createElement('div',{className:'grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-5'},
         React.createElement(NpsKpiCard,{label:'Respondentes',value:total,sub:'com nota NPS'}),
