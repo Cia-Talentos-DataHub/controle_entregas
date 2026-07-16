@@ -2765,7 +2765,7 @@ async function loadCandSMResponses() {
   const allData = [...(firstResp.data || [])];
 
   // Fetch remaining pages in parallel batches of 10
-  const BATCH_SIZE = 10;
+  const BATCH_SIZE = 3;
   for (let batchStart = 2; batchStart <= totalPages; batchStart += BATCH_SIZE) {
     const pageNums = [];
     for (let p = batchStart; p < Math.min(batchStart + BATCH_SIZE, totalPages + 1); p++) {
@@ -2794,6 +2794,7 @@ async function loadCandSMResponses() {
       impressao: imprAns ? (SM_CAND_IMPR_CHOICES[imprAns.choice_id] || null) : null,
       facilidade: facilAns ? (SM_CAND_FACIL_CHOICES[facilAns.choice_id] || null) : null,
       comentario: comentAns?.text || '',
+      tipoPesquisa: 'Avaliado em etapa (survey)',
       data: (r.date_created || '').slice(0,10),
       source: 'SM'
     };
@@ -2815,6 +2816,7 @@ function normalizeCandExcelRows(excelRows) {
   const codigoProcesso = cols[0];                                       // C\u00d3DIGO (processo/lote)
   const candidatoCol   = find(['codigo_candidato','candidato']);         // CODIGO_CANDIDATO (respondente)
   const processoCol    = find(['processo_seletivo','processosel','processo','programa','vaga']);
+  const tipoPesqCol    = find(['tipo_pesquisa','tipopesquisa']);         // TIPO_PESQUISA
   const perguntaCol    = find(['pergunta']);
   const respostaCol    = find(['resposta']);                             // RESPOSTA (antes de SUB_RESPOSTA)
 
@@ -2829,12 +2831,20 @@ function normalizeCandExcelRows(excelRows) {
     const cod  = String(row[codigoProcesso] ?? '');
     const key  = cand + '|' + cod;
     if (!cand) return;
-    if (!byKey[key]) byKey[key] = { processo: String(row[processoCol] || '').trim(), answers: {} };
+    if (!byKey[key]) byKey[key] = { processo: String(row[processoCol] || '').trim(), tipoPesquisa: String(row[tipoPesqCol] || '').trim(), answers: {}, lists: {} };
     const pergNorm = norm(row[perguntaCol] || '');
     const resp     = String(row[respostaCol] ?? '').trim();
-    if (pergNorm && !(pergNorm in byKey[key].answers)) {
-      byKey[key].answers[pergNorm] = resp;
+    if (!pergNorm || !resp) return;
+    // Perguntas de múltipla escolha: coleta todas as respostas em lista
+    if (pergNorm.includes('expectativas') || pergNorm.includes('motivos')) {
+      if (!byKey[key].lists[pergNorm]) byKey[key].lists[pergNorm] = [];
+      byKey[key].lists[pergNorm].push(resp);
+    } else {
+      if (!(pergNorm in byKey[key].answers)) byKey[key].answers[pergNorm] = resp;
     }
+    // Captura também em campos nomeados para perguntas específicas
+    if (pergNorm.includes('alemdeste') && !byKey[key].outrosPS) byKey[key].outrosPS = resp;
+    if (pergNorm.includes('sentimos')  && !byKey[key].sentimosReason) byKey[key].sentimosReason = resp;
   });
 
   const getAns = (answers, pattern) => {
@@ -2859,7 +2869,12 @@ function normalizeCandExcelRows(excelRows) {
     return t;
   };
 
-  const result = Object.values(byKey).map(({ processo, answers }) => {
+  const result = Object.values(byKey).map(entry => {
+    const { processo, tipoPesquisa, answers, lists, outrosPS, sentimosReason } = entry;
+    const getList = pattern => {
+      const k = Object.keys(lists||{}).find(k => k.includes(pattern));
+      return k ? lists[k] : [];
+    };
     const npsStr = getAns(answers, 'recomendar');
     const npsVal = npsStr != null ? parseInt(npsStr, 10) : NaN;
     return {
@@ -2871,7 +2886,13 @@ function normalizeCandExcelRows(excelRows) {
       representantes: p15(getAns(answers, 'representantes')),
       informacoes:    p15(getAns(answers, 'informa')),
       experiencia:    normExp(getAns(answers, 'comparada')),
+      expInscricao:   normExp(getAns(answers, 'anteriores')),
+      motivos:        getList('motivos'),
+      expectativas:   getList('expectativas'),
       comentario:     getAns(answers, 'sugestao') || getAns(answers, 'comentario') || '',
+      tipoPesquisa:   tipoPesquisa || '',
+      outrosPS:       outrosPS || null,
+      sentimosReason: sentimosReason || null,
       data:           '',
       source:         'Excel'
     };
@@ -10914,6 +10935,7 @@ function NpsView({
   const [fCandPublico,  setFCandPublico]  = useState([]);
   const [fCandProduto,  setFCandProduto]  = useState([]);
   const [fCandTipo,     setFCandTipo]     = useState([]);
+  const [fCandTipoPesq, setFCandTipoPesq] = useState([]);
 
   // Matching programa (Excel/SM) → projeto SP — mesmo algoritmo do CSAT
   const progToProject = useMemo(() => {
@@ -10936,9 +10958,20 @@ function NpsView({
     const typeConflict=(a,b)=>{for(const t of PTYPES){if(t.re.test(a)){for(const u of PTYPES){if(u.re!==t.re&&u.re.test(b))return true;}}}return false;};
     // Precomputa projetos normalizados
     const spNormed = projects.map(p=>({p, cli:normStr(p.client||''), ttl:normStr(p.title||''), ciclo:p.ciclo||null}));
+    const stopWords = new Set(['de','da','do','das','dos','e','em','para','por','com','a','o','as','os','um','uma','nos','nas','ao','aos','sua','suas','seu','seus','na','no','programa','processo','seletivo','este','esta']);
+    const wordsOf = s => s.split(' ').filter(w => w.length >= 3 && !stopWords.has(w));
+    const wordOverlap = (a, b) => {
+      const wa = new Set(wordsOf(a)), wb = wordsOf(b);
+      if (!wa.size || !wb.length) return 0;
+      const shared = wb.filter(w => wa.has(w)).length;
+      return shared / Math.max(wa.size, wb.length);
+    };
     const nameMatch = (cnNorm, sp) => {
-      const ok=(sp.cli.length>=3&&(cnNorm.includes(sp.cli)||sp.cli.includes(cnNorm)))||(sp.ttl.length>=3&&(cnNorm.includes(sp.ttl)||sp.ttl.includes(cnNorm)));
-      if (!ok) return false;
+      // Correspondência por substring (igual ao CSAT)
+      const subOk = (sp.cli.length>=3&&(cnNorm.includes(sp.cli)||sp.cli.includes(cnNorm)))||(sp.ttl.length>=3&&(cnNorm.includes(sp.ttl)||sp.ttl.includes(cnNorm)));
+      // Fallback: sobreposição de palavras ≥ 45%
+      const wordOk = !subOk && (wordOverlap(cnNorm, sp.ttl) >= 0.45 || (sp.cli.length>=4 && wordOverlap(cnNorm, sp.cli) >= 0.45));
+      if (!subOk && !wordOk) return false;
       if (typeConflict(cnNorm,sp.ttl)) return false;
       const cnCiclo=extractYR(cnNorm);
       if (cnCiclo&&sp.ciclo&&cnCiclo!==sp.ciclo) return false;
@@ -10961,6 +10994,7 @@ function NpsView({
   const candPublicoOpts  = useMemo(() => [...new Set(Object.values(progToProject).map(p=>p.publico).filter(Boolean))].sort(), [progToProject]);
   const candProdutoOpts  = useMemo(() => [...new Set(Object.values(progToProject).map(p=>p.produto).filter(Boolean))].sort(), [progToProject]);
   const candTipoOpts     = useMemo(() => [...new Set(Object.values(progToProject).map(p=>p.tipoProg).filter(Boolean))].sort(), [progToProject]);
+  const candTipoPesqOpts = useMemo(() => [...new Set((candRows||[]).map(r=>r.tipoPesquisa).filter(Boolean))].sort(), [candRows]);
   const [showInspector, setShowInspector] = useState(false);
 
   // Carregar Excel CLI ao montar (as_eb é aba padrão)
@@ -10998,16 +11032,7 @@ function NpsView({
     // ── 2. Excel com timeout de 25s ──
     try {
       setCandProg('Carregando Excel do SharePoint…');
-      const excelLoad = (async () => {
-        const sheets = ['Pesquisa_candidato','Pesquisa_Candidato','Planilha1','Sheet1'];
-        for (const sh of sheets) {
-          try {
-            const r = await fetchExcelSheet(clientId, tenantId, NPS_CAND_EXCEL_REL, sh, null, {autoHeader:true});
-            if (r && r.length) return r;
-          } catch(e) { console.warn('Excel sheet', sh, ':', e.message); }
-        }
-        return [];
-      })();
+      const excelLoad = fetchExcelSheet(clientId, tenantId, NPS_CAND_EXCEL_REL, null);
       const timeoutP = new Promise((_,rej) =>
         setTimeout(()=>rej(new Error('Excel não respondeu em 25s — verifique o caminho do arquivo')), 25000)
       );
@@ -11902,6 +11927,7 @@ function NpsView({
     const filtered = candRows.filter(r => {
       if (candSource !== 'all' && r.source !== candSource) return false;
       if (candFiltro.length && !candFiltro.includes(r.programa)) return false;
+      if (fCandTipoPesq.length && !fCandTipoPesq.includes(r.tipoPesquisa)) return false;
       if (fCandCiclo.length || fCandSemestre.length || fCandPublico.length || fCandProduto.length || fCandTipo.length) {
         const proj = progToProject[r.programa];
         if (fCandCiclo.length    && (!proj || !fCandCiclo.includes(proj.ciclo)))       return false;
@@ -11977,9 +12003,10 @@ function NpsView({
         candPublicoOpts.length  > 0 && React.createElement(MultiSelect,{label:'Público',     value:fCandPublico,  onChange:setFCandPublico,  opts:candPublicoOpts}),
         candProdutoOpts.length  > 0 && React.createElement(MultiSelect,{label:'Produto',     value:fCandProduto,  onChange:setFCandProduto,  opts:candProdutoOpts}),
         candTipoOpts.length     > 0 && React.createElement(MultiSelect,{label:'Tipo Progr.', value:fCandTipo,     onChange:setFCandTipo,     opts:candTipoOpts}),
-        (candFiltro.length||fCandCiclo.length||fCandSemestre.length||fCandPublico.length||fCandProduto.length||fCandTipo.length) &&
+        candTipoPesqOpts.length > 0 && React.createElement(MultiSelect,{label:'Tipo Pesquisa',value:fCandTipoPesq,onChange:setFCandTipoPesq,opts:candTipoPesqOpts}),
+        (candFiltro.length||fCandCiclo.length||fCandSemestre.length||fCandPublico.length||fCandProduto.length||fCandTipo.length||fCandTipoPesq.length) &&
           React.createElement('button',{
-            onClick:()=>{setCandFiltro([]);setFCandCiclo([]);setFCandSemestre([]);setFCandPublico([]);setFCandProduto([]);setFCandTipo([]);},
+            onClick:()=>{setCandFiltro([]);setFCandCiclo([]);setFCandSemestre([]);setFCandPublico([]);setFCandProduto([]);setFCandTipo([]);setFCandTipoPesq([]);},
             className:'text-xs text-red-500 hover:text-red-700 self-end pb-1.5 whitespace-nowrap'
           },'✕ Limpar filtros')
       ),
@@ -12044,6 +12071,138 @@ function NpsView({
         ),
         React.createElement('p',{className:'text-[10px] text-slate-400 mt-3'},expTotal.toLocaleString('pt-BR')+' respostas')
       ),
+      (() => {
+        const inscMap = {};
+        filtered.forEach(r => { if (r.expInscricao) inscMap[r.expInscricao] = (inscMap[r.expInscricao]||0)+1; });
+        const inscTotal = Object.values(inscMap).reduce((a,b)=>a+b,0);
+        const inscEntries = Object.entries(inscMap).sort((a,b)=>b[1]-a[1]);
+        if (!inscEntries.length) return null;
+        return React.createElement('div',{className:'bg-white border border-slate-200 rounded-xl p-5 mb-5'},
+          React.createElement('h3',{className:'text-sm font-semibold text-slate-700 mb-1'},'Experiência com inscrição comparada a outros processos'),
+          React.createElement('p',{className:'text-[10px] text-slate-400 mb-4'},'Fonte: Excel 80.20'),
+          React.createElement('div',{className:'space-y-3'},
+            inscEntries.map(([label,count]) => {
+              const pct = inscTotal ? Math.round((count/inscTotal)*100) : 0;
+              return React.createElement('div',{key:label},
+                React.createElement('div',{className:'flex justify-between text-xs mb-1'},
+                  React.createElement('span',{className:'text-slate-600'},label),
+                  React.createElement('span',{className:'text-slate-500 font-medium'},pct+'% ('+count.toLocaleString('pt-BR')+')')
+                ),
+                React.createElement('div',{className:'h-2.5 bg-slate-100 rounded-full overflow-hidden'},
+                  React.createElement('div',{className:'h-full rounded-full',style:{width:pct+'%',background:'#0891b2',transition:'width 0.3s'}})
+                )
+              );
+            })
+          ),
+          React.createElement('p',{className:'text-[10px] text-slate-400 mt-3'},inscTotal.toLocaleString('pt-BR')+' respostas')
+        );
+      })(),
+      (() => {
+        const motMap = {};
+        filtered.forEach(r => { (r.motivos||[]).forEach(v => { if (v) motMap[v.trim()] = (motMap[v.trim()]||0)+1; }); });
+        const motTotal = filtered.filter(r => (r.motivos||[]).length > 0).length;
+        const motEntries = Object.entries(motMap).sort((a,b)=>b[1]-a[1]).slice(0,10);
+        if (!motEntries.length) return null;
+        const motMax = motEntries[0]?.[1] || 1;
+        return React.createElement('div',{className:'bg-white border border-slate-200 rounded-xl p-5 mb-5'},
+          React.createElement('h3',{className:'text-sm font-semibold text-slate-700 mb-1'},'Principais motivos de escolha da vaga'),
+          React.createElement('p',{className:'text-[10px] text-slate-400 mb-4'},'Fonte: Excel 80.20 · '+motTotal.toLocaleString('pt-BR')+' respondentes'),
+          React.createElement('div',{className:'space-y-2'},
+            motEntries.map(([label,count]) => {
+              const pct = motTotal ? Math.round((count/motTotal)*100) : 0;
+              return React.createElement('div',{key:label},
+                React.createElement('div',{className:'flex justify-between text-xs mb-1'},
+                  React.createElement('span',{className:'text-slate-600 truncate max-w-xs'},label),
+                  React.createElement('span',{className:'text-slate-500 font-medium ml-2 whitespace-nowrap'},count.toLocaleString('pt-BR')+' ('+pct+'%)')
+                ),
+                React.createElement('div',{className:'h-2.5 bg-slate-100 rounded-full overflow-hidden'},
+                  React.createElement('div',{className:'h-full rounded-full',style:{width:Math.round((count/motMax)*100)+'%',background:'#7c3aed',transition:'width 0.3s'}})
+                )
+              );
+            })
+          )
+        );
+      })(),
+      (() => {
+        const expMap2 = {};
+        filtered.forEach(r => { (r.expectativas||[]).forEach(v => { if (v) expMap2[v.trim()] = (expMap2[v.trim()]||0)+1; }); });
+        const expTotal2 = filtered.filter(r => (r.expectativas||[]).length > 0).length;
+        const expEntries2 = Object.entries(expMap2).sort((a,b)=>b[1]-a[1]).slice(0,10);
+        if (!expEntries2.length) return null;
+        const expMax2 = expEntries2[0]?.[1] || 1;
+        return React.createElement('div',{className:'bg-white border border-slate-200 rounded-xl p-5 mb-5'},
+          React.createElement('h3',{className:'text-sm font-semibold text-slate-700 mb-1'},'Principais expectativas para o programa'),
+          React.createElement('p',{className:'text-[10px] text-slate-400 mb-4'},'Fonte: Excel 80.20 · '+expTotal2.toLocaleString('pt-BR')+' respondentes'),
+          React.createElement('div',{className:'space-y-2'},
+            expEntries2.map(([label,count]) => {
+              const pct = expTotal2 ? Math.round((count/expTotal2)*100) : 0;
+              return React.createElement('div',{key:label},
+                React.createElement('div',{className:'flex justify-between text-xs mb-1'},
+                  React.createElement('span',{className:'text-slate-600 truncate max-w-xs'},label),
+                  React.createElement('span',{className:'text-slate-500 font-medium ml-2 whitespace-nowrap'},count.toLocaleString('pt-BR')+' ('+pct+'%)')
+                ),
+                React.createElement('div',{className:'h-2.5 bg-slate-100 rounded-full overflow-hidden'},
+                  React.createElement('div',{className:'h-full rounded-full',style:{width:Math.round((count/expMax2)*100)+'%',background:'#059669',transition:'width 0.3s'}})
+                )
+              );
+            })
+          )
+        );
+      })(),
+      (() => {
+        const outrosMap = {};
+        filtered.forEach(r => { if (r.outrosPS) outrosMap[r.outrosPS] = (outrosMap[r.outrosPS]||0)+1; });
+        const outrosTotal = Object.values(outrosMap).reduce((a,b)=>a+b,0);
+        const outrosEntries = Object.entries(outrosMap).sort((a,b)=>b[1]-a[1]);
+        if (!outrosEntries.length) return null;
+        const outrosMax = outrosEntries[0]?.[1] || 1;
+        return React.createElement('div',{className:'bg-white border border-slate-200 rounded-xl p-5 mb-5'},
+          React.createElement('h3',{className:'text-sm font-semibold text-slate-700 mb-1'},'Participou de outros processos seletivos este ano?'),
+          React.createElement('p',{className:'text-[10px] text-slate-400 mb-4'},'Fonte: Excel 80.20'),
+          React.createElement('div',{className:'space-y-3'},
+            outrosEntries.map(([label,count]) => {
+              const pct = outrosTotal ? Math.round((count/outrosTotal)*100) : 0;
+              return React.createElement('div',{key:label},
+                React.createElement('div',{className:'flex justify-between text-xs mb-1'},
+                  React.createElement('span',{className:'text-slate-600'},label),
+                  React.createElement('span',{className:'text-slate-500 font-medium'},pct+'% ('+count.toLocaleString('pt-BR')+')')
+                ),
+                React.createElement('div',{className:'h-2.5 bg-slate-100 rounded-full overflow-hidden'},
+                  React.createElement('div',{className:'h-full rounded-full',style:{width:Math.round((count/outrosMax)*100)+'%',background:'#f59e0b',transition:'width 0.3s'}})
+                )
+              );
+            })
+          ),
+          React.createElement('p',{className:'text-[10px] text-slate-400 mt-3'},outrosTotal.toLocaleString('pt-BR')+' respostas')
+        );
+      })(),
+      (() => {
+        const sentimosMap = {};
+        filtered.forEach(r => { if (r.sentimosReason) sentimosMap[r.sentimosReason] = (sentimosMap[r.sentimosReason]||0)+1; });
+        const sentimosTotal = Object.values(sentimosMap).reduce((a,b)=>a+b,0);
+        const sentimosEntries = Object.entries(sentimosMap).sort((a,b)=>b[1]-a[1]);
+        if (!sentimosEntries.length) return null;
+        const sentimosMax = sentimosEntries[0]?.[1] || 1;
+        return React.createElement('div',{className:'bg-white border border-slate-200 rounded-xl p-5 mb-5'},
+          React.createElement('h3',{className:'text-sm font-semibold text-slate-700 mb-1'},'Motivos de ausência na etapa'),
+          React.createElement('p',{className:'text-[10px] text-slate-400 mb-4'},'Fonte: Excel 80.20 · candidatos que não puderam participar'),
+          React.createElement('div',{className:'space-y-3'},
+            sentimosEntries.map(([label,count]) => {
+              const pct = sentimosTotal ? Math.round((count/sentimosTotal)*100) : 0;
+              return React.createElement('div',{key:label},
+                React.createElement('div',{className:'flex justify-between text-xs mb-1'},
+                  React.createElement('span',{className:'text-slate-600'},label),
+                  React.createElement('span',{className:'text-slate-500 font-medium'},pct+'% ('+count.toLocaleString('pt-BR')+')')
+                ),
+                React.createElement('div',{className:'h-2.5 bg-slate-100 rounded-full overflow-hidden'},
+                  React.createElement('div',{className:'h-full rounded-full',style:{width:Math.round((count/sentimosMax)*100)+'%',background:'#dc2626',transition:'width 0.3s'}})
+                )
+              );
+            })
+          ),
+          React.createElement('p',{className:'text-[10px] text-slate-400 mt-3'},sentimosTotal.toLocaleString('pt-BR')+' respostas')
+        );
+      })(),
       allProgs.length > 0 && React.createElement('div',{className:'bg-white border border-slate-200 rounded-xl p-5 mb-5'},
         React.createElement('div',{className:'flex items-center justify-between mb-3'},
           React.createElement('h3',{className:'text-sm font-semibold text-slate-700'},`Programas (${allProgs.length})`),
