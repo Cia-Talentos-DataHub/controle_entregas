@@ -10880,27 +10880,46 @@ function NpsView({
   }
   async function loadCandData() {
     if (candLoading) return;
-    setCandLoading(true); setCandErr(null); setCandProg('Carregando SurveyMonkey…');
+    setCandLoading(true); setCandErr(null); setCandRows(null);
+    let smRows = [], excelRows = [];
+
+    // ── 1. SurveyMonkey (9k+ respostas paginadas) ──
     try {
-      const [smRows, excelRaw] = await Promise.all([
-        loadCandSMResponses().catch(e => { console.warn('SM cand error:', e); return []; }),
-        (async () => {
-          setCandProg('Carregando Excel…');
-          const sheets = ['Pesquisa_candidato','Pesquisa_Candidato','Planilha1','Sheet1'];
-          for (const sh of sheets) {
-            try {
-              const r = await fetchExcelSheet(clientId, tenantId, NPS_CAND_EXCEL_REL, sh, null, {autoHeader:true});
-              if (r && r.length) return r;
-            } catch(e) { console.warn('Excel sheet', sh, 'failed:', e.message); }
-          }
-          return [];
-        })()
-      ]);
-      const excelRows = normalizeCandExcelRows(excelRaw);
-      const all = [...smRows, ...excelRows].sort((a,b) => (b.data||'').localeCompare(a.data||''));
-      setCandRows(all);
-    } catch(e) { setCandErr(e.message); }
-    finally { setCandLoading(false); setCandProg(''); }
+      setCandProg('Carregando SurveyMonkey — aguarde, são muitas páginas…');
+      smRows = await loadCandSMResponses();
+      // Mostra dados SM imediatamente enquanto Excel carrega
+      setCandRows(smRows.slice().sort((a,b)=>(b.data||'').localeCompare(a.data||'')));
+    } catch(e) {
+      console.warn('SM cand error:', e.message);
+    }
+
+    // ── 2. Excel com timeout de 25s ──
+    try {
+      setCandProg('Carregando Excel do SharePoint…');
+      const excelLoad = (async () => {
+        const sheets = ['Pesquisa_candidato','Pesquisa_Candidato','Planilha1','Sheet1'];
+        for (const sh of sheets) {
+          try {
+            const r = await fetchExcelSheet(clientId, tenantId, NPS_CAND_EXCEL_REL, sh, null, {autoHeader:true});
+            if (r && r.length) return r;
+          } catch(e) { console.warn('Excel sheet', sh, ':', e.message); }
+        }
+        return [];
+      })();
+      const timeoutP = new Promise((_,rej) =>
+        setTimeout(()=>rej(new Error('Excel não respondeu em 25s — verifique o caminho do arquivo')), 25000)
+      );
+      const raw = await Promise.race([excelLoad, timeoutP]);
+      excelRows = normalizeCandExcelRows(raw);
+    } catch(e) {
+      setCandErr('Excel: ' + e.message);
+    }
+
+    // ── 3. Unifica e exibe ──
+    const all = [...smRows, ...excelRows].sort((a,b)=>(b.data||'').localeCompare(a.data||''));
+    setCandRows(all);
+    setCandLoading(false);
+    setCandProg('');
   }
 
   // ── CLI: Projetos filtrados ──
