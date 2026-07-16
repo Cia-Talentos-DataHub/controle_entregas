@@ -2800,73 +2800,110 @@ async function loadCandSMResponses(onProgress) {
 // Estrutura: C\u00d3DIGO (processo) | PROCESSO_SELETIVO | TIPO_PESQUISA | CODIGO_CANDIDATO | PERGUNTA | RESPOSTA | SUB_RESPOSTA
 // Chave de agrupamento: (CODIGO_CANDIDATO + '|' + C\u00d3DIGO) \u2192 1 respondente por processo
 // Returns {rows, diag}
+// Estrutura do Excel Base_Pesquisa_8020:
+//   [0] CÓDIGO           — código numérico do programa (= ID_do_Programa_ATS no SP)
+//   [1] PROCESSO_SELETIVO — nome do programa
+//   [2] TIPO_PESQUISA    — tipo da pesquisa (ex: "Avaliação Comportamental CT")
+//   [3] CODIGO_CANDIDATO — identificador único do candidato (respondente)
+//   [4] PERGUNTA         — pergunta (formato longo: N linhas por respondente)
+//   [5] RESPOSTA         — resposta
+//   [6] SUB_RESPOSTA     — ranking (1,2,3) para perguntas multi-select
+//
+// Matching SP: CÓDIGO ↔ pulseData['ID_do_Programa_ATS'] (= campo ID_do_Programa_Globe no SP)
 function normalizeCandExcelRows(excelRows) {
   if (!excelRows || !excelRows.length) return { rows: [], diag: {} };
   const cols = Object.keys(excelRows[0]);
-  const norm = s => (s||'').toString().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]/g,'');
+
+  // norm: remove acentos + não-alfanumérico → para comparação de padrões de coluna/pergunta
+  const norm = s => (s||'').toString().toLowerCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^a-z0-9]/g,'');
+  // find: retorna nome da coluna cujo norm inclui qualquer padrão da lista
   const find = patterns => cols.find(c => patterns.some(p => norm(c).includes(norm(p))));
 
-  const codigoProcesso = cols[0];                                       // C\u00d3DIGO (processo/lote)
-  const candidatoCol   = find(['codigo_candidato','candidato']);         // CODIGO_CANDIDATO (respondente)
-  const processoCol    = find(['processo_seletivo','processosel','processo','programa','vaga']);
-  const tipoPesqCol    = find(['tipo_pesquisa','tipopesquisa']);         // TIPO_PESQUISA
-  const idAtsCol       = find(['programaats','iddoprogramaats','idprogramaats','id programa ats','idprograma','idats']); // ID Programa ATS — 'programaats' matches both 'ID Programa ATS' e 'ID_do_Programa_ATS'
-  const perguntaCol    = find(['pergunta']);
-  const respostaCol    = find(['resposta']);                             // RESPOSTA (antes de SUB_RESPOSTA)
+  // ── Detecção de colunas com fallback por índice (estrutura conhecida e estável) ──
+  // CÓDIGO: match exato (norm='codigo') para não confundir com CODIGO_CANDIDATO ('codigocandidato')
+  const codigoCol    = cols.find(c => norm(c) === 'codigo') || cols[0]; // CÓDIGO (= ATS ID → match com SP)
+  const processoCol  = find(['processo','programa']) || cols[1]; // PROCESSO_SELETIVO
+  const tipoPesqCol  = find(['tipo'])                || cols[2]; // TIPO_PESQUISA
+  const candidatoCol = find(['candidato'])           || cols[3]; // CODIGO_CANDIDATO
+  const perguntaCol  = find(['pergunta'])            || cols[4]; // PERGUNTA
+  const respostaCol  = find(['resposta'])            || cols[5]; // RESPOSTA
 
   if (!perguntaCol || !respostaCol) {
-    return { rows: [], diag: { error: 'Colunas PERGUNTA/RESPOSTA n\u00e3o encontradas.' } };
+    return { rows: [], diag: { error: 'Colunas PERGUNTA/RESPOSTA não encontradas. Colunas: ' + cols.join(', ') } };
   }
 
-  // Composite key: CODIGO_CANDIDATO + '|' + C\u00d3DIGO \u2192 1 grupo por respondente por processo
+  // ── Agrupa por respondente: chave = CODIGO_CANDIDATO + '|' + CÓDIGO ──
+  // CÓDIGO é o id numérico do programa e é comparado com SP.pulseData['ID_do_Programa_ATS']
   const byKey = {};
+  let skippedNoCand = 0;
   excelRows.forEach(row => {
-    const cand = String(row[candidatoCol] ?? row[codigoProcesso] ?? '');
-    const cod  = String(row[codigoProcesso] ?? '');
+    const cand = String(row[candidatoCol] ?? '').trim();
+    const cod  = String(row[codigoCol]    ?? '').trim();
+    if (!cand) { skippedNoCand++; return; } // sem candidato → ignora linha
     const key  = cand + '|' + cod;
-    if (!cand) return;
-    if (!byKey[key]) byKey[key] = { processo: String(row[processoCol] || '').trim(), tipoPesquisa: String(row[tipoPesqCol] || '').trim(), codigo: cod, idAts: idAtsCol ? String(row[idAtsCol] || '').trim() : '', answers: {}, lists: {} };
-    const pergNorm = norm(row[perguntaCol] || '');
-    const resp     = String(row[respostaCol] ?? '').trim();
-    if (!pergNorm || !resp) return;
-    // Perguntas de múltipla escolha: coleta todas as respostas em lista
-    if (pergNorm.includes('expectativas') || pergNorm.includes('motivos')) {
+
+    if (!byKey[key]) byKey[key] = {
+      processo:     String(row[processoCol]  || '').trim(),
+      tipoPesquisa: String(row[tipoPesqCol]  || '').trim(),
+      codigo:       cod,
+      idAts:        cod, // CÓDIGO = ID do programa → atsToProject faz match com SP.ID_do_Programa_ATS
+      answers:      {},  // pergNorm → primeira resposta (single-answer)
+      lists:        {}   // pergNorm → [respostas] (multi-select: motivos, expectativas)
+    };
+
+    const perg = String(row[perguntaCol] || '').trim();
+    const resp = String(row[respostaCol] ?? '').trim();
+    if (!perg) return; // linha sem pergunta → ignora
+
+    const pergNorm = norm(perg);
+
+    // Perguntas multi-select: coleta TODAS as respostas em lista
+    if (pergNorm.includes('motivos') || pergNorm.includes('expectativas')) {
       if (!byKey[key].lists[pergNorm]) byKey[key].lists[pergNorm] = [];
-      byKey[key].lists[pergNorm].push(resp);
+      if (resp) byKey[key].lists[pergNorm].push(resp);
     } else {
+      // Single-answer: primeira ocorrência vence
       if (!(pergNorm in byKey[key].answers)) byKey[key].answers[pergNorm] = resp;
     }
-    // Captura também em campos nomeados para perguntas específicas
-    if (pergNorm.includes('alemdeste') && !byKey[key].outrosPS) byKey[key].outrosPS = resp;
-    if (pergNorm.includes('sentimos')  && !byKey[key].sentimosReason) byKey[key].sentimosReason = resp;
   });
 
-  const getAns = (answers, pattern) => {
-    const k = Object.keys(answers).find(k => k.includes(pattern));
-    return k != null ? answers[k] : null;
+  // ── Helpers ──
+  // Busca valor de pergunta por padrão (tenta padrões em ordem, retorna null se nenhum)
+  const getAns = (answers, ...patterns) => {
+    for (const pat of patterns) {
+      const k = Object.keys(answers).find(k => k.includes(pat));
+      if (k != null) return answers[k] || null;
+    }
+    return null;
   };
-  const p15 = (val) => { if (val == null) return null; const n = parseInt(val, 10); return (!isNaN(n) && n >= 1 && n <= 5) ? n : null; };
-
-  // Normaliza labels de experi\u00eancia comparada (varia\u00e7\u00f5es de capitaliza\u00e7\u00e3o/espa\u00e7o)
+  // Converte resposta para escala 1–5; null se fora do intervalo
+  const p15 = val => {
+    if (val == null || val === '') return null;
+    const n = parseInt(String(val), 10);
+    return (!isNaN(n) && n >= 1 && n <= 5) ? n : null;
+  };
+  // Normaliza rótulos de "experiência comparada" (variações de capitalização/espaço/trailing)
   const normExp = s => {
     if (!s) return null;
     const t = s.trim();
     const l = t.toLowerCase();
-    if (l.startsWith('prefiro esta'))    return 'Prefiro esta';
+    if (l.startsWith('prefiro esta'))                                     return 'Prefiro esta';
     if (l.startsWith('prefiro outras') || l.startsWith('prefiro outra')) return 'Prefiro outras';
-    if (l.startsWith('s') && l.includes('o semelhante')) return 'S\u00e3o semelhantes';
-    if (l.includes('1a vez') || l.includes('primeira vez')) return 'Primeira vez neste tipo';
-    if (l === 'melhor') return 'Melhor';
-    if (l === 'igual')  return 'Igual';
-    if (l === 'pior')   return 'Pior';
-    if (l.includes('saberia dizer'))     return 'N\u00e3o saberia dizer';
+    if (l.includes('semelhante'))                                          return 'São semelhantes';
+    if (l.includes('1a vez') || l.includes('primeira vez'))              return 'Primeira vez neste tipo';
+    if (l.includes('saberia dizer'))                                       return 'Não saberia dizer';
+    if (l === 'melhor' || (l.includes('melhor') && l.length < 30))       return 'Melhor';
+    if (l === 'igual'  || (l.includes('igual')  && l.length < 30))       return 'Igual';
+    if (l === 'pior'   || (l.includes('pior')   && l.length < 30))       return 'Pior';
     return t;
   };
 
+  // ── Constrói 1 linha de saída por respondente ──
   const result = Object.values(byKey).map(entry => {
-    const { processo, tipoPesquisa, codigo, idAts, answers, lists, outrosPS, sentimosReason } = entry;
-    const getList = pattern => {
-      const k = Object.keys(lists||{}).find(k => k.includes(pattern));
+    const { processo, tipoPesquisa, codigo, idAts, answers, lists } = entry;
+    const getList = pat => {
+      const k = Object.keys(lists).find(k => k.includes(pat));
       return k ? lists[k] : [];
     };
     const npsStr = getAns(answers, 'recomendar');
@@ -2874,33 +2911,31 @@ function normalizeCandExcelRows(excelRows) {
     return {
       programa:       processo,
       nps:            (!isNaN(npsVal) && npsVal >= 0 && npsVal <= 10) ? npsVal : null,
-      impressao:      p15(getAns(answers, 'impressoes')),
+      impressao:      p15(getAns(answers, 'impressoes', 'impressao')),
       facilidade:     p15(getAns(answers, 'facilidade')),
-      conduta:        p15(getAns(answers, 'conduziu')),
+      conduta:        p15(getAns(answers, 'conduziu', 'maneira')),
       representantes: p15(getAns(answers, 'representantes')),
-      informacoes:    p15(getAns(answers, 'informa')),
+      informacoes:    p15(getAns(answers, 'informac')),
       experiencia:    normExp(getAns(answers, 'comparada')),
       expInscricao:   normExp(getAns(answers, 'anteriores')),
       motivos:        getList('motivos'),
       expectativas:   getList('expectativas'),
-      comentario:     getAns(answers, 'sugestao') || getAns(answers, 'comentario') || '',
+      comentario:     getAns(answers, 'sugestao', 'comentario') || '',
+      outrosPS:       getAns(answers, 'alemdeste') || null,
+      sentimosReason: getAns(answers, 'sentimos')  || null,
       tipoPesquisa:   tipoPesquisa || '',
-      outrosPS:       outrosPS || null,
-      sentimosReason: sentimosReason || null,
       codigo:         codigo || '',
-      idAts:          idAts || '',
+      idAts:          idAts  || '',  // = CÓDIGO → atsToProject casa com SP.ID_do_Programa_ATS
       data:           '',
       source:         'Excel'
     };
   });
 
-  const nullCandCount = excelRows.filter(row => !String(row[candidatoCol] ?? row[cols[0]] ?? '')).length;
   return { rows: result, diag: {
-    totalInput: excelRows.length,
+    totalInput:        excelRows.length,
     uniqueRespondents: result.length,
-    nullCandSkipped: nullCandCount,
-    colsDetected: { candidatoCol, processoCol, idAtsCol, tipoPesqCol },
-    cols
+    nullCandSkipped:   skippedNoCand,
+    colsDetected: { codigoCol, candidatoCol, processoCol, tipoPesqCol, perguntaCol, respostaCol }
   }};
 }
 
@@ -12042,9 +12077,11 @@ function NpsView({
             `Linhas brutas no Excel: ${(candExcelDiag.totalInput||0).toLocaleString('pt-BR')}`,
             `Respondentes únicos: ${(candExcelDiag.uniqueRespondents||0).toLocaleString('pt-BR')}`,
             `Sem candidato (ignorados): ${candExcelDiag.nullCandSkipped||0}`,
+            `Coluna CÓDIGO (= ATS ID): ${candExcelDiag.colsDetected?.codigoCol||'❌ não encontrada'}`,
             `Coluna CODIGO_CANDIDATO: ${candExcelDiag.colsDetected?.candidatoCol||'❌ não encontrada'}`,
-            `Coluna ID Programa ATS: ${candExcelDiag.colsDetected?.idAtsCol||'❌ não encontrada'}`,
             `Coluna TIPO_PESQUISA: ${candExcelDiag.colsDetected?.tipoPesqCol||'❌ não encontrada'}`,
+            `Coluna PERGUNTA: ${candExcelDiag.colsDetected?.perguntaCol||'❌ não encontrada'}`,
+            `Coluna RESPOSTA: ${candExcelDiag.colsDetected?.respostaCol||'❌ não encontrada'}`,
           ].join('\n'),
           className:'bg-slate-50 text-slate-400 border border-slate-200 rounded-full px-2.5 py-0.5 cursor-help font-medium'
         },'ℹ Excel diag (hover)'),
