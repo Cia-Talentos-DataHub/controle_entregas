@@ -10988,8 +10988,15 @@ function NpsView({
   const codeToProject = useMemo(() => {
     if (!candRows || !projects.length) return {};
     const normCode = s => String(s||'').replace(/[^0-9]/g,'');
+    const cicloYear = p => { const m = String(p.ciclo||'').match(/\b(20\d{2})\b/); return m ? parseInt(m[1]) : 0; };
     const spByCode = {};
-    projects.forEach(p => { const c = normCode(p.codigoProposta); if (c && c.length >= 3) spByCode[c] = p; });
+    projects.forEach(p => {
+      const c = normCode(p.codigoProposta);
+      if (c && c.length >= 3) {
+        const ex = spByCode[c];
+        if (!ex || cicloYear(p) >= cicloYear(ex)) spByCode[c] = p;
+      }
+    });
     const map = {};
     [...new Set(candRows.filter(r=>r.codigo).map(r=>r.codigo))].forEach(cod => {
       const nc = normCode(cod); if (nc && spByCode[nc]) map[cod] = spByCode[nc];
@@ -11001,10 +11008,17 @@ function NpsView({
   const atsToProject = useMemo(() => {
     if (!candRows || !projects.length) return {};
     const normCode = s => String(s||'').replace(/[^0-9]/g,'');
+    const cicloYear = p => { const m = String(p.ciclo||'').match(/\b(20\d{2})\b/); return m ? parseInt(m[1]) : 0; };
     const spByAts = {};
     projects.forEach(p => {
       const v = p.pulseData?.['ID_do_Programa_ATS'];
-      if (v) { const nc = normCode(v); if (nc && nc.length >= 2) spByAts[nc] = p; }
+      if (v) {
+        const nc = normCode(v);
+        if (nc && nc.length >= 2) {
+          const ex = spByAts[nc];
+          if (!ex || cicloYear(p) >= cicloYear(ex)) spByAts[nc] = p;
+        }
+      }
     });
     const map = {};
     [...new Set(candRows.filter(r=>r.idAts).map(r=>r.idAts))].forEach(id => {
@@ -11014,11 +11028,12 @@ function NpsView({
   }, [candRows, projects]);
 
   const candProgOpts     = useMemo(() => [...new Set((candRows||[]).map(r=>r.programa).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'pt-BR')), [candRows]);
-  const candCicloOpts    = useMemo(() => { const ps=[...Object.values(atsToProject),...Object.values(codeToProject),...Object.values(progToProject)]; return [...new Set(ps.map(p=>p.ciclo).filter(Boolean))].sort(); }, [atsToProject,codeToProject,progToProject]);
-  const candSemestreOpts = useMemo(() => { const ps=[...Object.values(atsToProject),...Object.values(codeToProject),...Object.values(progToProject)]; return [...new Set(ps.map(p=>p.semestre).filter(Boolean))].sort(); }, [atsToProject,codeToProject,progToProject]);
-  const candPublicoOpts  = useMemo(() => { const ps=[...Object.values(atsToProject),...Object.values(codeToProject),...Object.values(progToProject)]; return [...new Set(ps.map(p=>p.publico).filter(Boolean))].sort(); }, [atsToProject,codeToProject,progToProject]);
-  const candProdutoOpts  = useMemo(() => { const ps=[...Object.values(atsToProject),...Object.values(codeToProject),...Object.values(progToProject)]; return [...new Set(ps.map(p=>p.produto).filter(Boolean))].sort(); }, [atsToProject,codeToProject,progToProject]);
-  const candTipoOpts     = useMemo(() => { const ps=[...Object.values(atsToProject),...Object.values(codeToProject),...Object.values(progToProject)]; return [...new Set(ps.map(p=>p.tipoProg).filter(Boolean))].sort(); }, [atsToProject,codeToProject,progToProject]);
+  // Opções de dimensão derivadas somente do atsToProject (match por ATS ID — fonte confiável do SP)
+  const candCicloOpts    = useMemo(() => [...new Set(Object.values(atsToProject).map(p=>p.ciclo).filter(Boolean))].sort(), [atsToProject]);
+  const candSemestreOpts = useMemo(() => [...new Set(Object.values(atsToProject).map(p=>p.semestre).filter(Boolean))].sort(), [atsToProject]);
+  const candPublicoOpts  = useMemo(() => [...new Set(Object.values(atsToProject).map(p=>p.publico).filter(Boolean))].sort(), [atsToProject]);
+  const candProdutoOpts  = useMemo(() => [...new Set(Object.values(atsToProject).map(p=>p.produto).filter(Boolean))].sort(), [atsToProject]);
+  const candTipoOpts     = useMemo(() => [...new Set(Object.values(atsToProject).map(p=>p.tipoProg).filter(Boolean))].sort(), [atsToProject]);
   const candTipoPesqOpts = useMemo(() => [...new Set((candRows||[]).map(r=>r.tipoPesquisa).filter(Boolean))].sort(), [candRows]);
   const [showInspector, setShowInspector] = useState(false);
 
@@ -11953,7 +11968,7 @@ function NpsView({
       if (candFiltro.length && !candFiltro.includes(r.programa)) return false;
       if (fCandTipoPesq.length && !fCandTipoPesq.includes(r.tipoPesquisa)) return false;
       if (fCandCiclo.length || fCandSemestre.length || fCandPublico.length || fCandProduto.length || fCandTipo.length) {
-        const proj = (r.idAts ? atsToProject[r.idAts] : null) || (r.codigo ? codeToProject[r.codigo] : null) || progToProject[r.programa] || null;
+        const proj = (r.idAts ? atsToProject[r.idAts] : null) || progToProject[r.programa] || null;
         if (fCandCiclo.length    && (!proj || !fCandCiclo.includes(proj.ciclo)))       return false;
         if (fCandSemestre.length && (!proj || !fCandSemestre.includes(proj.semestre))) return false;
         if (fCandPublico.length  && (!proj || !fCandPublico.includes(proj.publico)))   return false;
@@ -12000,7 +12015,7 @@ function NpsView({
       if (r.nps!==null&&r.nps>=0&&r.nps<=10) byProg[r.programa].npsRows.push(r.nps);
     });
     const allProgs = Object.values(byProg)
-      .map(p=>{ const pr=p.npsRows.filter(n=>n>=9).length, de=p.npsRows.filter(n=>n<=6).length, tot=p.npsRows.length; const proj=(p.firstIdAts?atsToProject[p.firstIdAts]:null)||(p.codigo?codeToProject[p.codigo]:null)||progToProject[p.prog]||null; return {...p, pr, de, tot, nps:tot?Math.round(((pr-de)/tot)*100):null, cicloSP:proj?.ciclo||'', semestreSP:proj?.semestre||'', matched:!!proj}; })
+      .map(p=>{ const pr=p.npsRows.filter(n=>n>=9).length, de=p.npsRows.filter(n=>n<=6).length, tot=p.npsRows.length; const proj=(p.firstIdAts?atsToProject[p.firstIdAts]:null)||progToProject[p.prog]||null; return {...p, pr, de, tot, nps:tot?Math.round(((pr-de)/tot)*100):null, cicloSP:proj?.ciclo||'', semestreSP:proj?.semestre||'', matched:!!proj}; })
       .sort((a,b)=>b.total-a.total);
     const smCount    = candRows.filter(r=>r.source==='SM').length;
     const excelCount = candRows.filter(r=>r.source==='Excel').length;
