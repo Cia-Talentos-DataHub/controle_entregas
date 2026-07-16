@@ -2752,38 +2752,54 @@ function _isSpWritable(k) {
 // Loads candidate SM responses for survey SM_CAND_ID
 // Returns array of {programa, nps, impressao, facilidade, comentario, data, source:'SM'}
 async function loadCandSMResponses() {
-  const colResp = await smFetch('/surveys/' + SM_CAND_ID + '/collectors?per_page=100');
+  // Fetch collectors and first page in parallel
+  const [colResp, firstResp] = await Promise.all([
+    smFetch('/surveys/' + SM_CAND_ID + '/collectors?per_page=100'),
+    smFetch('/surveys/' + SM_CAND_ID + '/responses/bulk?per_page=100&page=1')
+  ]);
   const collMap = {};
   (colResp.data || []).forEach(c => { collMap[c.id] = c.name || ''; });
-  const rows = [];
-  let page = 1;
-  while (true) {
-    const resp = await smFetch('/surveys/' + SM_CAND_ID + '/responses/bulk?per_page=100&page=' + page);
-    const data = resp.data || [];
-    for (const r of data) {
-      const qMap = {};
-      for (const p of r.pages || []) {
-        for (const q of p.questions || []) { qMap[q.id] = q.answers || []; }
-      }
-      const npsRaw = (qMap[SM_CAND_NPS_QID] || [])[0]?.text || '';
-      const nps = parseInt(npsRaw, 10);
-      const imprAns = (qMap[SM_CAND_IMPR_QID] || [])[0];
-      const facilAns = (qMap[SM_CAND_FACIL_QID] || [])[0];
-      const comentAns = (qMap['245840110'] || [])[0];
-      rows.push({
-        programa: collMap[r.collector_id] || '',
-        nps: isNaN(nps) ? null : nps,
-        impressao: imprAns ? (SM_CAND_IMPR_CHOICES[imprAns.choice_id] || null) : null,
-        facilidade: facilAns ? (SM_CAND_FACIL_CHOICES[facilAns.choice_id] || null) : null,
-        comentario: comentAns?.text || '',
-        data: (r.date_created || '').slice(0,10),
-        source: 'SM'
-      });
+
+  const total = firstResp.total || 0;
+  const totalPages = Math.ceil(total / 100);
+  const allData = [...(firstResp.data || [])];
+
+  // Fetch remaining pages in parallel batches of 10
+  const BATCH_SIZE = 10;
+  for (let batchStart = 2; batchStart <= totalPages; batchStart += BATCH_SIZE) {
+    const pageNums = [];
+    for (let p = batchStart; p < Math.min(batchStart + BATCH_SIZE, totalPages + 1); p++) {
+      pageNums.push(p);
     }
-    if (data.length < 100) break;
-    page++;
+    const results = await Promise.all(
+      pageNums.map(p => smFetch('/surveys/' + SM_CAND_ID + '/responses/bulk?per_page=100&page=' + p))
+    );
+    results.forEach(r => { allData.push(...(r.data || [])); });
   }
-  return rows;
+
+  // Parse all responses
+  function parseCandResponse(r) {
+    const qMap = {};
+    for (const p of r.pages || []) {
+      for (const q of p.questions || []) { qMap[q.id] = q.answers || []; }
+    }
+    const npsRaw = (qMap[SM_CAND_NPS_QID] || [])[0]?.text || '';
+    const nps = parseInt(npsRaw, 10);
+    const imprAns = (qMap[SM_CAND_IMPR_QID] || [])[0];
+    const facilAns = (qMap[SM_CAND_FACIL_QID] || [])[0];
+    const comentAns = (qMap['245840110'] || [])[0];
+    return {
+      programa: collMap[r.collector_id] || '',
+      nps: isNaN(nps) ? null : nps,
+      impressao: imprAns ? (SM_CAND_IMPR_CHOICES[imprAns.choice_id] || null) : null,
+      facilidade: facilAns ? (SM_CAND_FACIL_CHOICES[facilAns.choice_id] || null) : null,
+      comentario: comentAns?.text || '',
+      data: (r.date_created || '').slice(0,10),
+      source: 'SM'
+    };
+  }
+
+  return allData.map(parseCandResponse);
 }
 
 // Normalizes Excel rows into unified candidate rows
@@ -2793,11 +2809,31 @@ function normalizeCandExcelRows(excelRows) {
   const cols = Object.keys(excelRows[0]);
   const norm = s => (s||'').toString().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]/g,'');
   const find = patterns => cols.find(c => patterns.some(p => norm(c).includes(p)));
-  const procCol = find(['processosel','processo','programa','nomeprog']);
-  const recCol  = find(['recomendac','recomend','nps','nota','score','probabilidade']);
-  const dateCol = find(['data','date','dt','criado','created']);
-  const commCol = find(['dissertat','coment','observ','sugest','aberta']);
-  const codigoCol = find(['codigo','cod','id','respondente']);
+  const procCol = find(['processosel','processo','seletivo','programa','nomeprog','projeto','vaga']);
+  let recCol   = find(['recomendac','recomend','nps','nota','score','probabilidade','escala']);
+  const dateCol = find(['data','date','dt','criado','created','registro']);
+  const commCol = find(['dissertat','coment','observ','sugest','aberta','qualit']);
+  const codigoCol = find(['codigo','respondente']);
+
+  // Heur\u00edstica num\u00e9rica: se recCol n\u00e3o foi encontrado por nome,
+  // encontra a coluna com mais valores inteiros entre 0-10
+  if (!recCol) {
+    let bestCol = null, bestScore = 0;
+    cols.forEach(c => {
+      const vals = excelRows.map(r => r[c]).filter(v => v !== '' && v !== null && v !== undefined);
+      if (!vals.length) return;
+      const intIn010 = vals.filter(v => { const n = parseFloat(v); return Number.isInteger(n) && n >= 0 && n <= 10; }).length;
+      const score = intIn010 / vals.length;
+      if (intIn010 >= 3 && score > bestScore) { bestScore = score; bestCol = c; }
+    });
+    if (bestCol) {
+      console.log('[CandExcel] recCol not found by name \u2014 using heuristic:', bestCol, '(score:', bestScore.toFixed(2), ')');
+      recCol = bestCol;
+    }
+  }
+
+  console.log('[CandExcel] cols:', cols.join(' | '), '\u2192 proc:', procCol, 'rec:', recCol, 'date:', dateCol, 'codigo:', codigoCol);
+
   if (codigoCol && recCol) {
     const byCode = {};
     excelRows.forEach(row => {
@@ -11797,7 +11833,7 @@ function NpsView({
     if (!candRows) return React.createElement('div',{className:'text-center text-slate-400 py-12'},'Nenhum dado carregado.');
     const filtered = candRows.filter(r => {
       if (candSource !== 'all' && r.source !== candSource) return false;
-      if (candFiltro && !r.programa.toLowerCase().includes(candFiltro.toLowerCase())) return false;
+      if (candFiltro && r.programa !== candFiltro) return false;
       return true;
     });
     const withNps = filtered.filter(r => r.nps !== null && r.nps >= 0 && r.nps <= 10);
@@ -11845,7 +11881,16 @@ function NpsView({
         ),
         React.createElement('div',{className:'flex flex-col gap-1'},
           React.createElement('label',{className:'text-xs font-medium text-slate-500'},'Programa'),
-          React.createElement('input',{type:'text',value:candFiltro,onChange:e=>setCandFiltro(e.target.value),placeholder:'Filtrar programa…',className:'text-sm border border-slate-200 rounded-lg px-3 py-1.5 bg-white min-w-[220px]'})
+          React.createElement('select',{
+            value: candFiltro,
+            onChange: e => setCandFiltro(e.target.value),
+            className: 'text-sm border border-slate-200 rounded-lg px-3 py-1.5 bg-white min-w-[220px]'
+          },
+            React.createElement('option',{value:''},'Todos os programas'),
+            Array.from(new Set(candRows.map(r=>r.programa).filter(Boolean))).sort((a,b)=>a.localeCompare(b,'pt-BR')).map(p =>
+              React.createElement('option',{key:p, value:p}, p)
+            )
+          )
         )
       ),
       React.createElement('div',{className:'grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-5'},
