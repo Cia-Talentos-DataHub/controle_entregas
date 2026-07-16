@@ -1436,19 +1436,21 @@ const SM_SURVEYS = [{
   id: '523675232',
   label: 'Contínuos e VP'
 }];
-async function smFetch(path) {
+async function smFetch(path, _retry) {
+  _retry = _retry || 0;
   const res = await fetch('https://api.surveymonkey.com/v3' + path, {
     headers: {
       'Authorization': 'Bearer ' + SM_TOKEN,
       'Content-Type': 'application/json'
     }
   });
+  if (res.status === 429 && _retry < 4) {
+    await new Promise(r => setTimeout(r, (1 << _retry) * 2000));
+    return smFetch(path, _retry + 1);
+  }
   if (!res.ok) {
     let msg = 'SM API ' + res.status;
-    try {
-      const j = await res.json();
-      msg += ' — ' + (j.error?.message || JSON.stringify(j));
-    } catch {}
+    try { const j = await res.json(); msg += ' — ' + (j.error?.message || JSON.stringify(j)); } catch {}
     throw new Error(msg);
   }
   return res.json();
@@ -2751,30 +2753,21 @@ function _isSpWritable(k) {
 // ─── Candidate survey helpers ──────────────────────────────────────────────────────
 // Loads candidate SM responses for survey SM_CAND_ID
 // Returns array of {programa, nps, impressao, facilidade, comentario, data, source:'SM'}
-async function loadCandSMResponses() {
-  // Fetch collectors and first page in parallel
+async function loadCandSMResponses(onProgress) {
   const [colResp, firstResp] = await Promise.all([
     smFetch('/surveys/' + SM_CAND_ID + '/collectors?per_page=100'),
     smFetch('/surveys/' + SM_CAND_ID + '/responses/bulk?per_page=100&page=1')
   ]);
   const collMap = {};
   (colResp.data || []).forEach(c => { collMap[c.id] = c.name || ''; });
-
   const total = firstResp.total || 0;
   const totalPages = Math.ceil(total / 100);
   const allData = [...(firstResp.data || [])];
-
-  // Fetch remaining pages in parallel batches of 10
-  const BATCH_SIZE = 3;
-  for (let batchStart = 2; batchStart <= totalPages; batchStart += BATCH_SIZE) {
-    const pageNums = [];
-    for (let p = batchStart; p < Math.min(batchStart + BATCH_SIZE, totalPages + 1); p++) {
-      pageNums.push(p);
-    }
-    const results = await Promise.all(
-      pageNums.map(p => smFetch('/surveys/' + SM_CAND_ID + '/responses/bulk?per_page=100&page=' + p))
-    );
-    results.forEach(r => { allData.push(...(r.data || [])); });
+  for (let p = 2; p <= totalPages; p++) {
+    if (onProgress) onProgress(p, totalPages);
+    const r = await smFetch('/surveys/' + SM_CAND_ID + '/responses/bulk?per_page=100&page=' + p);
+    allData.push(...(r.data || []));
+    if (p % 10 === 0 && p < totalPages) await new Promise(r => setTimeout(r, 300));
   }
 
   // Parse all responses
@@ -2831,7 +2824,7 @@ function normalizeCandExcelRows(excelRows) {
     const cod  = String(row[codigoProcesso] ?? '');
     const key  = cand + '|' + cod;
     if (!cand) return;
-    if (!byKey[key]) byKey[key] = { processo: String(row[processoCol] || '').trim(), tipoPesquisa: String(row[tipoPesqCol] || '').trim(), answers: {}, lists: {} };
+    if (!byKey[key]) byKey[key] = { processo: String(row[processoCol] || '').trim(), tipoPesquisa: String(row[tipoPesqCol] || '').trim(), codigo: cod, answers: {}, lists: {} };
     const pergNorm = norm(row[perguntaCol] || '');
     const resp     = String(row[respostaCol] ?? '').trim();
     if (!pergNorm || !resp) return;
@@ -2893,10 +2886,11 @@ function normalizeCandExcelRows(excelRows) {
       tipoPesquisa:   tipoPesquisa || '',
       outrosPS:       outrosPS || null,
       sentimosReason: sentimosReason || null,
+      codigo:         entry.codigo || '',
       data:           '',
       source:         'Excel'
     };
-  }).filter(r => r.nps !== null);
+  });
 
   return { rows: result, diag: { totalInput: excelRows.length, cols } };
 }
@@ -10988,12 +10982,25 @@ function NpsView({
     return map;
   }, [candRows, projects]);
 
+  // Correspondência por código de proposta (Excel CÓDIGO ↔ SP codigoProposta)
+  const codeToProject = useMemo(() => {
+    if (!candRows || !projects.length) return {};
+    const normCode = s => String(s||'').replace(/[^0-9]/g,'');
+    const spByCode = {};
+    projects.forEach(p => { const c = normCode(p.codigoProposta); if (c && c.length >= 3) spByCode[c] = p; });
+    const map = {};
+    [...new Set(candRows.filter(r=>r.codigo).map(r=>r.codigo))].forEach(cod => {
+      const nc = normCode(cod); if (nc && spByCode[nc]) map[cod] = spByCode[nc];
+    });
+    return map;
+  }, [candRows, projects]);
+
   const candProgOpts     = useMemo(() => [...new Set((candRows||[]).map(r=>r.programa).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'pt-BR')), [candRows]);
-  const candCicloOpts    = useMemo(() => [...new Set(Object.values(progToProject).map(p=>p.ciclo).filter(Boolean))].sort(), [progToProject]);
-  const candSemestreOpts = useMemo(() => [...new Set(Object.values(progToProject).map(p=>p.semestre).filter(Boolean))].sort(), [progToProject]);
-  const candPublicoOpts  = useMemo(() => [...new Set(Object.values(progToProject).map(p=>p.publico).filter(Boolean))].sort(), [progToProject]);
-  const candProdutoOpts  = useMemo(() => [...new Set(Object.values(progToProject).map(p=>p.produto).filter(Boolean))].sort(), [progToProject]);
-  const candTipoOpts     = useMemo(() => [...new Set(Object.values(progToProject).map(p=>p.tipoProg).filter(Boolean))].sort(), [progToProject]);
+  const candCicloOpts    = useMemo(() => { const ps=[...Object.values(codeToProject),...Object.values(progToProject)]; return [...new Set(ps.map(p=>p.ciclo).filter(Boolean))].sort(); }, [codeToProject,progToProject]);
+  const candSemestreOpts = useMemo(() => { const ps=[...Object.values(codeToProject),...Object.values(progToProject)]; return [...new Set(ps.map(p=>p.semestre).filter(Boolean))].sort(); }, [codeToProject,progToProject]);
+  const candPublicoOpts  = useMemo(() => { const ps=[...Object.values(codeToProject),...Object.values(progToProject)]; return [...new Set(ps.map(p=>p.publico).filter(Boolean))].sort(); }, [codeToProject,progToProject]);
+  const candProdutoOpts  = useMemo(() => { const ps=[...Object.values(codeToProject),...Object.values(progToProject)]; return [...new Set(ps.map(p=>p.produto).filter(Boolean))].sort(); }, [codeToProject,progToProject]);
+  const candTipoOpts     = useMemo(() => { const ps=[...Object.values(codeToProject),...Object.values(progToProject)]; return [...new Set(ps.map(p=>p.tipoProg).filter(Boolean))].sort(); }, [codeToProject,progToProject]);
   const candTipoPesqOpts = useMemo(() => [...new Set((candRows||[]).map(r=>r.tipoPesquisa).filter(Boolean))].sort(), [candRows]);
   const [showInspector, setShowInspector] = useState(false);
 
@@ -11021,8 +11028,7 @@ function NpsView({
 
     // ── 1. SurveyMonkey (9k+ respostas paginadas) ──
     try {
-      setCandProg('Carregando SurveyMonkey — aguarde, são muitas páginas…');
-      smRows = await loadCandSMResponses();
+      smRows = await loadCandSMResponses((pg, tot) => setCandProg('SurveyMonkey: página ' + pg + ' de ' + tot + '…'));
       // Mostra dados SM imediatamente enquanto Excel carrega
       setCandRows(smRows.slice().sort((a,b)=>(b.data||'').localeCompare(a.data||'')));
     } catch(e) {
@@ -11929,7 +11935,7 @@ function NpsView({
       if (candFiltro.length && !candFiltro.includes(r.programa)) return false;
       if (fCandTipoPesq.length && !fCandTipoPesq.includes(r.tipoPesquisa)) return false;
       if (fCandCiclo.length || fCandSemestre.length || fCandPublico.length || fCandProduto.length || fCandTipo.length) {
-        const proj = progToProject[r.programa];
+        const proj = (r.codigo ? codeToProject[r.codigo] : null) || progToProject[r.programa] || null;
         if (fCandCiclo.length    && (!proj || !fCandCiclo.includes(proj.ciclo)))       return false;
         if (fCandSemestre.length && (!proj || !fCandSemestre.includes(proj.semestre))) return false;
         if (fCandPublico.length  && (!proj || !fCandPublico.includes(proj.publico)))   return false;
@@ -11971,12 +11977,12 @@ function NpsView({
     const byProg = {};
     filtered.forEach(r=>{
       if (!r.programa) return;
-      if (!byProg[r.programa]) byProg[r.programa]={prog:r.programa,total:0,npsRows:[]};
+      if (!byProg[r.programa]) byProg[r.programa]={prog:r.programa, codigo:r.codigo||'', total:0, npsRows:[]};
       byProg[r.programa].total++;
       if (r.nps!==null&&r.nps>=0&&r.nps<=10) byProg[r.programa].npsRows.push(r.nps);
     });
     const allProgs = Object.values(byProg)
-      .map(p=>{ const pr=p.npsRows.filter(n=>n>=9).length, de=p.npsRows.filter(n=>n<=6).length, tot=p.npsRows.length; const proj=progToProject[p.prog]||null; return {...p, pr, de, tot, nps:tot?Math.round(((pr-de)/tot)*100):null, cicloSP:proj?.ciclo||'', semestreSP:proj?.semestre||'', matched:!!proj}; })
+      .map(p=>{ const pr=p.npsRows.filter(n=>n>=9).length, de=p.npsRows.filter(n=>n<=6).length, tot=p.npsRows.length; const proj=(p.codigo?codeToProject[p.codigo]:null)||progToProject[p.prog]||null; return {...p, pr, de, tot, nps:tot?Math.round(((pr-de)/tot)*100):null, cicloSP:proj?.ciclo||'', semestreSP:proj?.semestre||'', matched:!!proj}; })
       .sort((a,b)=>b.total-a.total);
     const smCount    = candRows.filter(r=>r.source==='SM').length;
     const excelCount = candRows.filter(r=>r.source==='Excel').length;
@@ -12206,7 +12212,7 @@ function NpsView({
       allProgs.length > 0 && React.createElement('div',{className:'bg-white border border-slate-200 rounded-xl p-5 mb-5'},
         React.createElement('div',{className:'flex items-center justify-between mb-3'},
           React.createElement('h3',{className:'text-sm font-semibold text-slate-700'},`Programas (${allProgs.length})`),
-          React.createElement('span',{className:'text-[10px] text-slate-400'},progToProject&&Object.keys(progToProject).length>0?`${Object.keys(progToProject).length} vinculados ao SP`:'Sem vínculo SP')
+          React.createElement('span',{className:'text-[10px] text-slate-400'},Object.keys(codeToProject).length>0?`${Object.keys(codeToProject).length} cod. + ${Object.keys(progToProject).length} nome vinculados ao SP`:Object.keys(progToProject).length>0?`${Object.keys(progToProject).length} vinculados ao SP`:'Sem vínculo SP')
         ),
         React.createElement('div',{className:'overflow-auto max-h-[60vh]'},
           React.createElement('table',{className:'w-full text-xs border-collapse'},
