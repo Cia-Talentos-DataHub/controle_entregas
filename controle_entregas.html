@@ -2810,6 +2810,7 @@ function normalizeCandExcelRows(excelRows) {
   const candidatoCol   = find(['codigo_candidato','candidato']);         // CODIGO_CANDIDATO (respondente)
   const processoCol    = find(['processo_seletivo','processosel','processo','programa','vaga']);
   const tipoPesqCol    = find(['tipo_pesquisa','tipopesquisa']);         // TIPO_PESQUISA
+  const idAtsCol       = find(['id_programa_ats','idprogramaats','idprogramaats','id programa ats','idats']); // ID Programa ATS
   const perguntaCol    = find(['pergunta']);
   const respostaCol    = find(['resposta']);                             // RESPOSTA (antes de SUB_RESPOSTA)
 
@@ -2824,7 +2825,7 @@ function normalizeCandExcelRows(excelRows) {
     const cod  = String(row[codigoProcesso] ?? '');
     const key  = cand + '|' + cod;
     if (!cand) return;
-    if (!byKey[key]) byKey[key] = { processo: String(row[processoCol] || '').trim(), tipoPesquisa: String(row[tipoPesqCol] || '').trim(), codigo: cod, answers: {}, lists: {} };
+    if (!byKey[key]) byKey[key] = { processo: String(row[processoCol] || '').trim(), tipoPesquisa: String(row[tipoPesqCol] || '').trim(), codigo: cod, idAts: idAtsCol ? String(row[idAtsCol] || '').trim() : '', answers: {}, lists: {} };
     const pergNorm = norm(row[perguntaCol] || '');
     const resp     = String(row[respostaCol] ?? '').trim();
     if (!pergNorm || !resp) return;
@@ -2863,7 +2864,7 @@ function normalizeCandExcelRows(excelRows) {
   };
 
   const result = Object.values(byKey).map(entry => {
-    const { processo, tipoPesquisa, answers, lists, outrosPS, sentimosReason } = entry;
+    const { processo, tipoPesquisa, codigo, idAts, answers, lists, outrosPS, sentimosReason } = entry;
     const getList = pattern => {
       const k = Object.keys(lists||{}).find(k => k.includes(pattern));
       return k ? lists[k] : [];
@@ -2886,7 +2887,8 @@ function normalizeCandExcelRows(excelRows) {
       tipoPesquisa:   tipoPesquisa || '',
       outrosPS:       outrosPS || null,
       sentimosReason: sentimosReason || null,
-      codigo:         entry.codigo || '',
+      codigo:         codigo || '',
+      idAts:          idAts || '',
       data:           '',
       source:         'Excel'
     };
@@ -10995,12 +10997,28 @@ function NpsView({
     return map;
   }, [candRows, projects]);
 
+  // Correspondência primária: ID Programa ATS do Excel ↔ pulseData['ID_do_Programa_ATS'] do SP
+  const atsToProject = useMemo(() => {
+    if (!candRows || !projects.length) return {};
+    const normCode = s => String(s||'').replace(/[^0-9]/g,'');
+    const spByAts = {};
+    projects.forEach(p => {
+      const v = p.pulseData?.['ID_do_Programa_ATS'];
+      if (v) { const nc = normCode(v); if (nc && nc.length >= 2) spByAts[nc] = p; }
+    });
+    const map = {};
+    [...new Set(candRows.filter(r=>r.idAts).map(r=>r.idAts))].forEach(id => {
+      const nc = normCode(id); if (nc && spByAts[nc]) map[id] = spByAts[nc];
+    });
+    return map;
+  }, [candRows, projects]);
+
   const candProgOpts     = useMemo(() => [...new Set((candRows||[]).map(r=>r.programa).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'pt-BR')), [candRows]);
-  const candCicloOpts    = useMemo(() => { const ps=[...Object.values(codeToProject),...Object.values(progToProject)]; return [...new Set(ps.map(p=>p.ciclo).filter(Boolean))].sort(); }, [codeToProject,progToProject]);
-  const candSemestreOpts = useMemo(() => { const ps=[...Object.values(codeToProject),...Object.values(progToProject)]; return [...new Set(ps.map(p=>p.semestre).filter(Boolean))].sort(); }, [codeToProject,progToProject]);
-  const candPublicoOpts  = useMemo(() => { const ps=[...Object.values(codeToProject),...Object.values(progToProject)]; return [...new Set(ps.map(p=>p.publico).filter(Boolean))].sort(); }, [codeToProject,progToProject]);
-  const candProdutoOpts  = useMemo(() => { const ps=[...Object.values(codeToProject),...Object.values(progToProject)]; return [...new Set(ps.map(p=>p.produto).filter(Boolean))].sort(); }, [codeToProject,progToProject]);
-  const candTipoOpts     = useMemo(() => { const ps=[...Object.values(codeToProject),...Object.values(progToProject)]; return [...new Set(ps.map(p=>p.tipoProg).filter(Boolean))].sort(); }, [codeToProject,progToProject]);
+  const candCicloOpts    = useMemo(() => { const ps=[...Object.values(atsToProject),...Object.values(codeToProject),...Object.values(progToProject)]; return [...new Set(ps.map(p=>p.ciclo).filter(Boolean))].sort(); }, [atsToProject,codeToProject,progToProject]);
+  const candSemestreOpts = useMemo(() => { const ps=[...Object.values(atsToProject),...Object.values(codeToProject),...Object.values(progToProject)]; return [...new Set(ps.map(p=>p.semestre).filter(Boolean))].sort(); }, [atsToProject,codeToProject,progToProject]);
+  const candPublicoOpts  = useMemo(() => { const ps=[...Object.values(atsToProject),...Object.values(codeToProject),...Object.values(progToProject)]; return [...new Set(ps.map(p=>p.publico).filter(Boolean))].sort(); }, [atsToProject,codeToProject,progToProject]);
+  const candProdutoOpts  = useMemo(() => { const ps=[...Object.values(atsToProject),...Object.values(codeToProject),...Object.values(progToProject)]; return [...new Set(ps.map(p=>p.produto).filter(Boolean))].sort(); }, [atsToProject,codeToProject,progToProject]);
+  const candTipoOpts     = useMemo(() => { const ps=[...Object.values(atsToProject),...Object.values(codeToProject),...Object.values(progToProject)]; return [...new Set(ps.map(p=>p.tipoProg).filter(Boolean))].sort(); }, [atsToProject,codeToProject,progToProject]);
   const candTipoPesqOpts = useMemo(() => [...new Set((candRows||[]).map(r=>r.tipoPesquisa).filter(Boolean))].sort(), [candRows]);
   const [showInspector, setShowInspector] = useState(false);
 
@@ -11040,7 +11058,7 @@ function NpsView({
       setCandProg('Carregando Excel do SharePoint…');
       const excelLoad = fetchExcelSheet(clientId, tenantId, NPS_CAND_EXCEL_REL, null);
       const timeoutP = new Promise((_,rej) =>
-        setTimeout(()=>rej(new Error('Excel não respondeu em 25s — verifique o caminho do arquivo')), 25000)
+        setTimeout(()=>rej(new Error('Excel não respondeu em 90s — verifique o caminho do arquivo')), 90000)
       );
       const raw = await Promise.race([excelLoad, timeoutP]);
       const result = normalizeCandExcelRows(raw);
@@ -11935,7 +11953,7 @@ function NpsView({
       if (candFiltro.length && !candFiltro.includes(r.programa)) return false;
       if (fCandTipoPesq.length && !fCandTipoPesq.includes(r.tipoPesquisa)) return false;
       if (fCandCiclo.length || fCandSemestre.length || fCandPublico.length || fCandProduto.length || fCandTipo.length) {
-        const proj = (r.codigo ? codeToProject[r.codigo] : null) || progToProject[r.programa] || null;
+        const proj = (r.idAts ? atsToProject[r.idAts] : null) || (r.codigo ? codeToProject[r.codigo] : null) || progToProject[r.programa] || null;
         if (fCandCiclo.length    && (!proj || !fCandCiclo.includes(proj.ciclo)))       return false;
         if (fCandSemestre.length && (!proj || !fCandSemestre.includes(proj.semestre))) return false;
         if (fCandPublico.length  && (!proj || !fCandPublico.includes(proj.publico)))   return false;
@@ -11977,12 +11995,12 @@ function NpsView({
     const byProg = {};
     filtered.forEach(r=>{
       if (!r.programa) return;
-      if (!byProg[r.programa]) byProg[r.programa]={prog:r.programa, codigo:r.codigo||'', total:0, npsRows:[]};
+      if (!byProg[r.programa]) byProg[r.programa]={prog:r.programa, firstIdAts:r.idAts||'', codigo:r.codigo||'', total:0, npsRows:[]};
       byProg[r.programa].total++;
       if (r.nps!==null&&r.nps>=0&&r.nps<=10) byProg[r.programa].npsRows.push(r.nps);
     });
     const allProgs = Object.values(byProg)
-      .map(p=>{ const pr=p.npsRows.filter(n=>n>=9).length, de=p.npsRows.filter(n=>n<=6).length, tot=p.npsRows.length; const proj=(p.codigo?codeToProject[p.codigo]:null)||progToProject[p.prog]||null; return {...p, pr, de, tot, nps:tot?Math.round(((pr-de)/tot)*100):null, cicloSP:proj?.ciclo||'', semestreSP:proj?.semestre||'', matched:!!proj}; })
+      .map(p=>{ const pr=p.npsRows.filter(n=>n>=9).length, de=p.npsRows.filter(n=>n<=6).length, tot=p.npsRows.length; const proj=(p.firstIdAts?atsToProject[p.firstIdAts]:null)||(p.codigo?codeToProject[p.codigo]:null)||progToProject[p.prog]||null; return {...p, pr, de, tot, nps:tot?Math.round(((pr-de)/tot)*100):null, cicloSP:proj?.ciclo||'', semestreSP:proj?.semestre||'', matched:!!proj}; })
       .sort((a,b)=>b.total-a.total);
     const smCount    = candRows.filter(r=>r.source==='SM').length;
     const excelCount = candRows.filter(r=>r.source==='Excel').length;
@@ -12212,7 +12230,7 @@ function NpsView({
       allProgs.length > 0 && React.createElement('div',{className:'bg-white border border-slate-200 rounded-xl p-5 mb-5'},
         React.createElement('div',{className:'flex items-center justify-between mb-3'},
           React.createElement('h3',{className:'text-sm font-semibold text-slate-700'},`Programas (${allProgs.length})`),
-          React.createElement('span',{className:'text-[10px] text-slate-400'},Object.keys(codeToProject).length>0?`${Object.keys(codeToProject).length} cod. + ${Object.keys(progToProject).length} nome vinculados ao SP`:Object.keys(progToProject).length>0?`${Object.keys(progToProject).length} vinculados ao SP`:'Sem vínculo SP')
+          React.createElement('span',{className:'text-[10px] text-slate-400'},Object.keys(atsToProject).length>0?`${Object.keys(atsToProject).length} ATS + ${Object.keys(progToProject).length} SM vinculados`:(Object.keys(codeToProject).length>0?`${Object.keys(codeToProject).length} cod. + ${Object.keys(progToProject).length} nome vinculados`:'Sem vínculo SP'))
         ),
         React.createElement('div',{className:'overflow-auto max-h-[60vh]'},
           React.createElement('table',{className:'w-full text-xs border-collapse'},
