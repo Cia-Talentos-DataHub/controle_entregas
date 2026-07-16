@@ -10915,27 +10915,42 @@ function NpsView({
   const [fCandProduto,  setFCandProduto]  = useState([]);
   const [fCandTipo,     setFCandTipo]     = useState([]);
 
-  // Faz matching fuzzy entre nome do programa (Excel/SM) e projeto do SP
+  // Matching programa (Excel/SM) → projeto SP — mesmo algoritmo do CSAT
   const progToProject = useMemo(() => {
     if (!candRows || !projects.length) return {};
-    const normStr = s => (s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^a-z0-9 ]/g,'').trim();
-    const stopWords = new Set(['de','da','do','dos','das','para','com','em','na','no','nos','nas','um','uma','e','o','a','os','as','por','que','programa','processo','seletivo','track','trainees']);
-    const words = s => normStr(s).split(/\s+/).filter(w => w.length >= 2 && !stopWords.has(w));
+    // Normalização idêntica ao CSAT
+    const normStr = s => (s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim();
+    // Extrai ciclo orçamentário da string normalizada (ex: "2025 2026" → "2025/2026")
+    const extractYR = s => {
+      const variants = [/\b(20\d{2}) (20\d{2})\b/,/\b(20\d{2}) (\d{2})\b/,/\b(\d{2}) (20\d{2})\b/,/\b(\d{2}) (\d{2})\b/];
+      for (const re of variants) {
+        const m = s.match(re); if (!m) continue;
+        const y1=m[1].length===2?'20'+m[1]:m[1], y2=m[2].length===2?'20'+m[2]:m[2];
+        const n1=parseInt(y1),n2=parseInt(y2);
+        if (n2-n1===1&&n1>=2020&&n1<=2035) return y1+'/'+y2;
+      }
+      return null;
+    };
+    // Guard: tipo de programa não pode conflitar
+    const PTYPES=[{re:/estagio/},{re:/trainee/},{re:/aprendiz/}];
+    const typeConflict=(a,b)=>{for(const t of PTYPES){if(t.re.test(a)){for(const u of PTYPES){if(u.re!==t.re&&u.re.test(b))return true;}}}return false;};
+    // Precomputa projetos normalizados
+    const spNormed = projects.map(p=>({p, cli:normStr(p.client||''), ttl:normStr(p.title||''), ciclo:p.ciclo||null}));
+    const nameMatch = (cnNorm, sp) => {
+      const ok=(sp.cli.length>=3&&(cnNorm.includes(sp.cli)||sp.cli.includes(cnNorm)))||(sp.ttl.length>=3&&(cnNorm.includes(sp.ttl)||sp.ttl.includes(cnNorm)));
+      if (!ok) return false;
+      if (typeConflict(cnNorm,sp.ttl)) return false;
+      const cnCiclo=extractYR(cnNorm);
+      if (cnCiclo&&sp.ciclo&&cnCiclo!==sp.ciclo) return false;
+      return true;
+    };
     const map = {};
-    const uniqueProgs = [...new Set(candRows.map(r => r.programa).filter(Boolean))];
+    const uniqueProgs = [...new Set(candRows.map(r=>r.programa).filter(Boolean))];
     uniqueProgs.forEach(prog => {
-      const progWords = new Set(words(prog));
-      if (!progWords.size) return;
-      let bestMatch = null, bestScore = 0;
-      projects.forEach(p => {
-        const projWords = words(p.title);
-        if (!projWords.length) return;
-        const overlap = projWords.filter(w => progWords.has(w)).length;
-        if (!overlap) return;
-        const score = overlap / Math.max(projWords.length, progWords.size, 1);
-        if (score > bestScore) { bestScore = score; bestMatch = p; }
-      });
-      if (bestScore >= 0.2 && bestMatch) map[prog] = bestMatch;
+      const cnNorm = normStr(prog);
+      if (!cnNorm||cnNorm.length<3) return;
+      const match = spNormed.find(sp=>nameMatch(cnNorm,sp));
+      if (match) map[prog] = match.p;
     });
     return map;
   }, [candRows, projects]);
@@ -11934,10 +11949,9 @@ function NpsView({
       byProg[r.programa].total++;
       if (r.nps!==null&&r.nps>=0&&r.nps<=10) byProg[r.programa].npsRows.push(r.nps);
     });
-    const topProgs = Object.values(byProg)
-      .filter(p=>p.npsRows.length>=3)
-      .map(p=>{ const pr=p.npsRows.filter(n=>n>=9).length, de=p.npsRows.filter(n=>n<=6).length, tot=p.npsRows.length; return {...p, nps:Math.round(((pr-de)/tot)*100)}; })
-      .sort((a,b)=>b.total-a.total).slice(0,10);
+    const allProgs = Object.values(byProg)
+      .map(p=>{ const pr=p.npsRows.filter(n=>n>=9).length, de=p.npsRows.filter(n=>n<=6).length, tot=p.npsRows.length; const proj=progToProject[p.prog]||null; return {...p, pr, de, tot, nps:tot?Math.round(((pr-de)/tot)*100):null, cicloSP:proj?.ciclo||'', semestreSP:proj?.semestre||'', matched:!!proj}; })
+      .sort((a,b)=>b.total-a.total);
     const smCount    = candRows.filter(r=>r.source==='SM').length;
     const excelCount = candRows.filter(r=>r.source==='Excel').length;
     return React.createElement(React.Fragment, null,
@@ -12030,22 +12044,48 @@ function NpsView({
         ),
         React.createElement('p',{className:'text-[10px] text-slate-400 mt-3'},expTotal.toLocaleString('pt-BR')+' respostas')
       ),
-      topProgs.length > 0 && React.createElement('div',{className:'bg-white border border-slate-200 rounded-xl p-5 mb-5'},
-        React.createElement('h3',{className:'text-sm font-semibold text-slate-700 mb-4'},'Top programas por volume (mín. 3 respostas NPS)'),
-        React.createElement('div',{className:'flex flex-col gap-2'},
-          topProgs.map((p,i) => {
-            const barW = Math.max(4, Math.round((p.total/topProgs[0].total)*100));
-            const z = npsZona(p.nps);
-            return React.createElement('div',{key:p.prog,className:'flex items-center gap-3 text-xs'},
-              React.createElement('span',{className:'text-slate-400 w-4 text-right shrink-0'},i+1),
-              React.createElement('span',{className:'text-slate-700 truncate min-w-0 flex-1',style:{maxWidth:'260px'},title:p.prog},p.prog),
-              React.createElement('div',{className:'flex-1 bg-slate-100 rounded-full h-4 relative min-w-[80px]'},
-                React.createElement('div',{style:{width:barW+'%',background:z.color,borderRadius:'9999px',height:'100%'}})
-              ),
-              React.createElement('span',{style:{color:z.color},className:'font-bold w-14 text-right shrink-0'},p.nps>0?'+'+p.nps:p.nps),
-              React.createElement('span',{className:'text-slate-400 w-16 text-right shrink-0'},p.total+' resp.')
-            );
-          })
+      allProgs.length > 0 && React.createElement('div',{className:'bg-white border border-slate-200 rounded-xl p-5 mb-5'},
+        React.createElement('div',{className:'flex items-center justify-between mb-3'},
+          React.createElement('h3',{className:'text-sm font-semibold text-slate-700'},`Programas (${allProgs.length})`),
+          React.createElement('span',{className:'text-[10px] text-slate-400'},progToProject&&Object.keys(progToProject).length>0?`${Object.keys(progToProject).length} vinculados ao SP`:'Sem vínculo SP')
+        ),
+        React.createElement('div',{className:'overflow-auto max-h-[60vh]'},
+          React.createElement('table',{className:'w-full text-xs border-collapse'},
+            React.createElement('thead',null,
+              React.createElement('tr',{className:'sticky top-0 bg-slate-50 border-b border-slate-200 text-left text-slate-500'},
+                React.createElement('th',{className:'px-2 py-2 font-medium w-8'},'#'),
+                React.createElement('th',{className:'px-2 py-2 font-medium'},'Programa'),
+                React.createElement('th',{className:'px-2 py-2 font-medium text-center w-28'},'Ciclo SP'),
+                React.createElement('th',{className:'px-2 py-2 font-medium text-right w-16'},'Resp.'),
+                React.createElement('th',{className:'px-2 py-2 font-medium text-right w-16'},'NPS'),
+                React.createElement('th',{className:'px-2 py-2 font-medium text-right w-14'},'Prom.'),
+                React.createElement('th',{className:'px-2 py-2 font-medium text-right w-14'},'Detr.')
+              )
+            ),
+            React.createElement('tbody',{className:'divide-y divide-slate-100'},
+              allProgs.map((p,i)=>{
+                const z=npsZona(p.nps);
+                return React.createElement('tr',{key:p.prog,className:'hover:bg-slate-50'},
+                  React.createElement('td',{className:'px-2 py-1.5 text-slate-400 text-right'},i+1),
+                  React.createElement('td',{className:'px-2 py-1.5 text-slate-700 max-w-xs',title:p.prog},
+                    React.createElement('span',{className:'line-clamp-1 block'},p.prog),
+                    p.semestreSP && React.createElement('span',{className:'text-[10px] text-slate-400'},p.semestreSP)
+                  ),
+                  React.createElement('td',{className:'px-2 py-1.5 text-center'},
+                    p.cicloSP
+                      ? React.createElement('span',{className:'bg-amber-50 text-amber-700 border border-amber-200 rounded px-1.5 py-0.5 text-[10px] font-medium'},p.cicloSP)
+                      : React.createElement('span',{className:'text-slate-300'},'—')
+                  ),
+                  React.createElement('td',{className:'px-2 py-1.5 text-right text-slate-600'},p.total),
+                  React.createElement('td',{className:'px-2 py-1.5 text-right font-bold',style:{color:p.nps!==null?z.color:'#94a3b8'}},
+                    p.nps!==null?(p.nps>0?'+'+p.nps:p.nps):'—'
+                  ),
+                  React.createElement('td',{className:'px-2 py-1.5 text-right text-green-600'},p.tot?Math.round((p.pr/p.tot)*100)+'%':'—'),
+                  React.createElement('td',{className:'px-2 py-1.5 text-right text-red-500'},p.tot?Math.round((p.de/p.tot)*100)+'%':'—')
+                );
+              })
+            )
+          )
         )
       )
     );
