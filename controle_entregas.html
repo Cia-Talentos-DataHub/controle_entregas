@@ -11026,6 +11026,29 @@ function NpsView({
     return map;
   }, [candRows, projects]);
 
+  // Extrai ciclo diretamente do nome do coletor SM quando não há match no SP
+  // Regra: qualquer par de anos consecutivos (ex: "26-27", "2026-2027") → "2026/2027"
+  const smCollectorCiclo = useMemo(() => {
+    if (!candRows) return {};
+    const normStr = s => (s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim();
+    const extractYR = s => {
+      const variants = [/\b(20\d{2}) (20\d{2})\b/,/\b(20\d{2}) (\d{2})\b/,/\b(\d{2}) (20\d{2})\b/,/\b(\d{2}) (\d{2})\b/];
+      for (const re of variants) {
+        const m = s.match(re); if (!m) continue;
+        const y1=m[1].length===2?'20'+m[1]:m[1], y2=m[2].length===2?'20'+m[2]:m[2];
+        const n1=parseInt(y1),n2=parseInt(y2);
+        if (n2-n1===1&&n1>=2020&&n1<=2035) return y1+'/'+y2;
+      }
+      return null;
+    };
+    const map = {};
+    [...new Set(candRows.filter(r=>r.source==='SM').map(r=>r.programa).filter(Boolean))].forEach(prog => {
+      const ciclo = extractYR(normStr(prog));
+      if (ciclo) map[prog] = ciclo;
+    });
+    return map;
+  }, [candRows]);
+
   // Correspondência por código de proposta (Excel CÓDIGO ↔ SP codigoProposta)
   const codeToProject = useMemo(() => {
     if (!candRows || !projects.length) return {};
@@ -11078,7 +11101,12 @@ function NpsView({
     Object.values(atsToProject).forEach(p => { byId[p.id] = p; }); // ATS sobrescreve (mais confiável)
     return Object.values(byId);
   }, [atsToProject, progToProject]);
-  const candCicloOpts    = useMemo(() => [...new Set(_candDimProjects.map(p=>p.ciclo).filter(Boolean))].sort(), [_candDimProjects]);
+  // Ciclo options: SP projects (via atsToProject + progToProject) + ciclos inferidos do nome do coletor SM
+  const candCicloOpts    = useMemo(() => {
+    const s = new Set(_candDimProjects.map(p=>p.ciclo).filter(Boolean));
+    Object.values(smCollectorCiclo).forEach(c => s.add(c));
+    return [...s].sort();
+  }, [_candDimProjects, smCollectorCiclo]);
   const candSemestreOpts = useMemo(() => [...new Set(_candDimProjects.map(p=>p.semestre).filter(Boolean))].sort(), [_candDimProjects]);
   const candPublicoOpts  = useMemo(() => [...new Set(_candDimProjects.map(p=>p.publico).filter(Boolean))].sort(), [_candDimProjects]);
   const candProdutoOpts  = useMemo(() => [...new Set(_candDimProjects.map(p=>p.produto).filter(Boolean))].sort(), [_candDimProjects]);
@@ -12018,7 +12046,9 @@ function NpsView({
       if (fCandTipoPesq.length && !fCandTipoPesq.includes(r.tipoPesquisa)) return false;
       if (fCandCiclo.length || fCandSemestre.length || fCandPublico.length || fCandProduto.length || fCandTipo.length) {
         const proj = (r.idAts ? atsToProject[r.idAts] : null) || progToProject[r.programa] || null;
-        if (fCandCiclo.length    && (!proj || !fCandCiclo.includes(proj.ciclo)))       return false;
+        // Ciclo: SP match tem prioridade; fallback = ciclo inferido do nome do coletor SM ("26-27" → "2026/2027")
+        const rowCiclo = proj?.ciclo || smCollectorCiclo[r.programa] || null;
+        if (fCandCiclo.length    && !fCandCiclo.includes(rowCiclo))                    return false;
         if (fCandSemestre.length && (!proj || !fCandSemestre.includes(proj.semestre))) return false;
         if (fCandPublico.length  && (!proj || !fCandPublico.includes(proj.publico)))   return false;
         if (fCandProduto.length  && (!proj || !fCandProduto.includes(proj.produto)))   return false;
