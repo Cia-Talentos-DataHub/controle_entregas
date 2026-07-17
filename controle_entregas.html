@@ -1401,7 +1401,9 @@ const NPS_CLI_REL = "/sites/Public/Documentos Partilhados/CIA/GeralCT/Globe (Ges
 const NPS_CDD_REL = "/sites/Public/Documentos Partilhados/CIA/GeralCT/Indicadores CT/Bases dos projetos/Bases de vagas/Analise_Pesquisa_Candidatos_Completo.xlsx";
 const NPS_CDD_SHEET = 'Pesquisa_candidato'; // primeira planilha do CDD
 // CDD candidato: SurveyMonkey + Excel 80.20
-const NPS_CAND_EXCEL_REL = '/sites/Public/Documentos Partilhados/CIA/GeralCT/Globe (Gestão)/Projeto 80.20/Pesquisa/Base_Pesquisa_8020.xlsx';
+const NPS_CAND_EXCEL_REL      = '/sites/Public/Documentos Partilhados/CIA/GeralCT/Globe (Gestão)/Projeto 80.20/Pesquisa/Base_Pesquisa_8020.xlsx';
+// Arquivo de tabulação classificada (output da skill tabula-pesquisa-candidatos)
+const CAND_CLASSIFIED_REL     = '/sites/Public/Documentos Partilhados/CIA/GeralCT/Indicadores CT/Bases dos projetos/Bases de vagas/Analise_Pesquisa_Candidatos_Completo.xlsx';
 const SM_CAND_ID = '418486361';
 const SM_CAND_NPS_QID = '245841662';
 const SM_CAND_IMPR_QID = '245840107';
@@ -2937,6 +2939,21 @@ function normalizeCandExcelRows(excelRows) {
     nullCandSkipped:   skippedNoCand,
     colsDetected: { codigoCol, candidatoCol, processoCol, tipoPesqCol, perguntaCol, respostaCol }
   }};
+}
+
+// Parseia a aba "Parte 1 - Classificação" do Excel de tabulação
+// Estrutura: Row 0 = título mesclado, Row 1 = cabeçalhos, Row 2+ = dados
+// Colunas: PROCESSO SELETIVO | RESPOSTA DO CANDIDATO | CATEGORIA
+function parseClassifiedSheet(raw) {
+  if (!raw || raw.length < 3) return [];
+  return raw.slice(2)
+    .filter(r => r.some(v => v !== null && v !== ''))
+    .map(row => ({
+      processo:  String(row[0] || '').trim(),
+      resposta:  String(row[1] || '').trim(),
+      categoria: String(row[2] || '').trim().toUpperCase()
+    }))
+    .filter(r => r.resposta && r.categoria);
 }
 
 // ─── App ──────────────────────────────────────────────────────────────────────
@@ -10968,6 +10985,7 @@ function NpsView({
   const [candFiltro,    setCandFiltro]    = useState([]);   // array para multi-select
   const [candSource,    setCandSource]    = useState('all');
   const [candExcelDiag, setCandExcelDiag] = useState(null);
+  const [classifiedRows, setClassifiedRows] = useState(null); // tabulação classificada (skill output)
   const [fCandCiclo,    setFCandCiclo]    = useState([]);
   const [fCandSemestre, setFCandSemestre] = useState([]);
   const [fCandPublico,  setFCandPublico]  = useState([]);
@@ -11092,6 +11110,23 @@ function NpsView({
     return map;
   }, [candRows, projects]);
 
+  // Mapa de comentários já classificados: "programa|resposta" → categoria
+  const classMap = useMemo(() => {
+    if (!classifiedRows) return {};
+    const map = {};
+    classifiedRows.forEach(r => { if (r.resposta) map[r.processo + '|' + r.resposta] = r.categoria; });
+    return map;
+  }, [classifiedRows]);
+
+  // Comentários do Excel ainda não presentes na tabulação classificada
+  const pendingComments = useMemo(() => {
+    if (!candRows || classifiedRows === null) return null; // null = ainda carregando
+    return candRows.filter(r =>
+      r.source === 'Excel' && r.comentario && r.comentario.trim() &&
+      !classMap[r.programa + '|' + r.comentario]
+    ).length;
+  }, [candRows, classifiedRows, classMap]);
+
   const candProgOpts     = useMemo(() => [...new Set((candRows||[]).map(r=>r.programa).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'pt-BR')), [candRows]);
   // Opções de dimensão: união de atsToProject (Excel, primário) + progToProject (SM, fallback)
   // O LOOKUP do filtro ainda usa atsToProject → progToProject em cascata — aqui só expandimos as opções
@@ -11145,17 +11180,29 @@ function NpsView({
       console.warn('SM cand error:', e.message);
     }
 
-    // ── 2. Excel com timeout de 25s ──
+    // ── 2. Excel base + tabulação classificada em paralelo ──
     try {
       setCandProg('Carregando Excel do SharePoint…');
-      const excelLoad = fetchExcelSheet(clientId, tenantId, NPS_CAND_EXCEL_REL, null);
       const timeoutP = new Promise((_,rej) =>
         setTimeout(()=>rej(new Error('Excel não respondeu em 90s — verifique o caminho do arquivo')), 90000)
       );
-      const raw = await Promise.race([excelLoad, timeoutP]);
-      const result = normalizeCandExcelRows(raw);
-      excelRows = result.rows;
-      setCandExcelDiag(result.diag);
+      const [baseSettled, clsSettled] = await Promise.allSettled([
+        Promise.race([fetchExcelSheet(clientId, tenantId, NPS_CAND_EXCEL_REL, null), timeoutP]),
+        fetchSheetRaw(clientId, tenantId, CAND_CLASSIFIED_REL, 'Parte 1 - Classificação')
+          .catch(e => { console.warn('Tabulação classificada:', e.message); return null; })
+      ]);
+      if (baseSettled.status === 'fulfilled') {
+        const result = normalizeCandExcelRows(baseSettled.value);
+        excelRows = result.rows;
+        setCandExcelDiag(result.diag);
+      } else {
+        setCandErr('Excel: ' + baseSettled.reason?.message);
+      }
+      if (clsSettled.status === 'fulfilled' && clsSettled.value) {
+        setClassifiedRows(parseClassifiedSheet(clsSettled.value));
+      } else {
+        setClassifiedRows([]); // arquivo não encontrado → sem classificações
+      }
     } catch(e) {
       setCandErr('Excel: ' + e.message);
     }
@@ -12115,6 +12162,14 @@ function NpsView({
           ].join('\n'),
           className:'bg-slate-50 text-slate-400 border border-slate-200 rounded-full px-2.5 py-0.5 cursor-help font-medium'
         },'ℹ Excel diag (hover)'),
+        pendingComments === null
+          ? React.createElement('span',{className:'bg-slate-50 text-slate-400 border border-slate-200 rounded-full px-2.5 py-0.5 font-medium animate-pulse'},'Verificando tabulação…')
+          : pendingComments > 0
+            ? React.createElement('span',{
+                title: `${pendingComments} comentários do Excel base ainda não aparecem na tabulação classificada.\nRode a skill tabula-pesquisa-candidatos para classificá-los.`,
+                className:'bg-amber-50 text-amber-700 border border-amber-300 rounded-full px-2.5 py-0.5 font-semibold cursor-help'
+              }, `⚠ ${pendingComments.toLocaleString('pt-BR')} comentários aguardando classificação`)
+            : classifiedRows !== null && React.createElement('span',{className:'bg-emerald-50 text-emerald-600 border border-emerald-200 rounded-full px-2.5 py-0.5 font-medium'},'✓ Tabulação atualizada'),
         React.createElement('span',{className:'text-slate-300'},'·'),
         React.createElement('span',null,`${filtered.length.toLocaleString('pt-BR')} exibindo (filtro aplicado)`)
       ),
