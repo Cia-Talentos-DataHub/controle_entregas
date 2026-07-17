@@ -2956,6 +2956,36 @@ function parseClassifiedSheet(raw) {
     .filter(r => r.resposta && r.categoria);
 }
 
+// Parseia a aba "Parte 3 - Análise OUTROS"
+// Estrutura: Row 0 = título mesclado, Row 1 = cabeçalhos, Row 2+ = dados
+// Colunas: PROCESSO SELETIVO | RESPOSTA | MOTIVO DA CLASSIFICAÇÃO
+function parseParte3(raw) {
+  if (!raw || raw.length < 3) return [];
+  return raw.slice(2)
+    .filter(r => r.some(v => v !== null && v !== ''))
+    .map(row => ({
+      processo: String(row[0] || '').trim(),
+      resposta: String(row[1] || '').trim(),
+      motivo:   String(row[2] || '').trim()
+    }))
+    .filter(r => r.resposta);
+}
+
+// Parseia a aba "Parte 4 - Insights"
+// Estrutura: Row 0 = título mesclado, Row 1+ = dados (2 cols: TÓPICO | TEXTO)
+// Linha com col 1 vazia = cabeçalho de seção; demais = par tópico/valor
+function parseParte4(raw) {
+  if (!raw || raw.length < 2) return [];
+  return raw.slice(1)
+    .filter(r => r[0] || r[1])
+    .map(row => ({
+      chave:    String(row[0] || '').trim(),
+      valor:    String(row[1] || '').trim(),
+      isHeader: !!(row[0] && !row[1])
+    }))
+    .filter(r => r.chave || r.valor);
+}
+
 // ─── App ──────────────────────────────────────────────────────────────────────
 function App() {
   const local = loadLocal();
@@ -10985,7 +11015,10 @@ function NpsView({
   const [candFiltro,    setCandFiltro]    = useState([]);   // array para multi-select
   const [candSource,    setCandSource]    = useState('all');
   const [candExcelDiag, setCandExcelDiag] = useState(null);
-  const [classifiedRows, setClassifiedRows] = useState(null); // tabulação classificada (skill output)
+  const [classifiedRows,   setClassifiedRows]   = useState(null); // tabulação classificada — Parte 1
+  const [classifiedParte3, setClassifiedParte3] = useState(null); // OUTROS + motivo — Parte 3
+  const [classifiedParte4, setClassifiedParte4] = useState(null); // Insights — Parte 4
+  const [fCommentCat,      setFCommentCat]      = useState('all'); // filtro ativo na tabela de comentários
   const [fCandCiclo,    setFCandCiclo]    = useState([]);
   const [fCandSemestre, setFCandSemestre] = useState([]);
   const [fCandPublico,  setFCandPublico]  = useState([]);
@@ -11186,10 +11219,14 @@ function NpsView({
       const timeoutP = new Promise((_,rej) =>
         setTimeout(()=>rej(new Error('Excel não respondeu em 90s — verifique o caminho do arquivo')), 90000)
       );
-      const [baseSettled, clsSettled] = await Promise.allSettled([
+      const [baseSettled, clsSettled, p3Settled, p4Settled] = await Promise.allSettled([
         Promise.race([fetchExcelSheet(clientId, tenantId, NPS_CAND_EXCEL_REL, null), timeoutP]),
         fetchSheetRaw(clientId, tenantId, CAND_CLASSIFIED_REL, 'Parte 1 - Classificação')
-          .catch(e => { console.warn('Tabulação classificada:', e.message); return null; })
+          .catch(e => { console.warn('Tabulação P1:', e.message); return null; }),
+        fetchSheetRaw(clientId, tenantId, CAND_CLASSIFIED_REL, 'Parte 3 - Análise OUTROS')
+          .catch(e => { console.warn('Tabulação P3:', e.message); return null; }),
+        fetchSheetRaw(clientId, tenantId, CAND_CLASSIFIED_REL, 'Parte 4 - Insights')
+          .catch(e => { console.warn('Tabulação P4:', e.message); return null; }),
       ]);
       if (baseSettled.status === 'fulfilled') {
         const result = normalizeCandExcelRows(baseSettled.value);
@@ -11201,7 +11238,17 @@ function NpsView({
       if (clsSettled.status === 'fulfilled' && clsSettled.value) {
         setClassifiedRows(parseClassifiedSheet(clsSettled.value));
       } else {
-        setClassifiedRows([]); // arquivo não encontrado → sem classificações
+        setClassifiedRows([]);
+      }
+      if (p3Settled.status === 'fulfilled' && p3Settled.value) {
+        setClassifiedParte3(parseParte3(p3Settled.value));
+      } else {
+        setClassifiedParte3([]);
+      }
+      if (p4Settled.status === 'fulfilled' && p4Settled.value) {
+        setClassifiedParte4(parseParte4(p4Settled.value));
+      } else {
+        setClassifiedParte4([]);
       }
     } catch(e) {
       setCandErr('Excel: ' + e.message);
@@ -12457,6 +12504,103 @@ function NpsView({
               React.createElement('span',{className:'w-3 h-3 rounded-sm inline-block bg-slate-200'}),
               React.createElement('span',{className:'text-xs text-slate-400'},'Não classificado'),
               React.createElement('span',{className:'text-xs font-semibold text-slate-400'},Math.round(catCounts['_PENDENTE']/total*100)+'%')
+            )
+          )
+        );
+      })(),
+      // ── Tabela de comentários ──────────────────────────────────────────────
+      (() => {
+        if (!classifiedRows) return null;
+        const commentRows = filtered
+          .filter(r => r.source === 'Excel' && r.comentario && r.comentario.trim())
+          .map(r => ({ prog: r.programa, text: r.comentario, cat: classMap[r.programa+'|'+r.comentario] || '_PENDENTE' }));
+        if (!commentRows.length) return null;
+        const catCt = { ELOGIO:0, 'CRÍTICA':0, 'SUGESTÃO':0, OUTROS:0, _PENDENTE:0 };
+        commentRows.forEach(r => { if (catCt[r.cat] !== undefined) catCt[r.cat]++; });
+        const parte3Map = {};
+        (classifiedParte3||[]).forEach(r => { parte3Map[r.processo+'|'+r.resposta] = r.motivo; });
+        const catMeta = {
+          ELOGIO:    { label:'Elogio',          color:'#16a34a', bg:'#dcfce7' },
+          'CRÍTICA': { label:'Crítica',          color:'#dc2626', bg:'#fee2e2' },
+          'SUGESTÃO':{ label:'Sugestão',         color:'#d97706', bg:'#fef3c7' },
+          OUTROS:    { label:'Outros',           color:'#64748b', bg:'#f1f5f9' },
+          _PENDENTE: { label:'Não classificado', color:'#94a3b8', bg:'#f8fafc' },
+        };
+        const visRows = fCommentCat === 'all' ? commentRows : commentRows.filter(r => r.cat === fCommentCat);
+        const showMotivo = fCommentCat === 'OUTROS';
+        const tabs = ['all','ELOGIO','CRÍTICA','SUGESTÃO','OUTROS','_PENDENTE'].filter(k => k==='all' || catCt[k]>0);
+        return React.createElement('div',{className:'bg-white border border-slate-200 rounded-xl p-5 mb-5'},
+          React.createElement('div',{className:'flex items-center justify-between mb-3'},
+            React.createElement('h3',{className:'text-sm font-semibold text-slate-700'},'Comentários abertos'),
+            React.createElement('span',{className:'text-[10px] text-slate-400'},commentRows.length.toLocaleString('pt-BR')+' comentários com resposta')
+          ),
+          React.createElement('div',{className:'flex flex-wrap gap-1.5 mb-4'},
+            tabs.map(k => {
+              const m = catMeta[k];
+              const count = k==='all' ? commentRows.length : catCt[k];
+              const isActive = fCommentCat === k;
+              return React.createElement('button',{
+                key:k, onClick:()=>setFCommentCat(k),
+                className:'text-xs rounded-full px-3 py-1 font-medium border transition-all',
+                style: isActive
+                  ? { background: k==='all'?'#1e293b':m.color, color:'#fff', borderColor: k==='all'?'#1e293b':m.color }
+                  : { background: k==='all'?'#f8fafc':m.bg,    color: k==='all'?'#475569':m.color, borderColor: k==='all'?'#e2e8f0':'transparent' }
+              }, (k==='all'?'Todos':m.label)+' ('+count.toLocaleString('pt-BR')+')');
+            })
+          ),
+          React.createElement('div',{className:'overflow-auto max-h-96 rounded-lg border border-slate-100'},
+            React.createElement('table',{className:'w-full text-xs border-collapse'},
+              React.createElement('thead',null,
+                React.createElement('tr',{className:'sticky top-0 bg-slate-50 border-b border-slate-200 text-left text-slate-500'},
+                  React.createElement('th',{className:'px-3 py-2 font-medium w-8 text-right'},'#'),
+                  React.createElement('th',{className:'px-3 py-2 font-medium w-44'},'Programa'),
+                  React.createElement('th',{className:'px-3 py-2 font-medium'},'Comentário'),
+                  React.createElement('th',{className:'px-3 py-2 font-medium w-28 text-center'},'Categoria'),
+                  showMotivo ? React.createElement('th',{className:'px-3 py-2 font-medium w-40'},'Motivo') : null
+                )
+              ),
+              React.createElement('tbody',{className:'divide-y divide-slate-50'},
+                visRows.slice(0,300).map((r,i) => {
+                  const m = catMeta[r.cat] || catMeta['_PENDENTE'];
+                  return React.createElement('tr',{key:i,className:'hover:bg-slate-50 align-top'},
+                    React.createElement('td',{className:'px-3 py-2.5 text-slate-400 text-right whitespace-nowrap'},i+1),
+                    React.createElement('td',{className:'px-3 py-2.5 text-slate-500 max-w-[176px]'},
+                      React.createElement('span',{className:'line-clamp-2 block text-[11px]',title:r.prog},r.prog)
+                    ),
+                    React.createElement('td',{className:'px-3 py-2.5 text-slate-700 leading-relaxed'},r.text),
+                    React.createElement('td',{className:'px-3 py-2.5 text-center'},
+                      React.createElement('span',{
+                        className:'rounded-full px-2 py-0.5 text-[10px] font-semibold whitespace-nowrap',
+                        style:{background:m.bg,color:m.color}
+                      }, m.label)
+                    ),
+                    showMotivo ? React.createElement('td',{className:'px-3 py-2.5 text-slate-400 italic text-[11px]'},
+                      parte3Map[r.prog+'|'+r.text] || '—'
+                    ) : null
+                  );
+                })
+              )
+            )
+          ),
+          visRows.length > 300 && React.createElement('p',{className:'text-[10px] text-slate-400 mt-2 text-center'},
+            'Exibindo 300 de '+visRows.length.toLocaleString('pt-BR')+' comentários')
+        );
+      })(),
+      // ── Insights (Parte 4) ────────────────────────────────────────────────
+      (() => {
+        if (!classifiedParte4 || !classifiedParte4.length) return null;
+        return React.createElement('div',{className:'bg-white border border-slate-200 rounded-xl p-5 mb-5'},
+          React.createElement('h3',{className:'text-sm font-semibold text-slate-700 mb-4'},'Insights da pesquisa'),
+          React.createElement('div',{className:'space-y-1.5'},
+            classifiedParte4.map((row,i) =>
+              row.isHeader
+                ? React.createElement('div',{key:i,className:'pt-4 first:pt-0'},
+                    React.createElement('div',{className:'text-[10px] font-bold uppercase tracking-wide text-white bg-slate-600 rounded-md px-3 py-1.5'},row.chave)
+                  )
+                : React.createElement('div',{key:i,className:'flex gap-3 rounded-lg bg-slate-50 px-3 py-2.5'},
+                    row.chave && React.createElement('span',{className:'text-xs font-semibold text-slate-600 min-w-[140px] shrink-0 leading-relaxed'},row.chave),
+                    row.valor && React.createElement('span',{className:'text-xs text-slate-700 leading-relaxed'},row.valor)
+                  )
             )
           )
         );
