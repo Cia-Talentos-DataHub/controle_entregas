@@ -12796,7 +12796,8 @@ async function cxFetchTickets({
   viewMode,
   setBacklog,
   includeRequester = false,
-  setTruncated = null
+  setTruncated = null,
+  onProgress = null
 }) {
   const mode = viewMode || 'created';
   const orderField = mode === 'updated' ? 'updated_at' : 'created_at';
@@ -12823,21 +12824,44 @@ async function cxFetchTickets({
   let all = [...firstPage],
     page = 2;
   const fromMs = !showAll && dateFrom ? new Date(dateFrom).setHours(0, 0, 0, 0) : null;
-  // showAll usa 300 páginas (hard cap da API Freshdesk = 30.000 tickets)
-  // Períodos curtos usam 25 páginas (suficiente para qualquer janela de datas razoável)
   const maxPage = showAll ? 300 : 25;
-  while (page <= maxPage && all.length > 0) {
-    const last = all[all.length - 1];
-    const lastDate = new Date(mode === 'updated' ? last.updated_at : last.created_at);
-    if (fromMs && lastDate < fromMs - 86400000) break;
-    const more = await fdFetch(`/tickets?per_page=100&page=${page}&include=${includeParam}${sinceParam}&order_by=${orderField}&order_type=desc`);
-    if (!more || !more.length) break;
-    all = all.concat(more);
-    if (more.length < 100) break;
-    page++;
+
+  if (showAll) {
+    // ── Busca paralela em lotes de 5 páginas (~5× mais rápido que sequencial) ──
+    const BATCH = 5;
+    let hasMore = firstPage.length === 100;
+    while (hasMore && page <= maxPage) {
+      const endPage = Math.min(page + BATCH - 1, maxPage);
+      const nums = Array.from({length: endPage - page + 1}, (_, i) => page + i);
+      const batched = await Promise.all(
+        nums.map(p =>
+          fdFetch(`/tickets?per_page=100&page=${p}&include=${includeParam}${sinceParam}&order_by=${orderField}&order_type=desc`)
+            .catch(() => [])
+        )
+      );
+      for (const more of batched) {
+        if (!more || !more.length) { hasMore = false; break; }
+        all = all.concat(more);
+        if (more.length < 100) { hasMore = false; break; }
+      }
+      if (onProgress) onProgress(all.length);
+      page = endPage + 1;
+    }
+    if (setTruncated) setTruncated(hasMore && page > maxPage);
+  } else {
+    // ── Busca sequencial com saída antecipada por data ──
+    while (page <= maxPage && all.length > 0) {
+      const last = all[all.length - 1];
+      const lastDate = new Date(mode === 'updated' ? last.updated_at : last.created_at);
+      if (fromMs && lastDate < fromMs - 86400000) break;
+      const more = await fdFetch(`/tickets?per_page=100&page=${page}&include=${includeParam}${sinceParam}&order_by=${orderField}&order_type=desc`);
+      if (!more || !more.length) break;
+      all = all.concat(more);
+      if (more.length < 100) break;
+      page++;
+    }
+    if (setTruncated) setTruncated(page > maxPage);
   }
-  // Avisa se atingimos o teto da API (página > maxPage significa que pode haver mais)
-  if (setTruncated) setTruncated(page > maxPage);
   const toMs = !showAll && dateTo ? new Date(dateTo).setHours(23, 59, 59, 999) : null;
   let result = all;
   if (fromMs) result = result.filter(t => new Date(t.created_at) >= fromMs);
@@ -12870,6 +12894,7 @@ function CxAnalyticsView() {
   const [tickets, setTickets] = useState(null);
   const [backlog, setBacklog] = useState(null);
   const [truncated, setTruncated] = useState(false);
+  const [loadProgress, setLoadProgress] = useState(0);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
   const [lastUpd, setLastUpd] = useState(null);
@@ -12897,6 +12922,7 @@ function CxAnalyticsView() {
   const hasActiveFilters = Object.values(filters).some(v => v !== NO_FILTER);
   async function loadData() {
     setLoading(true);
+    setLoadProgress(0);
     setErr(null);
     try {
       const result = await cxFetchTickets({
@@ -12905,7 +12931,8 @@ function CxAnalyticsView() {
         showAll,
         viewMode,
         setBacklog,
-        setTruncated
+        setTruncated,
+        onProgress: n => setLoadProgress(n)
       });
       setTickets(result);
       setLastUpd(new Date());
@@ -13250,7 +13277,9 @@ function CxAnalyticsView() {
   const activeFilterCount = Object.values(filters).filter(v => v !== NO_FILTER).length;
   if (loading && !tickets) return /*#__PURE__*/React.createElement("div", {
     className: "text-center py-24 text-slate-400 fade-in"
-  }, "Carregando dados do Freshdesk…");
+  }, /*#__PURE__*/React.createElement("div", null, "Carregando dados do Freshdesk…"), loadProgress > 0 && /*#__PURE__*/React.createElement("div", {
+    className: "mt-2 text-sm text-indigo-500 font-medium"
+  }, loadProgress.toLocaleString('pt-BR') + " tickets carregados…"));
   return /*#__PURE__*/React.createElement("div", {
     className: "max-w-7xl mx-auto px-4 py-6 space-y-5 fade-in"
   }, /*#__PURE__*/React.createElement("div", {
@@ -13851,6 +13880,7 @@ function CxAtendimentoView() {
   });
   const [tickets, setTickets] = useState(null);
   const [truncated, setTruncated] = useState(false);
+  const [loadProgress, setLoadProgress] = useState(0);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
   const [lastUpd, setLastUpd] = useState(null);
@@ -13878,6 +13908,7 @@ function CxAtendimentoView() {
   const hasActiveFilters = Object.values(filters).some(v => v.length > 0);
   async function loadData() {
     setLoading(true);
+    setLoadProgress(0);
     setErr(null);
     try {
       const result = await cxFetchTickets({
@@ -13887,7 +13918,8 @@ function CxAtendimentoView() {
         viewMode: 'created',
         setBacklog: null,
         includeRequester: true,
-        setTruncated
+        setTruncated,
+        onProgress: n => setLoadProgress(n)
       });
       setTickets(result);
       setLastUpd(new Date());
@@ -14066,7 +14098,9 @@ function CxAtendimentoView() {
   const activeFilterCount = Object.values(filters).reduce((a, v) => a + v.length, 0);
   if (loading && !tickets) return /*#__PURE__*/React.createElement("div", {
     className: "text-center py-24 text-slate-400 fade-in"
-  }, "Carregando dados do Freshdesk…");
+  }, /*#__PURE__*/React.createElement("div", null, "Carregando dados do Freshdesk…"), loadProgress > 0 && /*#__PURE__*/React.createElement("div", {
+    className: "mt-2 text-sm text-indigo-500 font-medium"
+  }, loadProgress.toLocaleString('pt-BR') + " tickets carregados…"));
   return /*#__PURE__*/React.createElement("div", {
     className: "max-w-7xl mx-auto px-4 py-6 space-y-5 fade-in"
   }, /*#__PURE__*/React.createElement("div", {
