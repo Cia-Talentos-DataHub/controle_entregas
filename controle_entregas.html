@@ -12795,7 +12795,8 @@ async function cxFetchTickets({
   showAll,
   viewMode,
   setBacklog,
-  includeRequester = false
+  includeRequester = false,
+  setTruncated = null
 }) {
   const mode = viewMode || 'created';
   const orderField = mode === 'updated' ? 'updated_at' : 'created_at';
@@ -12822,8 +12823,9 @@ async function cxFetchTickets({
   let all = [...firstPage],
     page = 2;
   const fromMs = !showAll && dateFrom ? new Date(dateFrom).setHours(0, 0, 0, 0) : null;
-  // showAll precisa de mais páginas — 100p × 100 = 10.000 tickets; períodos curtos usam 25
-  const maxPage = showAll ? 100 : 25;
+  // showAll usa 300 páginas (hard cap da API Freshdesk = 30.000 tickets)
+  // Períodos curtos usam 25 páginas (suficiente para qualquer janela de datas razoável)
+  const maxPage = showAll ? 300 : 25;
   while (page <= maxPage && all.length > 0) {
     const last = all[all.length - 1];
     const lastDate = new Date(mode === 'updated' ? last.updated_at : last.created_at);
@@ -12834,6 +12836,8 @@ async function cxFetchTickets({
     if (more.length < 100) break;
     page++;
   }
+  // Avisa se atingimos o teto da API (página > maxPage significa que pode haver mais)
+  if (setTruncated) setTruncated(page > maxPage);
   const toMs = !showAll && dateTo ? new Date(dateTo).setHours(23, 59, 59, 999) : null;
   let result = all;
   if (fromMs) result = result.filter(t => new Date(t.created_at) >= fromMs);
@@ -12865,6 +12869,7 @@ function CxAnalyticsView() {
   });
   const [tickets, setTickets] = useState(null);
   const [backlog, setBacklog] = useState(null);
+  const [truncated, setTruncated] = useState(false);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
   const [lastUpd, setLastUpd] = useState(null);
@@ -12899,7 +12904,8 @@ function CxAnalyticsView() {
         dateTo,
         showAll,
         viewMode,
-        setBacklog
+        setBacklog,
+        setTruncated
       });
       setTickets(result);
       setLastUpd(new Date());
@@ -13772,7 +13778,10 @@ function CxAnalyticsView() {
     className: "py-2 text-red-600 font-medium text-xs whitespace-nowrap"
   }, t.fr_escalated && t.is_escalated ? '1ª Resp + Resolução' : t.fr_escalated ? '1ª Resposta' : 'Resolução'))))))), /*#__PURE__*/React.createElement("p", {
     className: "text-xs text-slate-400 text-center pb-4"
-  }, filteredTickets.length, hasActiveFilters ? ` de ${tickets.length}` : '', " tickets ", viewLabel, " (", periodLabel, ") · Backlog total: ", backlog ?? '…', " · Freshdesk ciadetalentos")));
+  }, filteredTickets.length, hasActiveFilters ? ` de ${tickets.length}` : '', " tickets ", viewLabel, " (", periodLabel, ") · Backlog total: ", backlog ?? '…', " · Freshdesk ciadetalentos"),
+  truncated && /*#__PURE__*/React.createElement("p", {
+    className: "text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-center mt-2"
+  }, "⚠ Limite da API do Freshdesk atingido (30.000 tickets). Os tickets mais antigos não foram carregados. Use filtros de data para visualizar períodos específicos.")));
 }
 // ─── Multi-select dropdown (CX Atendimento) ───────────────────────────────────
 function MultiSelectFilter({
@@ -13841,6 +13850,7 @@ function CxAtendimentoView() {
     priority: []
   });
   const [tickets, setTickets] = useState(null);
+  const [truncated, setTruncated] = useState(false);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
   const [lastUpd, setLastUpd] = useState(null);
@@ -13876,7 +13886,8 @@ function CxAtendimentoView() {
         showAll,
         viewMode: 'created',
         setBacklog: null,
-        includeRequester: true
+        includeRequester: true,
+        setTruncated
       });
       setTickets(result);
       setLastUpd(new Date());
@@ -14254,7 +14265,11 @@ function CxAtendimentoView() {
     className: "text-sm font-semibold text-slate-700"
   }, "Tickets ", /*#__PURE__*/React.createElement("span", {
     className: "text-slate-400 font-normal"
-  }, "(", filteredTickets.length, hasActiveFilters ? ` de ${tickets.length}` : ``, ")")), exportProg ? /*#__PURE__*/React.createElement("div", {
+  }, "(", filteredTickets.length, hasActiveFilters ? ` de ${tickets.length}` : ``, ")")),
+  truncated && /*#__PURE__*/React.createElement("span", {
+    className: "text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1"
+  }, "⚠ Limite da API atingido — tickets mais antigos não carregados. Use filtros de data."),
+  exportProg ? /*#__PURE__*/React.createElement("div", {
     className: "flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs bg-green-50 border border-green-200 text-green-700"
   }, /*#__PURE__*/React.createElement("svg", {
     className: "animate-spin w-3 h-3 shrink-0",
