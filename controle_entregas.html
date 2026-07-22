@@ -12800,7 +12800,12 @@ async function cxFetchTickets({
   const mode = viewMode || 'created';
   const orderField = mode === 'updated' ? 'updated_at' : 'created_at';
   let since = null;
-  if (!showAll && dateFrom) {
+  if (showAll) {
+    // A API do Freshdesk retorna apenas os últimos 30 dias por padrão quando
+    // nenhum updated_since é informado. Passamos uma data antiga para obter
+    // todo o histórico de tickets.
+    since = encodeURIComponent('2018-01-01T00:00:00Z');
+  } else if (dateFrom) {
     const d = new Date(dateFrom);
     d.setHours(0, 0, 0, 0);
     since = encodeURIComponent(d.toISOString());
@@ -12817,7 +12822,9 @@ async function cxFetchTickets({
   let all = [...firstPage],
     page = 2;
   const fromMs = !showAll && dateFrom ? new Date(dateFrom).setHours(0, 0, 0, 0) : null;
-  while (page <= 25 && all.length > 0) {
+  // showAll precisa de mais páginas — 100p × 100 = 10.000 tickets; períodos curtos usam 25
+  const maxPage = showAll ? 100 : 25;
+  while (page <= maxPage && all.length > 0) {
     const last = all[all.length - 1];
     const lastDate = new Date(mode === 'updated' ? last.updated_at : last.created_at);
     if (fromMs && lastDate < fromMs - 86400000) break;
