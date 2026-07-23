@@ -1786,15 +1786,17 @@ function AlocacaoSimplificadaView({
       if (etapa === 'Altíssima Chance') return 1;
       if (etapa === 'Alta Chance') return 2;
       if (etapa === 'Média Chance') return 3;
-      return 4;
+      if (etapa === 'Baixa Chance') return 4;
+      return 5;
     }
 
-    // Normalizar etapa: apenas Altíssima / Alta / Média Chance mantêm nome;
+    // Normalizar etapa: Altíssima / Alta / Média / Baixa Chance mantêm nome;
     // todo o resto vira "Em trabalho"
     function normalizeEtapa(etapa) {
       if (/alt[ií]ssima/i.test(etapa)) return 'Altíssima Chance';
       if (/alta chance/i.test(etapa)) return 'Alta Chance';
       if (/m[eé]dia chance/i.test(etapa)) return 'Média Chance';
+      if (/baixa chance/i.test(etapa)) return 'Baixa Chance';
       return 'Em trabalho';
     }
 
