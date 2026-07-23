@@ -14520,6 +14520,8 @@ function buildEscopoFM(items) {
     arcouCusto:   resolve('empresaarcou')          || 'Empresa_arcou',
     politicaCusto:resolve('qualfoiapolitica')      || resolve('politicadec') || 'Politica_custos',
     tempoExiste:  resolve('haquantotempoexiste')   || resolve('haquantotempo')|| 'Tempo_programa',
+    ciclo:        resolve('cicloorcamentario')      || 'Ciclo_Orcamentario',
+    frenteNeg:    resolve('frenegocio')            || resolve('frente_negocio') || resolve('frenegoc') || 'Frente_Negocio',
   };
 }
 
@@ -14529,6 +14531,8 @@ function EscopoView({ authState }) {
   const [err, setErr] = useState(null);
   const [showTable, setShowTable] = useState(false);
   const [fSeg, setFSeg] = useState('');
+  const [fCiclo, setFCiclo] = useState('');
+  const [fFrente, setFFrente] = useState('');
 
   useEffect(() => {
     if (!authState?.token) return;
@@ -14543,8 +14547,13 @@ function EscopoView({ authState }) {
 
   const filtered = useMemo(() => {
     if (!items) return [];
-    return fSeg ? items.filter(it => (it[fm.segmento] || '') === fSeg) : items;
-  }, [items, fSeg, fm]);
+    return items.filter(it => {
+      if (fSeg   && (it[fm.segmento]  || '') !== fSeg)   return false;
+      if (fCiclo && (it[fm.ciclo]     || '') !== fCiclo)  return false;
+      if (fFrente && (it[fm.frenteNeg]|| '') !== fFrente) return false;
+      return true;
+    });
+  }, [items, fSeg, fCiclo, fFrente, fm]);
 
   function g(it, key) {
     const f = fm[key]; return f ? (it[f] ?? null) : null;
@@ -14574,6 +14583,14 @@ function EscopoView({ authState }) {
     const vals = filtered.map(it => parseFloat(String(g(it, key) || '').replace('%','').replace(',','.'))).filter(n => !isNaN(n) && n >= 0);
     if (!vals.length) return null;
     return Math.round(vals.reduce((s, n) => s + n, 0) / vals.length);
+  }
+
+  // Conta itens com valor não-vazio num campo de texto qualitativo
+  function countFilled(key) {
+    return filtered.filter(it => {
+      const v = String(g(it, key) || '').trim();
+      return v && v !== 'N/A' && v !== '-' && v !== '—';
+    }).length;
   }
 
   // ── Sub-components ──
@@ -14628,10 +14645,16 @@ function EscopoView({ authState }) {
 
   // ── Computed metrics ──
   const total = filtered.length;
-  const segOpts = [...new Set((items || []).map(it => it[fm.segmento]).filter(Boolean))].sort();
-  const segCounts    = countVals('segmento', false);
-  const microCounts  = countVals('microSeg', false);
-  const assessCounts = countVals('assessments', true);
+  const allItems = items || [];
+
+  // Opções de filtro derivadas de TODOS os itens (não apenas filtered)
+  const segOpts    = [...new Set(allItems.map(it => it[fm.segmento]  ).filter(Boolean))].sort();
+  const cicloOpts  = [...new Set(allItems.map(it => it[fm.ciclo]     ).filter(Boolean))].sort();
+  const frenteOpts = [...new Set(allItems.map(it => it[fm.frenteNeg] ).filter(Boolean))].sort();
+
+  const segCounts       = countVals('segmento', false);
+  const microCounts     = countVals('microSeg', false);
+  const assessCounts    = countVals('assessments', true);
   const periodicCounts  = countVals('periodic', false);
   const expDurCounts    = countVals('expDur', false);
   const cargoFinalCounts = countVals('cargoFinal', false);
@@ -14648,20 +14671,21 @@ function EscopoView({ authState }) {
   const avgHC     = avg('headcount');
   const avgEfetiv = avg('pctEfetiv');
 
+  // Diversidade: campo texto (meta declarada) + campo numérico (% alvo)
   const divMetas = [
-    { label: 'Étnico/racial', metaKey: 'metaEtnia', pctKey: 'pctEtnia', color: '#8b5cf6' },
-    { label: 'Feminino',      metaKey: 'metaFem',   pctKey: 'pctFem',   color: '#ec4899' },
-    { label: 'PcD',           metaKey: 'metaPcD',   pctKey: 'pctPcD',   color: '#0ea5e9' },
-    { label: 'LGBTQIA+',      metaKey: 'metaLGBT',  pctKey: 'pctLGBT',  color: '#f59e0b' },
-    { label: 'Outro público', metaKey: 'metaOutro', pctKey: 'pctOutro', color: '#10b981' },
+    { label: 'Étnico/racial', textKey: 'metaEtnia', pctKey: 'pctEtnia', color: '#8b5cf6' },
+    { label: 'Feminino',      textKey: 'metaFem',   pctKey: 'pctFem',   color: '#ec4899' },
+    { label: 'PcD',           textKey: 'metaPcD',   pctKey: 'pctPcD',   color: '#0ea5e9' },
+    { label: 'LGBTQIA+',      textKey: 'metaLGBT',  pctKey: 'pctLGBT',  color: '#f59e0b' },
+    { label: 'Outro público', textKey: 'metaOutro', pctKey: 'pctOutro', color: '#10b981' },
   ];
 
-  const processosComMeta = filtered.filter(it =>
-    divMetas.some(d => {
-      const v = String(g(it, d.metaKey) || '').toLowerCase().trim();
-      return v === 'sim' || v === 'yes' || v === '1';
-    })
-  ).length;
+  // Processos com pelo menos uma meta de diversidade declarada (campo texto preenchido)
+  const processosComMeta = total > 0
+    ? filtered.filter(it => divMetas.some(d => { const v = String(g(it, d.textKey) || '').trim(); return v && v !== '-' && v !== '—'; })).length
+    : 0;
+
+  const activeFilters = [fSeg && `Seg: ${fSeg}`, fCiclo && `Ciclo: ${fCiclo}`, fFrente && `Frente: ${fFrente}`].filter(Boolean);
 
   // ── Render ──
   return React.createElement('div', { className: 'max-w-7xl mx-auto px-4 py-6 space-y-5 fade-in' },
@@ -14671,17 +14695,29 @@ function EscopoView({ authState }) {
       React.createElement('div', null,
         React.createElement('h1', { className: 'text-xl font-bold text-slate-900' }, '📊 Mapa de Escopo A&S'),
         React.createElement('p', { className: 'text-sm text-slate-500 mt-0.5' },
-          `${total} processo${total !== 1 ? 's' : ''}${fSeg ? ` · Segmento: ${fSeg}` : ' · todos os segmentos'}`)
+          `${total} processo${total !== 1 ? 's' : ''}` + (activeFilters.length ? ` · ${activeFilters.join(' · ')}` : ' · todos'))
       ),
-      React.createElement('div', { className: 'flex items-center gap-2' },
-        React.createElement('label', { className: 'text-xs text-slate-500' }, 'Filtrar segmento:'),
-        React.createElement('select', {
-          className: 'text-sm border border-slate-200 rounded-lg px-3 py-1.5 bg-white text-slate-700',
-          value: fSeg, onChange: e => setFSeg(e.target.value)
-        },
-          React.createElement('option', { value: '' }, 'Todos'),
-          ...segOpts.map(s => React.createElement('option', { key: s, value: s }, s))
-        )
+      React.createElement('div', { className: 'flex flex-wrap items-center gap-2' },
+        ...[
+          { label: 'Segmento', val: fSeg,    set: setFSeg,    opts: segOpts },
+          { label: 'Ciclo',    val: fCiclo,  set: setFCiclo,  opts: cicloOpts },
+          { label: 'Frente',   val: fFrente, set: setFFrente, opts: frenteOpts },
+        ].map(({ label, val, set, opts }) =>
+          React.createElement('div', { key: label, className: 'flex items-center gap-1' },
+            React.createElement('label', { className: 'text-xs text-slate-400' }, label + ':'),
+            React.createElement('select', {
+              className: `text-xs border rounded-lg px-2 py-1.5 bg-white transition ${val ? 'border-orange-400 text-orange-700 font-medium' : 'border-slate-200 text-slate-600'}`,
+              value: val, onChange: e => set(e.target.value)
+            },
+              React.createElement('option', { value: '' }, 'Todos'),
+              ...opts.map(o => React.createElement('option', { key: o, value: o }, o))
+            )
+          )
+        ),
+        (fSeg || fCiclo || fFrente) && React.createElement('button', {
+          onClick: () => { setFSeg(''); setFCiclo(''); setFFrente(''); },
+          className: 'text-xs text-slate-400 hover:text-red-500 transition px-1'
+        }, '✕ limpar')
       )
     ),
 
@@ -14721,18 +14757,37 @@ function EscopoView({ authState }) {
       )
     ),
 
-    // Diversidade (full-width)
-    React.createElement(Sec, { title: 'Metas de Diversidade', icon: '🎯' },
-      React.createElement('div', { className: 'space-y-4' },
+    // Diversidade (full-width) — duas colunas: meta declarada (texto) + % alvo (numérico)
+    React.createElement('div', { className: 'bg-white rounded-2xl border border-slate-200 p-5' },
+      React.createElement('h3', { className: 'text-sm font-bold text-slate-700 mb-1 flex items-center gap-2' }, '🎯 Metas de Diversidade'),
+      React.createElement('div', { className: 'flex gap-6 text-xs text-slate-400 mb-4' },
+        React.createElement('span', null, '■ Meta declarada — processos com campo de texto preenchido'),
+        React.createElement('span', null, '▶ % alvo — média dos valores percentuais informados')
+      ),
+      React.createElement('div', { className: 'space-y-0 divide-y divide-slate-100' },
         ...divMetas.map(d => {
-          const yn = countYN(d.metaKey);
-          const pctVal = avg(d.pctKey);
-          return React.createElement('div', { key: d.label, className: 'grid grid-cols-[120px_1fr_80px] items-center gap-4' },
-            React.createElement('div', { className: 'text-xs font-semibold text-slate-600' }, d.label),
-            React.createElement(YNBar, { yes: yn.yes, no: yn.no }),
-            pctVal != null
-              ? React.createElement('div', { className: 'text-xs font-bold text-right', style: { color: d.color } }, `Avg ${pctVal}%`)
-              : React.createElement('div', { className: 'text-xs text-slate-300 text-right' }, '—')
+          const filled  = countFilled(d.textKey);
+          const pctVal  = avg(d.pctKey);
+          const barPct  = total > 0 ? Math.round(filled / total * 100) : 0;
+          return React.createElement('div', { key: d.label, className: 'py-3 grid items-center gap-4', style: { gridTemplateColumns: '130px 1fr 110px' } },
+            // Label
+            React.createElement('div', { className: 'text-xs font-semibold text-slate-700' }, d.label),
+            // Barra de meta declarada (texto preenchido)
+            React.createElement('div', { className: 'flex items-center gap-2' },
+              React.createElement('div', { className: 'flex-1 bg-slate-100 rounded-full h-3.5 overflow-hidden' },
+                React.createElement('div', { className: 'h-full rounded-full', style: { width: `${barPct}%`, backgroundColor: d.color, opacity: 0.8, minWidth: filled > 0 ? '4px' : '0' } })
+              ),
+              React.createElement('span', { className: 'text-xs text-slate-500 w-24 shrink-0' },
+                `${filled} de ${total} (${barPct}%)`)
+            ),
+            // % alvo médio
+            React.createElement('div', { className: 'text-xs text-right' },
+              pctVal != null
+                ? React.createElement('span', null,
+                    React.createElement('span', { className: 'font-bold text-base', style: { color: d.color } }, `${pctVal}%`),
+                    React.createElement('span', { className: 'text-slate-400 ml-1' }, 'médio'))
+                : React.createElement('span', { className: 'text-slate-300' }, '— sem %')
+            )
           );
         })
       )
@@ -14829,7 +14884,7 @@ function EscopoView({ authState }) {
         React.createElement('table', { className: 'text-xs w-full border-collapse' },
           React.createElement('thead', null,
             React.createElement('tr', { className: 'bg-slate-50 text-slate-500 sticky top-0' },
-              ['Programa', 'Cliente', 'Segmento', 'Micro-Seg.', 'Periodicidade', 'HC', 'Presencial', 'Tempo'].map(h =>
+              ['Programa', 'Cliente', 'Ciclo', 'Frente', 'Segmento', 'Micro-Seg.', 'Periodicidade', 'HC', 'Presencial', 'Tempo'].map(h =>
                 React.createElement('th', { key: h, className: 'px-3 py-2 text-left font-semibold whitespace-nowrap border-b border-slate-200' }, h)
               )
             )
@@ -14839,6 +14894,8 @@ function EscopoView({ authState }) {
               React.createElement('tr', { key: i, className: 'hover:bg-slate-50' },
                 React.createElement('td', { className: 'px-3 py-2 font-medium text-slate-700 whitespace-nowrap' }, g(it, 'nome') || it.Nome_Programa || it.Title || '—'),
                 React.createElement('td', { className: 'px-3 py-2 text-slate-500 whitespace-nowrap' }, g(it, 'cliente') || '—'),
+                React.createElement('td', { className: 'px-3 py-2 text-slate-500 whitespace-nowrap' }, g(it, 'ciclo') || '—'),
+                React.createElement('td', { className: 'px-3 py-2 text-slate-500 whitespace-nowrap' }, g(it, 'frenteNeg') || '—'),
                 React.createElement('td', { className: 'px-3 py-2 text-slate-500 whitespace-nowrap' }, g(it, 'segmento') || '—'),
                 React.createElement('td', { className: 'px-3 py-2 text-slate-500 whitespace-nowrap' }, g(it, 'microSeg') || '—'),
                 React.createElement('td', { className: 'px-3 py-2 text-slate-500 whitespace-nowrap' }, g(it, 'periodic') || '—'),
