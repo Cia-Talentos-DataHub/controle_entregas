@@ -3001,7 +3001,7 @@ function App() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [saveMsg, setSaveMsg] = useState(null);
-  const [view, setView] = useState('dashboard');
+  const [view, setView] = useState('alloc_simpl');
   const [monthRange, setMonthRange] = useState(() => {
     const n = new Date();
     const s = `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}`;
@@ -4249,11 +4249,11 @@ function AppHeader({
   const isOwner = (authState?.email || '').toLowerCase() === ANALYTICS_ADMIN;
   const backupInputRef = React.useRef(null);
   const navs = [{
-    k: 'dashboard',
-    label: '📊 Dashboard'
-  }, {
     k: 'alloc_simpl',
     label: '📋 Alocação Simpl.'
+  }, {
+    k: 'dashboard',
+    label: '📊 Dashboard'
   }, {
     k: 'monthly',
     label: '📅 Grade'
