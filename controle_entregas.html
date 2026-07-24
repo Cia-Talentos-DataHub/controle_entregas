@@ -13930,6 +13930,8 @@ function CxAtendimentoView() {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
   const [lastUpd, setLastUpd] = useState(null);
+  const [tablePage, setTablePage] = useState(0);
+  const TABLE_PAGE_SIZE = 100;
   function agentName(id) {
     return FD_AGENT_NAMES[id] || (id ? `Agente #${id}` : 'Não atribuído');
   }
@@ -13963,7 +13965,7 @@ function CxAtendimentoView() {
         showAll,
         viewMode: 'created',
         setBacklog: null,
-        includeRequester: true,
+        includeRequester: !showAll,
         setTruncated,
         onProgress: n => setLoadProgress(n)
       });
@@ -13991,6 +13993,8 @@ function CxAtendimentoView() {
       return true;
     });
   }, [tickets, filters]);
+  // Reset para página 0 sempre que o conjunto filtrado muda
+  useEffect(() => { setTablePage(0); }, [filteredTickets]);
   const opts = React.useMemo(() => {
     if (!tickets) return {};
     return {
@@ -14407,7 +14411,7 @@ function CxAtendimentoView() {
     className: "pb-2 font-medium whitespace-nowrap"
   }, "Data Resolução"))), /*#__PURE__*/React.createElement("tbody", {
     className: "divide-y divide-slate-50"
-  }, filteredTickets.map(t => /*#__PURE__*/React.createElement("tr", {
+  }, filteredTickets.slice(tablePage * TABLE_PAGE_SIZE, (tablePage + 1) * TABLE_PAGE_SIZE).map(t => /*#__PURE__*/React.createElement("tr", {
     key: t.id,
     className: "hover:bg-slate-50"
   }, /*#__PURE__*/React.createElement("td", {
@@ -14456,7 +14460,21 @@ function CxAtendimentoView() {
     year: '2-digit',
     hour: '2-digit',
     minute: '2-digit'
-  }) : '—')))))))), tickets && filteredTickets.length === 0 && /*#__PURE__*/React.createElement("div", {
+  }) : '—'))))))))
+  , filteredTickets.length > TABLE_PAGE_SIZE && /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center justify-between px-4 py-3 border-t border-slate-100 bg-slate-50 rounded-b-2xl"
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => setTablePage(p => Math.max(0, p - 1)),
+    disabled: tablePage === 0,
+    className: "px-3 py-1.5 text-xs rounded-lg border border-slate-200 bg-white text-slate-600 hover:border-indigo-300 hover:text-indigo-600 transition disabled:opacity-30 disabled:cursor-not-allowed"
+  }, "← Anterior"), /*#__PURE__*/React.createElement("span", {
+    className: "text-xs text-slate-500"
+  }, `${tablePage * TABLE_PAGE_SIZE + 1}–${Math.min((tablePage + 1) * TABLE_PAGE_SIZE, filteredTickets.length)} de ${filteredTickets.length} tickets`), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setTablePage(p => Math.min(Math.ceil(filteredTickets.length / TABLE_PAGE_SIZE) - 1, p + 1)),
+    disabled: (tablePage + 1) * TABLE_PAGE_SIZE >= filteredTickets.length,
+    className: "px-3 py-1.5 text-xs rounded-lg border border-slate-200 bg-white text-slate-600 hover:border-indigo-300 hover:text-indigo-600 transition disabled:opacity-30 disabled:cursor-not-allowed"
+  }, "Próximo →"))
+  , tickets && filteredTickets.length === 0 && /*#__PURE__*/React.createElement("div", {
     className: "text-center py-16 text-slate-400"
   }, "Nenhum ticket encontrado para o período e filtros selecionados."));
 }
