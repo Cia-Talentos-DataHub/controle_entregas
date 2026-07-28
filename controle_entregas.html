@@ -12764,76 +12764,66 @@ function daysAgoStr(n) {
   return d.toISOString().slice(0, 10);
 }
 function CxDateRangeBar({
-  dateFrom,
-  setDateFrom,
-  dateTo,
-  setDateTo,
-  showAll,
-  setShowAll,
-  loading,
-  onRefresh
+  dateFrom, setDateFrom,
+  dateTo, setDateTo,
+  showAll, setShowAll,
+  loading, onRefresh
 }) {
-  return /*#__PURE__*/React.createElement("div", {
-    className: "flex flex-wrap items-center gap-2"
-  }, /*#__PURE__*/React.createElement("button", {
-    onClick: () => {
-      setShowAll(true);
-      setDateFrom('');
-      setDateTo('');
-    },
-    className: `px-3 py-1.5 rounded-lg text-sm font-medium transition ${showAll ? 'bg-indigo-600 text-white' : 'bg-white border border-slate-200 text-slate-600 hover:border-indigo-300'}`
-  }, "Tudo"), /*#__PURE__*/React.createElement("div", {
-    className: "flex items-center gap-1.5 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "text-xs text-slate-400"
-  }, "De"), /*#__PURE__*/React.createElement("input", {
-    type: "date",
-    value: dateFrom,
-    max: dateTo || todayStr(),
-    onChange: e => {
-      setDateFrom(e.target.value);
-      setShowAll(false);
-    },
-    className: "text-xs text-slate-700 outline-none cursor-pointer"
-  })), /*#__PURE__*/React.createElement("div", {
-    className: "flex items-center gap-1.5 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "text-xs text-slate-400"
-  }, "Até"), /*#__PURE__*/React.createElement("input", {
-    type: "date",
-    value: dateTo,
-    min: dateFrom,
-    max: todayStr(),
-    onChange: e => {
-      setDateTo(e.target.value);
-      setShowAll(false);
-    },
-    className: "text-xs text-slate-700 outline-none cursor-pointer"
-  })), [{
-    l: 'Hoje',
-    f: todayStr(),
-    t: todayStr()
-  }, {
-    l: '7d',
-    f: daysAgoStr(6),
-    t: todayStr()
-  }, {
-    l: '30d',
-    f: daysAgoStr(29),
-    t: todayStr()
-  }].map(s => /*#__PURE__*/React.createElement("button", {
-    key: s.l,
-    onClick: () => {
-      setDateFrom(s.f);
-      setDateTo(s.t);
-      setShowAll(false);
-    },
-    className: "px-2.5 py-1.5 rounded-lg text-xs font-medium bg-white border border-slate-200 text-slate-600 hover:border-indigo-300 transition"
-  }, s.l)), /*#__PURE__*/React.createElement("button", {
-    onClick: onRefresh,
-    disabled: loading,
-    className: "px-3 py-1.5 rounded-lg text-sm bg-white border border-slate-200 text-slate-500 hover:text-indigo-600 hover:border-indigo-300 transition disabled:opacity-40"
-  }, loading ? '⏳' : '🔄'));
+  // Estado local: atualiza a cada tecla/navegação do calendário (só para exibição)
+  // O estado do pai (dateFrom/dateTo) só é atualizado no onBlur — quando o usuário confirma a data
+  const [localFrom, setLocalFrom] = React.useState(dateFrom);
+  const [localTo, setLocalTo] = React.useState(dateTo);
+
+  // Sincroniza estado local quando o pai reseta (ex: botão "Tudo")
+  React.useEffect(() => { setLocalFrom(dateFrom); }, [dateFrom]);
+  React.useEffect(() => { setLocalTo(dateTo); }, [dateTo]);
+
+  const commitFrom = val => { if (val) { setDateFrom(val); setShowAll(false); } };
+  const commitTo   = val => { if (val) { setDateTo(val);   setShowAll(false); } };
+
+  return React.createElement("div", { className: "flex flex-wrap items-center gap-2" },
+    React.createElement("button", {
+      onClick: () => { setShowAll(true); setDateFrom(''); setDateTo(''); },
+      className: `px-3 py-1.5 rounded-lg text-sm font-medium transition ${showAll ? 'bg-indigo-600 text-white' : 'bg-white border border-slate-200 text-slate-600 hover:border-indigo-300'}`
+    }, "Tudo"),
+    React.createElement("div", { className: "flex items-center gap-1.5 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5" },
+      React.createElement("span", { className: "text-xs text-slate-400" }, "De"),
+      React.createElement("input", {
+        type: "date",
+        value: localFrom,
+        max: localTo || todayStr(),
+        onChange: e => setLocalFrom(e.target.value),
+        onBlur:   e => commitFrom(e.target.value),
+        className: "text-xs text-slate-700 outline-none cursor-pointer"
+      })
+    ),
+    React.createElement("div", { className: "flex items-center gap-1.5 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5" },
+      React.createElement("span", { className: "text-xs text-slate-400" }, "Até"),
+      React.createElement("input", {
+        type: "date",
+        value: localTo,
+        min: localFrom,
+        max: todayStr(),
+        onChange: e => setLocalTo(e.target.value),
+        onBlur:   e => commitTo(e.target.value),
+        className: "text-xs text-slate-700 outline-none cursor-pointer"
+      })
+    ),
+    ...[
+      { l: 'Hoje', f: todayStr(),    t: todayStr() },
+      { l: '7d',   f: daysAgoStr(6), t: todayStr() },
+      { l: '30d',  f: daysAgoStr(29),t: todayStr() }
+    ].map(s => React.createElement("button", {
+      key: s.l,
+      onClick: () => { setLocalFrom(s.f); setLocalTo(s.t); setDateFrom(s.f); setDateTo(s.t); setShowAll(false); },
+      className: "px-2.5 py-1.5 rounded-lg text-xs font-medium bg-white border border-slate-200 text-slate-600 hover:border-indigo-300 transition"
+    }, s.l)),
+    React.createElement("button", {
+      onClick: onRefresh,
+      disabled: loading,
+      className: "px-3 py-1.5 rounded-lg text-sm bg-white border border-slate-200 text-slate-500 hover:text-indigo-600 hover:border-indigo-300 transition disabled:opacity-40"
+    }, loading ? '⏳' : '🔄')
+  );
 }
 async function cxFetchTickets({
   dateFrom,
@@ -13321,11 +13311,19 @@ function CxAnalyticsView() {
   const periodLabel = showAll ? 'tudo' : dateFrom && dateTo ? `${dateFrom} a ${dateTo}` : dateFrom ? `a partir de ${dateFrom}` : 'período';
   const viewLabel = viewMode === 'updated' ? 'movimentados' : 'criados';
   const activeFilterCount = Object.values(filters).filter(v => v !== NO_FILTER).length;
-  if (loading && !tickets) return /*#__PURE__*/React.createElement("div", {
-    className: "text-center py-24 text-slate-400 fade-in"
-  }, /*#__PURE__*/React.createElement("div", null, "Carregando dados do Freshdesk…"), loadProgress > 0 && /*#__PURE__*/React.createElement("div", {
-    className: "mt-2 text-sm text-indigo-500 font-medium"
-  }, loadProgress.toLocaleString('pt-BR') + " tickets carregados…"));
+  if (loading) return /*#__PURE__*/React.createElement("div", {
+    className: "flex flex-col items-center justify-center py-32 gap-5 fade-in"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "w-16 h-16 rounded-full border-4 border-indigo-200 border-t-indigo-600 animate-spin"
+  }), /*#__PURE__*/React.createElement("div", {
+    className: "text-center"
+  }, /*#__PURE__*/React.createElement("p", {
+    className: "text-base font-semibold text-slate-700"
+  }, "Carregando dados do Freshdesk…"), loadProgress > 0 && /*#__PURE__*/React.createElement("p", {
+    className: "text-sm text-indigo-600 font-medium mt-1"
+  }, loadProgress.toLocaleString('pt-BR'), " tickets carregados…"), /*#__PURE__*/React.createElement("p", {
+    className: "text-xs text-slate-400 mt-2"
+  }, "Isso pode levar alguns segundos")));
   return /*#__PURE__*/React.createElement("div", {
     className: "max-w-7xl mx-auto px-4 py-6 space-y-5 fade-in"
   }, /*#__PURE__*/React.createElement("div", {
@@ -14146,11 +14144,19 @@ function CxAtendimentoView() {
     }, c)))));
   }
   const activeFilterCount = Object.values(filters).reduce((a, v) => a + v.length, 0);
-  if (loading && !tickets) return /*#__PURE__*/React.createElement("div", {
-    className: "text-center py-24 text-slate-400 fade-in"
-  }, /*#__PURE__*/React.createElement("div", null, "Carregando dados do Freshdesk…"), loadProgress > 0 && /*#__PURE__*/React.createElement("div", {
-    className: "mt-2 text-sm text-indigo-500 font-medium"
-  }, loadProgress.toLocaleString('pt-BR') + " tickets carregados…"));
+  if (loading) return /*#__PURE__*/React.createElement("div", {
+    className: "flex flex-col items-center justify-center py-32 gap-5 fade-in"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "w-16 h-16 rounded-full border-4 border-indigo-200 border-t-indigo-600 animate-spin"
+  }), /*#__PURE__*/React.createElement("div", {
+    className: "text-center"
+  }, /*#__PURE__*/React.createElement("p", {
+    className: "text-base font-semibold text-slate-700"
+  }, "Carregando dados do Freshdesk…"), loadProgress > 0 && /*#__PURE__*/React.createElement("p", {
+    className: "text-sm text-indigo-600 font-medium mt-1"
+  }, loadProgress.toLocaleString('pt-BR'), " tickets carregados…"), /*#__PURE__*/React.createElement("p", {
+    className: "text-xs text-slate-400 mt-2"
+  }, "Isso pode levar alguns segundos")));
   return /*#__PURE__*/React.createElement("div", {
     className: "max-w-7xl mx-auto px-4 py-6 space-y-5 fade-in"
   }, /*#__PURE__*/React.createElement("div", {
@@ -14707,6 +14713,15 @@ function EscopoView({ authState }) {
 
   // ── Render ──
   return React.createElement('div', { className: 'max-w-7xl mx-auto px-4 py-6 space-y-5 fade-in' },
+
+    // Banner: página em construção
+    React.createElement('div', { className: 'flex items-center gap-3 bg-amber-50 border-2 border-amber-400 rounded-2xl px-5 py-4' },
+      React.createElement('span', { className: 'text-3xl flex-shrink-0' }, '🚧'),
+      React.createElement('div', null,
+        React.createElement('p', { className: 'text-base font-bold text-amber-800' }, 'Página em construção'),
+        React.createElement('p', { className: 'text-sm text-amber-700 mt-0.5' }, 'Dados em fase de validação — as informações exibidas podem estar incompletas ou imprecisas.')
+      )
+    ),
 
     // Header
     React.createElement('div', { className: 'flex flex-wrap items-start justify-between gap-3' },
