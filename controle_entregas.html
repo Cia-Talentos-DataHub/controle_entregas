@@ -12860,44 +12860,36 @@ async function cxFetchTickets({
   let all = [...firstPage],
     page = 2;
   const fromMs = !showAll && dateFrom ? new Date(dateFrom).setHours(0, 0, 0, 0) : null;
-  const maxPage = showAll ? 300 : 25;
+  const maxPage = showAll ? 300 : 150;
 
-  if (showAll) {
-    // ── Busca paralela em lotes de 5 páginas (~5× mais rápido que sequencial) ──
-    const BATCH = 5;
-    let hasMore = firstPage.length === 100;
-    while (hasMore && page <= maxPage) {
-      const endPage = Math.min(page + BATCH - 1, maxPage);
-      const nums = Array.from({length: endPage - page + 1}, (_, i) => page + i);
-      const batched = await Promise.all(
-        nums.map(p =>
-          fdFetch(`/tickets?per_page=100&page=${p}&include=${includeParam}${sinceParam}&order_by=${orderField}&order_type=desc`)
-            .catch(() => [])
-        )
-      );
-      for (const more of batched) {
-        if (!more || !more.length) { hasMore = false; break; }
-        all = all.concat(more);
-        if (more.length < 100) { hasMore = false; break; }
-      }
-      if (onProgress) onProgress(all.length);
-      page = endPage + 1;
-    }
-    if (setTruncated) setTruncated(hasMore && page > maxPage);
-  } else {
-    // ── Busca sequencial com saída antecipada por data ──
-    while (page <= maxPage && all.length > 0) {
-      const last = all[all.length - 1];
-      const lastDate = new Date(mode === 'updated' ? last.updated_at : last.created_at);
-      if (fromMs && lastDate < fromMs - 86400000) break;
-      const more = await fdFetch(`/tickets?per_page=100&page=${page}&include=${includeParam}${sinceParam}&order_by=${orderField}&order_type=desc`);
-      if (!more || !more.length) break;
+  // ── Busca paralela em lotes de 5 páginas — usada tanto no showAll quanto no filtro de data ──
+  const BATCH = 5;
+  let hasMore = firstPage.length === 100;
+  let earlyExit = false;
+  while (hasMore && page <= maxPage && !earlyExit) {
+    const endPage = Math.min(page + BATCH - 1, maxPage);
+    const nums = Array.from({length: endPage - page + 1}, (_, i) => page + i);
+    const batched = await Promise.all(
+      nums.map(p =>
+        fdFetch(`/tickets?per_page=100&page=${p}&include=${includeParam}${sinceParam}&order_by=${orderField}&order_type=desc`)
+          .catch(() => [])
+      )
+    );
+    for (const more of batched) {
+      if (!more || !more.length) { hasMore = false; break; }
       all = all.concat(more);
-      if (more.length < 100) break;
-      page++;
+      if (more.length < 100) { hasMore = false; break; }
+      // Saída antecipada no filtro de data: quando ultrapassamos o início do período
+      if (!showAll && fromMs) {
+        const last = more[more.length - 1];
+        const lastDate = new Date(mode === 'updated' ? last.updated_at : last.created_at);
+        if (lastDate < fromMs - 86400000) { earlyExit = true; break; }
+      }
     }
-    if (setTruncated) setTruncated(page > maxPage);
+    if (onProgress) onProgress(all.length);
+    page = endPage + 1;
   }
+  if (setTruncated) setTruncated(hasMore && page > maxPage && !earlyExit);
   const toMs = !showAll && dateTo ? new Date(dateTo).setHours(23, 59, 59, 999) : null;
   let result = all;
   if (fromMs) result = result.filter(t => new Date(t.created_at) >= fromMs);
