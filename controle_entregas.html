@@ -3995,6 +3995,7 @@ function App() {
         ? React.createElement(CdGerencialView, {
             projects: projects,
             onSave: saveProject,
+            onPulseSave: savePulse,
             spChoices: spChoices,
             saving: saving,
             isSpConnected: authState.isAuth,
@@ -15076,7 +15077,7 @@ function BtKanbanColumn({ title, tasks, color, taskUrl, stageId, onDrop, isDragO
 }
 
 // ─── CdGerencialView ──────────────────────────────────────────────────────────
-function CdGerencialView({ projects, onSave, spChoices, saving, isSpConnected, clientId, tenantId, allAnalysts, allKAs }) {
+function CdGerencialView({ projects, onSave, onPulseSave, spChoices, saving, isSpConnected, clientId, tenantId, allAnalysts, allKAs }) {
   const taskUrl = id => `https://ciadetalentos.bitrix24.com.br/workgroups/group/${BT_CD_GROUP}/tasks/task/view/${id}/`;
   const VIEW_OPTS = [
     { k: 'andamento', l: '🔄 Em andamento' },
@@ -15252,7 +15253,7 @@ function CdGerencialView({ projects, onSave, spChoices, saving, isSpConnected, c
       project: appModal.project,
       allAnalysts: allAnalysts,
       allKAs: allKAs,
-      onSave: proj => { onSave(proj); setAppModal(null); },
+      onSave: proj => { (onPulseSave || onSave)(proj); setAppModal(null); },
       onClose: () => setAppModal(null),
       saving: saving,
       spChoices: spChoices
