@@ -15278,16 +15278,19 @@ function BtTaskModal({ task, onClose, taskUrl, subStages, projects, onAppAction 
   const [loading,  setLoading]  = useState(true);
   const [err,      setErr]      = useState(null);
 
-  // Extrai o Código Proposta (ex: CT_0520.006) do título da tarefa no Bitrix
+  // Extrai o Código Proposta (ex: CTD 5827) do título da tarefa no Bitrix
   const ctCode = useMemo(() => {
-    const m = (task.title || '').match(/CT_[\d]+\.[\d]+/i);
-    return m ? m[0].toUpperCase() : null;
+    const m = (task.title || '').match(/CTD\s*\d+/i);
+    return m ? m[0].replace(/\s+/g, ' ').trim().toUpperCase() : null;
   }, [task.title]);
+
+  // Normaliza para comparação ignorando diferenças de espaço/case
+  const normCode = s => (s || '').replace(/\s+/g, ' ').trim().toUpperCase();
 
   // Busca o projeto correspondente no app pelo codigoProposta
   const matchedProject = useMemo(() => {
     if (!ctCode || !projects?.length) return null;
-    return projects.find(p => (p.codigoProposta || '').toUpperCase() === ctCode) || null;
+    return projects.find(p => normCode(p.codigoProposta) === ctCode) || null;
   }, [ctCode, projects]);
 
   function handleAppAction() {
@@ -15295,7 +15298,7 @@ function BtTaskModal({ task, onClose, taskUrl, subStages, projects, onAppAction 
     if (matchedProject) {
       onAppAction({ type: 'edit', project: matchedProject });
     } else {
-      const clientMatch = (task.title || '').match(/^(.+?)\s*-\s*CT_/i);
+      const clientMatch = (task.title || '').match(/^(.+?)\s*-\s*CTD\s*\d+/i);
       onAppAction({ type: 'register', seed: {
         title: task.title || '',
         client: clientMatch ? clientMatch[1].trim() : '',
