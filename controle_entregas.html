@@ -3992,7 +3992,17 @@ function App() {
       cdTabBar,
       saveMsgBanner,
       isCdModule && cdTab === 'gerencial'
-        ? React.createElement(CdGerencialView, null)
+        ? React.createElement(CdGerencialView, {
+            projects: projects,
+            onSave: saveProject,
+            spChoices: spChoices,
+            saving: saving,
+            isSpConnected: authState.isAuth,
+            clientId: clientId,
+            tenantId: tenantId,
+            allAnalysts: analysts,
+            allKAs: kaMembers
+          })
         : React.createElement(ModuleProjectsView, {
             projects: projects, moduleConfig: simpleModuleConfig,
             allAnalysts: analysts, allHeads: heads, allKAs: kaMembers,
@@ -15066,7 +15076,7 @@ function BtKanbanColumn({ title, tasks, color, taskUrl, stageId, onDrop, isDragO
 }
 
 // ─── CdGerencialView ──────────────────────────────────────────────────────────
-function CdGerencialView() {
+function CdGerencialView({ projects, onSave, spChoices, saving, isSpConnected, clientId, tenantId, allAnalysts, allKAs }) {
   const taskUrl = id => `https://ciadetalentos.bitrix24.com.br/workgroups/group/${BT_CD_GROUP}/tasks/task/view/${id}/`;
   const VIEW_OPTS = [
     { k: 'andamento', l: '🔄 Em andamento' },
@@ -15087,6 +15097,7 @@ function CdGerencialView() {
   const [updating,     setUpdating]     = useState(new Set());
   const [subStages,    setSubStages]    = useState({});  // etapas do grupo 192 (subtarefas)
   const [selectedTask, setSelectedTask] = useState(null);
+  const [appModal,     setAppModal]     = useState(null); // null | { type:'edit', project } | { type:'register', seed }
 
   useEffect(() => { loadData(); }, []);
 
@@ -15232,16 +15243,67 @@ function CdGerencialView() {
       task: selectedTask,
       taskUrl,
       subStages,
-      onClose: () => setSelectedTask(null)
+      onClose: () => setSelectedTask(null),
+      projects: projects,
+      onAppAction: action => setAppModal(action)
+    }),
+    // Editar/Cadastrar projeto no app (rendrerizado fora do BtTaskModal para evitar conflito de z-index)
+    appModal?.type === 'edit' && React.createElement(PulseEditModal, {
+      project: appModal.project,
+      allAnalysts: allAnalysts,
+      allKAs: allKAs,
+      onSave: proj => { onSave(proj); setAppModal(null); },
+      onClose: () => setAppModal(null),
+      saving: saving,
+      spChoices: spChoices
+    }),
+    appModal?.type === 'register' && React.createElement(ModuleProjectModal, {
+      project: appModal.seed,
+      moduleConfig: MODULE_CONFIGS.cd,
+      allKAs: allKAs,
+      spChoices: spChoices,
+      onSave: proj => { onSave(proj); setAppModal(null); },
+      onClose: () => setAppModal(null),
+      saving: saving,
+      isSpConnected: isSpConnected,
+      clientId: clientId,
+      tenantId: tenantId
     })
   );
 }
 
 // ─── BtTaskModal ──────────────────────────────────────────────────────────────
-function BtTaskModal({ task, onClose, taskUrl, subStages }) {
+function BtTaskModal({ task, onClose, taskUrl, subStages, projects, onAppAction }) {
   const [subtasks, setSubtasks] = useState(null);
   const [loading,  setLoading]  = useState(true);
   const [err,      setErr]      = useState(null);
+
+  // Extrai o Código Proposta (ex: CT_0520.006) do título da tarefa no Bitrix
+  const ctCode = useMemo(() => {
+    const m = (task.title || '').match(/CT_[\d]+\.[\d]+/i);
+    return m ? m[0].toUpperCase() : null;
+  }, [task.title]);
+
+  // Busca o projeto correspondente no app pelo codigoProposta
+  const matchedProject = useMemo(() => {
+    if (!ctCode || !projects?.length) return null;
+    return projects.find(p => (p.codigoProposta || '').toUpperCase() === ctCode) || null;
+  }, [ctCode, projects]);
+
+  function handleAppAction() {
+    if (!onAppAction || !ctCode) return;
+    if (matchedProject) {
+      onAppAction({ type: 'edit', project: matchedProject });
+    } else {
+      const clientMatch = (task.title || '').match(/^(.+?)\s*-\s*CT_/i);
+      onAppAction({ type: 'register', seed: {
+        title: task.title || '',
+        client: clientMatch ? clientMatch[1].trim() : '',
+        codigoProposta: ctCode,
+        solucao: MODULE_CONFIGS.cd.defaultFrente
+      }});
+    }
+  }
 
   useEffect(() => {
     btFetch('tasks.task.list', { 'filter[PARENT_ID]': task.id, 'select[0]': '*', start: 0 })
@@ -15281,6 +15343,11 @@ function BtTaskModal({ task, onClose, taskUrl, subStages }) {
           onClick: e => e.stopPropagation(),
           className: 'text-xs text-indigo-600 border border-indigo-200 rounded-lg px-3 py-1.5 hover:bg-indigo-50 transition flex-shrink-0 whitespace-nowrap'
         }, 'Abrir no Bitrix ↗'),
+        onAppAction && ctCode && React.createElement('button', {
+          onClick: handleAppAction,
+          title: matchedProject ? `Editar projeto ${ctCode} no app` : `Cadastrar ${ctCode} no app`,
+          className: `text-xs border rounded-lg px-3 py-1.5 transition flex-shrink-0 whitespace-nowrap ${matchedProject ? 'text-indigo-600 border-indigo-200 hover:bg-indigo-50' : 'text-emerald-600 border-emerald-200 hover:bg-emerald-50'}`
+        }, matchedProject ? '✏ Editar no app' : '+ Cadastrar no app'),
         React.createElement('button', {
           onClick: onClose,
           className: 'text-slate-400 hover:text-slate-600 text-2xl leading-none flex-shrink-0 ml-1 font-light'
