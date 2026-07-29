@@ -3031,6 +3031,7 @@ function App() {
   const [headDescriptivos, setHeadDescriptivos] = useState({});
   const [kaMembers, setKaMembers] = useState([]);
   const [entityView, setEntityView] = useState('analyst'); // 'analyst' | 'head'
+  const [cdTab, setCdTab] = useState('projetos'); // 'projetos' | 'gerencial'
   const [spChoices, setSpChoices] = useState({}); // campos Choice do SP
   // Analytics — rastreia eventos da sessão para evitar duplicatas
   const sessionLoggedRef = useRef(new Set()); // 'login', 'module:pulse', 'save:project', etc.
@@ -3965,35 +3966,40 @@ function App() {
   const simpleModuleConfig = MODULE_CONFIGS[module];
   const canAccessSimpleModule = simpleModuleConfig && (accessLevel <= 2 || module === 'cd' && /^c\s*[&]\s*d$/i.test((userFuncao || '').trim()) || module === 'fi' && /latam/i.test(userFuncao || '') || module === 'eb' && /\beb\b/i.test(userFuncao || ''));
   if (canAccessSimpleModule) {
-    return /*#__PURE__*/React.createElement("div", {
-      className: "min-h-screen bg-slate-50"
-    }, /*#__PURE__*/React.createElement(AppHeader, {
-      view: view,
-      setView: setView,
-      authState: authState,
-      onSignOut: signOut,
-      projectCount: filteredProjects.filter(p => p.solucao === simpleModuleConfig.frente).length,
-      loading: loading,
-      onRefresh: () => loadAll(authState.token),
-      module: module,
-      onHome: () => setModule(null),
-      onBackupDownload: handleBackupDownload,
-      onBackupUpload: handleBackupUpload,
-      entityView: entityView,
-      setEntityView: setEntityView
-    }), saveMsgBanner, /*#__PURE__*/React.createElement(ModuleProjectsView, {
-      projects: projects,
-      moduleConfig: simpleModuleConfig,
-      allAnalysts: analysts,
-      allHeads: heads,
-      allKAs: kaMembers,
-      spChoices: spChoices,
-      onSave: saveProject,
-      saving: saving,
-      isSpConnected: authState.isAuth,
-      clientId: clientId,
-      tenantId: tenantId
-    }));
+    const isCdModule = module === 'cd';
+    // Tab bar only for C&D
+    const cdTabBar = isCdModule ? React.createElement("div", { className: "bg-white border-b border-slate-200 px-4" },
+      React.createElement("nav", { className: "flex gap-1 max-w-screen-xl mx-auto" },
+        [{ k: 'projetos', l: '📋 Projetos' }, { k: 'gerencial', l: '📊 Visão Gerencial' }].map(t =>
+          React.createElement("button", {
+            key: t.k,
+            onClick: () => setCdTab(t.k),
+            className: `px-4 py-2.5 text-sm font-medium border-b-2 transition ${cdTab === t.k ? 'border-indigo-600 text-indigo-700' : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'}`
+          }, t.l)
+        )
+      )
+    ) : null;
+
+    return React.createElement("div", { className: "min-h-screen bg-slate-50" },
+      React.createElement(AppHeader, {
+        view: view, setView: setView, authState: authState, onSignOut: signOut,
+        projectCount: filteredProjects.filter(p => p.solucao === simpleModuleConfig.frente).length,
+        loading: loading, onRefresh: () => loadAll(authState.token),
+        module: module, onHome: () => setModule(null),
+        onBackupDownload: handleBackupDownload, onBackupUpload: handleBackupUpload,
+        entityView: entityView, setEntityView: setEntityView
+      }),
+      cdTabBar,
+      saveMsgBanner,
+      isCdModule && cdTab === 'gerencial'
+        ? React.createElement(CdGerencialView, null)
+        : React.createElement(ModuleProjectsView, {
+            projects: projects, moduleConfig: simpleModuleConfig,
+            allAnalysts: analysts, allHeads: heads, allKAs: kaMembers,
+            spChoices: spChoices, onSave: saveProject, saving: saving,
+            isSpConnected: authState.isAuth, clientId: clientId, tenantId: tenantId
+          })
+    );
   }
 
   // ── Analytics module (admin only) ──
@@ -12863,20 +12869,29 @@ async function cxFetchTickets({
   const maxPage = showAll ? 300 : 150;
 
   // ── Busca paralela em lotes de 5 páginas — usada tanto no showAll quanto no filtro de data ──
+  // null = erro de rede/rate-limit; [] = fim dos dados (página vazia)
   const BATCH = 5;
   let hasMore = firstPage.length === 100;
   let earlyExit = false;
+  let consecutiveErrors = 0;
   while (hasMore && page <= maxPage && !earlyExit) {
     const endPage = Math.min(page + BATCH - 1, maxPage);
     const nums = Array.from({length: endPage - page + 1}, (_, i) => page + i);
     const batched = await Promise.all(
       nums.map(p =>
         fdFetch(`/tickets?per_page=100&page=${p}&include=${includeParam}${sinceParam}&order_by=${orderField}&order_type=desc`)
-          .catch(() => [])
+          .catch(() => null)   // null = erro, não confunde com fim dos dados
       )
     );
     for (const more of batched) {
-      if (!more || !more.length) { hasMore = false; break; }
+      if (more === null) {
+        // Erro nesta página (ex: rate limit) — pula sem parar a busca
+        consecutiveErrors++;
+        if (consecutiveErrors >= 3) { hasMore = false; break; } // aborta se muitos erros seguidos
+        continue;
+      }
+      consecutiveErrors = 0;
+      if (!more.length) { hasMore = false; break; }  // página vazia = fim real dos dados
       all = all.concat(more);
       if (more.length < 100) { hasMore = false; break; }
       // Saída antecipada no filtro de data: quando ultrapassamos o início do período
@@ -14931,6 +14946,229 @@ function EscopoView({ authState }) {
             )
           )
         )
+      )
+    )
+  );
+}
+
+// ─── Bitrix24 helpers ─────────────────────────────────────────────────────────
+const BT_WEBHOOK = 'https://ciadetalentos.bitrix24.com.br/rest/1/t5drbjwxzybgn8rs';
+const BT_CD_GROUP = 192;
+
+async function btFetch(method, params = {}) {
+  const body = new URLSearchParams();
+  Object.entries(params).forEach(([k, v]) => body.append(k, String(v)));
+  const res = await fetch(`${BT_WEBHOOK}/${method}`, { method: 'POST', body });
+  if (!res.ok) throw new Error(`Bitrix API ${res.status}`);
+  const json = await res.json();
+  if (json.error) throw new Error(json.error_description || json.error);
+  return json.result;
+}
+
+async function btFetchAllTasks(groupId, onProgress) {
+  let all = [], start = 0;
+  while (true) {
+    const result = await btFetch('tasks.task.list', {
+      'filter[GROUP_ID]': groupId,
+      'select[0]': '*',
+      'select[1]': 'TAGS',
+      'start': start
+    });
+    const tasks = result.tasks || [];
+    all = all.concat(tasks);
+    if (onProgress) onProgress(all.length);
+    if (tasks.length < 50) break;
+    start += 50;
+  }
+  return all;
+}
+
+// ─── Kanban card ──────────────────────────────────────────────────────────────
+function BtKanbanCard({ task, taskUrl }) {
+  const tags = Object.values(task.tags || {});
+  const deadline = task.deadline ? new Date(task.deadline) : null;
+  const now = new Date();
+  const isOverdue = deadline && deadline < now;
+  const isSoon = deadline && !isOverdue && (deadline - now) < 7 * 86400000;
+  const fmtDate = d => d.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: '2-digit' });
+  const resp = task.responsible;
+  const hasPhoto = resp?.icon && !resp.icon.includes('default_avatar') && !resp.icon.startsWith('/bitrix/images/tasks');
+
+  return React.createElement('div', {
+    onClick: () => window.open(taskUrl(task.id), '_blank'),
+    className: 'bg-white rounded-xl border border-slate-200 p-3 cursor-pointer hover:border-indigo-300 hover:shadow-sm transition group'
+  },
+    React.createElement('p', { className: 'text-sm font-medium text-slate-800 group-hover:text-indigo-700 transition leading-snug mb-2' }, task.title),
+    tags.length > 0 && React.createElement('div', { className: 'flex flex-wrap gap-1 mb-2' },
+      tags.map(tag => React.createElement('span', {
+        key: tag.id,
+        className: 'text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-600'
+      }, tag.title))
+    ),
+    React.createElement('div', { className: 'flex items-center justify-between gap-2 mt-1' },
+      deadline
+        ? React.createElement('span', {
+            className: `text-xs px-2 py-0.5 rounded-full font-medium ${isOverdue ? 'bg-red-100 text-red-600' : isSoon ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-500'}`
+          }, fmtDate(deadline))
+        : React.createElement('span', null),
+      resp && React.createElement('div', { title: resp.name, className: 'flex-shrink-0' },
+        hasPhoto
+          ? React.createElement('img', {
+              src: resp.icon.startsWith('http') ? resp.icon : `https://ciadetalentos.bitrix24.com.br${resp.icon}`,
+              className: 'w-6 h-6 rounded-full object-cover border border-slate-200',
+              onError: e => { e.target.style.display = 'none'; }
+            })
+          : React.createElement('div', {
+              className: 'w-6 h-6 rounded-full bg-indigo-100 text-indigo-700 text-xs flex items-center justify-center font-bold'
+            }, (resp.name || '?').charAt(0))
+      )
+    )
+  );
+}
+
+// ─── Kanban column ────────────────────────────────────────────────────────────
+function BtKanbanColumn({ title, tasks, color, taskUrl }) {
+  const hex = (color && !color.startsWith('#') ? '#' : '') + (color || '64748b');
+  return React.createElement('div', { className: 'flex flex-col gap-2', style: { width: '280px', minWidth: '280px' } },
+    React.createElement('div', {
+      className: 'flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-semibold text-white',
+      style: { backgroundColor: hex }
+    },
+      React.createElement('span', { className: 'truncate' }, title),
+      React.createElement('span', { className: 'ml-auto flex-shrink-0 bg-white/25 px-2 py-0.5 rounded-full text-xs font-bold' }, tasks.length)
+    ),
+    React.createElement('div', { className: 'flex flex-col gap-2' },
+      tasks.map(t => React.createElement(BtKanbanCard, { key: t.id, task: t, taskUrl }))
+    )
+  );
+}
+
+// ─── CdGerencialView ──────────────────────────────────────────────────────────
+function CdGerencialView() {
+  const taskUrl = id => `https://ciadetalentos.bitrix24.com.br/workgroups/group/${BT_CD_GROUP}/tasks/task/view/${id}/`;
+  const VIEW_OPTS = [
+    { k: 'andamento', l: '🔄 Em andamento' },
+    { k: 'concluidos', l: '✅ Encerrados' },
+    { k: 'semEtapa',  l: '📌 Sem etapa'  },
+    { k: 'todos',     l: '🗂 Todos'       }
+  ];
+
+  const [tasks,        setTasks]        = useState(null);
+  const [stages,       setStages]       = useState(null);
+  const [loading,      setLoading]      = useState(false);
+  const [loadProgress, setLoadProgress] = useState(0);
+  const [err,          setErr]          = useState(null);
+  const [viewFilter,   setViewFilter]   = useState('andamento');
+  const [search,       setSearch]       = useState('');
+
+  useEffect(() => { loadData(); }, []);
+
+  async function loadData() {
+    setLoading(true); setErr(null); setLoadProgress(0);
+    try {
+      const [stagesResult, allTasks] = await Promise.all([
+        btFetch('task.stages.get', { entityId: BT_CD_GROUP, isAdmin: 1 }),
+        btFetchAllTasks(BT_CD_GROUP, n => setLoadProgress(n))
+      ]);
+      setStages(stagesResult);
+      setTasks(allTasks);
+    } catch(e) {
+      setErr(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const stageList = useMemo(() => {
+    if (!stages) return [];
+    return Object.values(stages).sort((a, b) => Number(a.SORT) - Number(b.SORT));
+  }, [stages]);
+
+  const filteredTasks = useMemo(() => {
+    if (!tasks) return [];
+    let res = tasks;
+    const DONE_STAGE = '1380';
+    if (viewFilter === 'andamento') res = res.filter(t => String(t.stageId) !== DONE_STAGE && String(t.stageId) !== '0');
+    else if (viewFilter === 'concluidos') res = res.filter(t => String(t.stageId) === DONE_STAGE);
+    else if (viewFilter === 'semEtapa')   res = res.filter(t => !t.stageId || String(t.stageId) === '0');
+    if (search) {
+      const q = search.toLowerCase();
+      res = res.filter(t =>
+        t.title.toLowerCase().includes(q) ||
+        Object.values(t.tags || {}).some(tag => tag.title.toLowerCase().includes(q))
+      );
+    }
+    return res;
+  }, [tasks, viewFilter, search]);
+
+  const tasksByStage = useMemo(() => {
+    const map = {};
+    filteredTasks.forEach(t => {
+      const sid = String(t.stageId || '0');
+      if (!map[sid]) map[sid] = [];
+      map[sid].push(t);
+    });
+    return map;
+  }, [filteredTasks]);
+
+  const visibleStages = useMemo(() => {
+    const DONE_STAGE = '1380';
+    if (viewFilter === 'andamento') return stageList.filter(s => s.ID !== DONE_STAGE);
+    if (viewFilter === 'concluidos') return stageList.filter(s => s.ID === DONE_STAGE);
+    return stageList;
+  }, [stageList, viewFilter]);
+
+  if (loading) return React.createElement('div', { className: 'flex flex-col items-center justify-center py-32 gap-5 fade-in' },
+    React.createElement('div', { className: 'w-16 h-16 rounded-full border-4 border-indigo-200 border-t-indigo-600 animate-spin' }),
+    React.createElement('div', { className: 'text-center' },
+      React.createElement('p', { className: 'text-base font-semibold text-slate-700' }, 'Carregando projetos do Bitrix…'),
+      loadProgress > 0 && React.createElement('p', { className: 'text-sm text-indigo-600 font-medium mt-1' },
+        loadProgress.toLocaleString('pt-BR'), ' tarefas carregadas…')
+    )
+  );
+
+  if (err) return React.createElement('div', { className: 'm-8 p-4 bg-red-50 border border-red-200 rounded-xl text-red-700 flex items-center gap-3' },
+    React.createElement('span', null, '⚠ ', err),
+    React.createElement('button', { onClick: loadData, className: 'ml-auto text-sm underline' }, 'Tentar novamente')
+  );
+
+  const showSemEtapa = (viewFilter === 'todos' || viewFilter === 'semEtapa') && (tasksByStage['0']?.length > 0);
+
+  return React.createElement('div', { className: 'px-4 py-5 fade-in' },
+    // Header
+    React.createElement('div', { className: 'flex flex-wrap items-center gap-3 mb-5' },
+      // Visão filter
+      React.createElement('div', { className: 'flex gap-0.5 bg-slate-100 p-0.5 rounded-xl' },
+        VIEW_OPTS.map(opt => React.createElement('button', {
+          key: opt.k,
+          onClick: () => setViewFilter(opt.k),
+          className: `px-3 py-1.5 text-xs font-medium rounded-lg transition ${viewFilter === opt.k ? 'bg-white shadow text-indigo-700' : 'text-slate-500 hover:text-slate-700'}`
+        }, opt.l))
+      ),
+      // Search
+      React.createElement('input', {
+        value: search,
+        onChange: e => setSearch(e.target.value),
+        placeholder: 'Buscar por título ou tag…',
+        className: 'border border-slate-200 rounded-lg px-3 py-1.5 text-sm flex-1 min-w-48 max-w-72 focus:ring-2 focus:ring-indigo-200'
+      }),
+      React.createElement('span', { className: 'text-xs text-slate-400 ml-auto' }, filteredTasks.length, ' projeto(s)'),
+      React.createElement('button', {
+        onClick: loadData,
+        className: 'text-sm px-3 py-1.5 border border-slate-200 rounded-lg hover:border-indigo-300 text-slate-500 hover:text-indigo-600 transition'
+      }, '🔄')
+    ),
+    // Kanban board
+    React.createElement('div', { className: 'overflow-x-auto pb-6' },
+      React.createElement('div', { className: 'flex gap-4', style: { minWidth: 'max-content' } },
+        showSemEtapa && React.createElement(BtKanbanColumn, {
+          key: '__none__', title: '📌 Sem etapa', tasks: tasksByStage['0'] || [], color: '#94a3b8', taskUrl
+        }),
+        visibleStages
+          .filter(s => viewFilter === 'todos' || (tasksByStage[s.ID]?.length > 0))
+          .map(s => React.createElement(BtKanbanColumn, {
+            key: s.ID, title: s.TITLE, tasks: tasksByStage[s.ID] || [], color: s.COLOR, taskUrl
+          }))
       )
     )
   );
