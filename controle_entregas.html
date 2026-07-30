@@ -3136,24 +3136,30 @@ function InscricoesView({ projects, token }) {
         setProg('Lendo Parquet...');
         const asyncBuf = { byteLength: received, slice: (s,e) => Promise.resolve(buf.buffer.slice(s,e)) };
 
-        // Get column names from Parquet schema (hyparquet sometimes returns rows as arrays)
+        // Get column names from Parquet schema
+        // parquetMetadata = sync (needs sync buffer); parquetMetadataAsync = async (needs AsyncBuffer)
         let schemaColNames = null;
         const _hypExports = Object.keys(window._hyparquet).join(', ');
-        if (window._hyparquet.parquetMetadata) {
+
+        // 1. Try parquetMetadataAsync (async, compatible with our asyncBuf)
+        if (!schemaColNames && window._hyparquet.parquetMetadataAsync) {
           try {
-            const meta = await window._hyparquet.parquetMetadata(asyncBuf);
+            const meta = await window._hyparquet.parquetMetadataAsync(asyncBuf);
             const elems = Array.isArray(meta?.schema) ? meta.schema : [];
             const leafCols = elems.filter(s => !s.num_children).map(s => s.name).filter(Boolean);
             if (leafCols.length > 0) schemaColNames = leafCols;
-          } catch(metaErr) { console.warn('[parquetMetadata]', metaErr.message); }
+          } catch(e) { console.warn('[parquetMetadataAsync]', e.message); }
         }
-        if (!schemaColNames && window._hyparquet.parquetSchema) {
+
+        // 2. Fallback: parquetMetadata is sync — use a sync buffer (slice returns ArrayBuffer directly)
+        if (!schemaColNames && window._hyparquet.parquetMetadata) {
           try {
-            const sc = await window._hyparquet.parquetSchema(asyncBuf);
-            const fields = sc?.fields || sc?.children || [];
-            const names = fields.map(f => f.name || f.element?.name).filter(Boolean);
-            if (names.length > 0) schemaColNames = names;
-          } catch(e) { console.warn('[parquetSchema]', e.message); }
+            const syncBuf = { byteLength: received, slice: (s,e) => buf.buffer.slice(s,e) };
+            const meta = window._hyparquet.parquetMetadata(syncBuf);
+            const elems = Array.isArray(meta?.schema) ? meta.schema : [];
+            const leafCols = elems.filter(s => !s.num_children).map(s => s.name).filter(Boolean);
+            if (leafCols.length > 0) schemaColNames = leafCols;
+          } catch(e) { console.warn('[parquetMetadata sync]', e.message); }
         }
 
         const rawRows = [];
