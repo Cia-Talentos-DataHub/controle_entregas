@@ -3051,48 +3051,202 @@ function _idadeBin(v) {
   return b ? b[0] : '';
 }
 
+// ─── Inscrições helpers ───────────────────────────────────────────────────────
+const _GC = {
+  prog:{ hex:'#6366f1', light:'#eef2ff', name:'indigo' },
+  proc:{ hex:'#0ea5e9', light:'#e0f2fe', name:'sky'    },
+  div: { hex:'#10b981', light:'#d1fae5', name:'emerald'},
+  form:{ hex:'#f59e0b', light:'#fef3c7', name:'amber'  },
+  geo: { hex:'#f43f5e', light:'#ffe4e6', name:'rose'   },
+};
+
+// csvRows = [[header,...],[val,...],...]
+function _downloadCSV(filename, csvRows) {
+  const esc = v => `"${String(v??'').replace(/"/g,'""')}"`;
+  const csv = csvRows.map(r=>r.map(esc).join(',')).join('\r\n');
+  const blob = new Blob(['﻿'+csv],{type:'text/csv;charset=utf-8;'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href=url; a.download=String(filename).replace(/[^\w\s\-]/g,'_')+'.csv'; a.click();
+  URL.revokeObjectURL(url);
+}
+
 function InscricoesChartTable({ chart, data, filters, onToggle, onClearCol }) {
   const entries = data || [];
-  const totalV = entries.reduce((s,[,n]) => s+n, 0);
-  const colF = filters[chart.col];
-  const maxV = entries[0]?.[1] || 1;
-  return React.createElement('div', { className:'bg-white rounded-xl border border-slate-200 overflow-hidden flex flex-col' },
-    React.createElement('div', { className:'px-3 py-2 bg-slate-50 border-b border-slate-200 flex items-center justify-between shrink-0' },
-      React.createElement('span', { className:'text-xs font-semibold text-slate-700 truncate' }, chart.label),
-      colF?.size > 0 && React.createElement('button', {
-        onClick: () => onClearCol(chart.col),
-        className:'text-xs text-indigo-500 hover:text-indigo-700 ml-2 shrink-0'
-      }, '✕')
+  const totalV  = entries.reduce((s,[,n])=>s+n,0);
+  const colF    = filters[chart.col];
+  const maxV    = entries[0]?.[1] || 1;
+  const gc      = _GC[chart.g] || _GC.prog;
+  const nSel    = colF?.size || 0;
+
+  return React.createElement('div', {
+    className:'bg-white rounded-2xl shadow-sm overflow-hidden flex flex-col',
+    style:{ border:`1px solid ${gc.hex}33`, borderTop:`3px solid ${gc.hex}` }
+  },
+    // ── header ──
+    React.createElement('div', { className:'px-3 py-2 flex items-center justify-between shrink-0', style:{background:gc.light} },
+      React.createElement('span', { className:'text-xs font-bold truncate', style:{color:gc.hex} }, chart.label),
+      React.createElement('div', { className:'flex items-center gap-1.5 shrink-0 ml-1' },
+        nSel > 0 && React.createElement('button', {
+          onClick: ()=>onClearCol(chart.col),
+          className:'text-xs px-2 py-0.5 rounded-full font-semibold',
+          style:{background:gc.hex, color:'#fff'}
+        }, `✕ ${nSel}`),
+        React.createElement('button', {
+          onClick: ()=>_downloadCSV(chart.label, [
+            [chart.label,'Inscrições','%'],
+            ...entries.map(([v,n])=>[v,n,totalV>0?(n/totalV*100).toFixed(2)+'%':'0%'])
+          ]),
+          title:'Baixar CSV / Excel',
+          className:'text-xs w-6 h-6 flex items-center justify-center rounded-full hover:opacity-80 transition',
+          style:{background:gc.hex+'22', color:gc.hex}
+        }, '⬇')
+      )
     ),
-    React.createElement('div', { className:'overflow-y-auto flex-1', style:{ maxHeight:240 } },
+    // ── col headers ──
+    React.createElement('div', {
+      className:'grid text-xs font-semibold text-slate-400 px-3 py-1 border-b border-slate-100',
+      style:{gridTemplateColumns:'1fr 70px 44px'}
+    },
+      React.createElement('span',null,''),
+      React.createElement('span',{className:'text-right'},'Inscrições'),
+      React.createElement('span',{className:'text-right'},'%')
+    ),
+    // ── rows ──
+    React.createElement('div', { className:'overflow-y-auto flex-1', style:{maxHeight:230} },
       entries.length === 0
-        ? React.createElement('p', { className:'text-xs text-slate-400 px-3 py-4 text-center' }, '(sem dados)')
-        : React.createElement('table', { className:'w-full text-xs' },
-            React.createElement('tbody', null,
-              entries.map(([val, cnt]) => {
-                const pct = totalV > 0 ? cnt/totalV*100 : 0;
-                const isAct = colF?.has(val);
-                const bw = `${cnt/maxV*100}%`;
-                return React.createElement('tr', {
-                  key: val,
-                  onClick: () => onToggle(chart.col, val),
-                  className:`cursor-pointer border-b border-slate-100 transition-colors ${isAct ? 'bg-indigo-50' : 'hover:bg-slate-50'}`
-                },
-                  React.createElement('td', { className:'px-2 py-1.5', style:{ maxWidth:170 } },
-                    React.createElement('div', { className:'flex items-center gap-1' },
-                      isAct && React.createElement('span', { className:'text-indigo-500 text-xs shrink-0' }, '✓'),
-                      React.createElement('span', { className:'truncate text-slate-700', title:val }, val || '—')
+        ? React.createElement('p',{className:'text-xs text-slate-400 px-3 py-5 text-center'},'(sem dados)')
+        : React.createElement('div',null,
+            ...entries.map(([val,cnt])=>{
+              const pct   = totalV>0 ? cnt/totalV*100 : 0;
+              const isAct = colF?.has(val);
+              const bw    = `${cnt/maxV*100}%`;
+              return React.createElement('div',{
+                key:val,
+                onClick:()=>onToggle(chart.col,val),
+                className:'cursor-pointer border-b border-slate-50 px-3 py-1.5 transition-all',
+                style:{ background: isAct ? gc.hex+'15' : 'transparent' }
+              },
+                React.createElement('div',{className:'grid items-center gap-2',style:{gridTemplateColumns:'1fr 70px 44px'}},
+                  // label + bar
+                  React.createElement('div',null,
+                    React.createElement('div',{className:'flex items-center gap-1.5'},
+                      React.createElement('div',{
+                        className:'w-4 h-4 rounded flex items-center justify-center shrink-0 transition-all',
+                        style:{ border:`2px solid ${gc.hex}`, background: isAct ? gc.hex : 'transparent' }
+                      }, isAct && React.createElement('span',{style:{color:'#fff',fontSize:9,lineHeight:1}},'✓')),
+                      React.createElement('span',{
+                        className:'text-xs truncate',
+                        style:{ color: isAct ? gc.hex : '#334155', fontWeight: isAct ? 600 : 400 },
+                        title:val
+                      }, val||'—')
                     ),
-                    React.createElement('div', { className:'mt-0.5 h-1 rounded bg-slate-100 overflow-hidden' },
-                      React.createElement('div', { className:`h-full rounded ${isAct ? 'bg-indigo-400' : 'bg-slate-300'}`, style:{ width:bw } })
+                    React.createElement('div',{className:'ml-5 mt-1 h-1.5 rounded-full overflow-hidden',style:{background:gc.hex+'22'}},
+                      React.createElement('div',{
+                        className:'h-full rounded-full transition-all',
+                        style:{ width:bw, background: isAct ? gc.hex : gc.hex+'99' }
+                      })
                     )
                   ),
-                  React.createElement('td', { className:'px-2 py-1.5 text-right text-slate-600 whitespace-nowrap' }, cnt.toLocaleString('pt-BR')),
-                  React.createElement('td', { className:'px-2 py-1.5 text-right text-slate-400 whitespace-nowrap w-12' }, pct.toFixed(1),'%')
-                );
-              })
-            )
+                  // count
+                  React.createElement('span',{
+                    className:'text-xs text-right tabular-nums font-semibold',
+                    style:{color: isAct ? gc.hex : '#475569'}
+                  }, cnt.toLocaleString('pt-BR')),
+                  // pct
+                  React.createElement('span',{className:'text-xs text-right tabular-nums',style:{color:'#94a3b8'}},
+                    pct.toFixed(1),'%')
+                )
+              );
+            })
           )
+    )
+  );
+}
+
+// ─── Tabela de programas ──────────────────────────────────────────────────────
+function InscricoesProgramasTable({ data, filters, onToggle, onClearCol }) {
+  const [sort, setSort] = React.useState('count'); // 'count' | 'nome'
+  const colF = filters['_NomeProg'];
+  const nSel = colF?.size || 0;
+
+  const sorted = React.useMemo(()=>{
+    return [...data].sort((a,b)=> sort==='count' ? b.count-a.count : a.nome.localeCompare(b.nome,'pt-BR'));
+  },[data,sort]);
+
+  const handleDownload = () => {
+    const tot = data.reduce((s,r)=>s+r.count,0);
+    _downloadCSV('Programas',[
+      ['Programa','Público','Segmento','Inscrições','%'],
+      ...sorted.map(r=>[r.nome,r.publico,r.segmento,r.count,tot>0?(r.count/tot*100).toFixed(2)+'%':'0%'])
+    ]);
+  };
+
+  return React.createElement('div',{
+    className:'bg-white rounded-2xl shadow-sm overflow-hidden mb-6',
+    style:{border:'1px solid #6366f133', borderTop:'3px solid #6366f1'}
+  },
+    React.createElement('div',{className:'px-4 py-2.5 flex items-center justify-between',style:{background:'#eef2ff'}},
+      React.createElement('div',{className:'flex items-center gap-3'},
+        React.createElement('span',{className:'text-sm font-bold',style:{color:'#6366f1'}},'📋 Programas'),
+        React.createElement('span',{className:'text-xs text-slate-500'},`${data.length} programas · ${data.reduce((s,r)=>s+r.count,0).toLocaleString('pt-BR')} inscrições`),
+        nSel>0 && React.createElement('button',{onClick:()=>onClearCol('_NomeProg'),className:'text-xs px-2 py-0.5 rounded-full font-semibold',style:{background:'#6366f1',color:'#fff'}},`✕ ${nSel} selecionado(s)`)
+      ),
+      React.createElement('div',{className:'flex items-center gap-2'},
+        React.createElement('button',{
+          onClick:()=>setSort(s=>s==='count'?'nome':'count'),
+          className:'text-xs px-2 py-1 rounded-lg border border-indigo-200 text-indigo-600 hover:bg-indigo-50 transition'
+        }, sort==='count'?'↕ Por nome':'↕ Por volume'),
+        React.createElement('button',{
+          onClick:handleDownload,
+          className:'text-xs px-2 py-1 rounded-lg flex items-center gap-1',
+          style:{background:'#6366f122',color:'#6366f1'}
+        },'⬇ Excel')
+      )
+    ),
+    React.createElement('div',{className:'overflow-x-auto'},
+      React.createElement('table',{className:'w-full text-xs'},
+        React.createElement('thead',null,
+          React.createElement('tr',{className:'border-b border-slate-100 text-slate-500 font-semibold'},
+            React.createElement('th',{className:'text-left px-4 py-2'},'Programa'),
+            React.createElement('th',{className:'text-left px-4 py-2 hidden sm:table-cell'},'Público'),
+            React.createElement('th',{className:'text-left px-4 py-2 hidden md:table-cell'},'Segmento'),
+            React.createElement('th',{className:'text-right px-4 py-2'},'Inscrições'),
+            React.createElement('th',{className:'text-right px-4 py-2 w-16'},'%')
+          )
+        ),
+        React.createElement('tbody',null,
+          ...sorted.slice(0,80).map((r,i)=>{
+            const pct = data.reduce((s,x)=>s+x.count,0);
+            const p   = pct>0 ? r.count/pct*100 : 0;
+            const isAct = colF?.has(r.nome);
+            return React.createElement('tr',{
+              key:r.nome||i,
+              onClick:()=>onToggle('_NomeProg',r.nome),
+              className:'cursor-pointer border-b border-slate-50 transition-colors',
+              style:{ background: isAct ? '#6366f115' : i%2===0 ? '#fff' : '#f8fafc' }
+            },
+              React.createElement('td',{className:'px-4 py-2'},
+                React.createElement('div',{className:'flex items-center gap-2'},
+                  React.createElement('div',{
+                    className:'w-3.5 h-3.5 rounded shrink-0 flex items-center justify-center',
+                    style:{border:'2px solid #6366f1',background:isAct?'#6366f1':'transparent'}
+                  }, isAct && React.createElement('span',{style:{color:'#fff',fontSize:8}},'✓')),
+                  React.createElement('span',{
+                    className:'font-medium max-w-xs truncate',
+                    style:{color:isAct?'#6366f1':'#1e293b'},
+                    title:r.nome
+                  }, r.nome||'—')
+                )
+              ),
+              React.createElement('td',{className:'px-4 py-2 text-slate-500 hidden sm:table-cell'},r.publico||'—'),
+              React.createElement('td',{className:'px-4 py-2 text-slate-500 hidden md:table-cell'},r.segmento||'—'),
+              React.createElement('td',{className:'px-4 py-2 text-right font-semibold tabular-nums',style:{color:isAct?'#6366f1':'#475569'}},r.count.toLocaleString('pt-BR')),
+              React.createElement('td',{className:'px-4 py-2 text-right text-slate-400 tabular-nums'},p.toFixed(1),'%')
+            );
+          })
+        )
+      )
     )
   );
 }
@@ -3214,7 +3368,10 @@ function InscricoesView({ projects, token }) {
           return found ? found[1] : null;
         }
         // Build desired → actual map for all chart cols + special cols
-        const allDesired = _IC.map(c=>c.col).concat(['ID_do_Programa_ATS','Término','Idade']);
+        const allDesired = _IC.map(c=>c.col).concat([
+          'ID_do_Programa_ATS','Término','Idade',
+          'Nome do Programa','Nome do Processo','Programa','Processo','Título','Segmento','Público'
+        ]);
         const cMap = {};
         for (const d of allDesired) { const a = resolveCol(d); if (a) cMap[d] = a; }
         console.log('[InscricoesView] cMap (first 8):', JSON.stringify(Object.fromEntries(Object.entries(cMap).slice(0,8))));
@@ -3229,21 +3386,32 @@ function InscricoesView({ projects, token }) {
         setDbgCols(_dbgLines);
 
         setProg('Enriquecendo com dados do SharePoint...');
+        // Join por Nome do Programa (normalizado) em vez de ID_do_Programa_ATS
+        const _normNome = s => String(s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').trim();
         const projMap = {};
         for (const p2 of (projects||[])) {
-          const id = p2.pulseData?.['ID_do_Programa_ATS'];
-          if (id) projMap[String(id)] = p2;
+          // tenta vários campos de nome do projeto no SP
+          const names = [
+            p2.title, p2.displayTitle, p2.name,
+            p2.pulseData?.['Nome do Programa'], p2.pulseData?.['Nome do Processo'],
+            p2.pulseData?.['Programa']
+          ].filter(Boolean);
+          for (const nm of names) projMap[_normNome(nm)] = p2;
         }
         const enriched = rawRows.map(row => {
-          // Add aliases so chart code can use desired column names
           const mapped = { ...row };
           for (const [des, act] of Object.entries(cMap)) { if (des !== act) mapped[des] = row[act]; }
-          const atsId = String(mapped['ID_do_Programa_ATS'] ?? row[cMap['ID_do_Programa_ATS']] ?? '');
-          const proj = projMap[atsId] || null;
+          // Nome do programa vindo do Parquet (tenta vários campos)
+          const parqNome = String(
+            mapped['Nome do Programa'] ?? mapped['Nome do Processo'] ??
+            mapped['Programa'] ?? mapped['Processo'] ?? mapped['Título'] ?? ''
+          ).trim();
+          const proj = projMap[_normNome(parqNome)] || null;
           const termRaw = mapped['Término'] ?? '';
           const termY = termRaw ? String(termRaw).replace(/\.0$/,'').replace(/[^0-9]/g,'').slice(0,4) : '';
-          mapped._Publico  = proj?.publico || '';
-          mapped._Segmento = proj?.pulseData?.['Segmento'] || '';
+          mapped._NomeProg = parqNome || proj?.title || proj?.displayTitle || '';
+          mapped._Publico  = proj?.publico  || mapped['Público'] || '';
+          mapped._Segmento = proj?.pulseData?.['Segmento'] || mapped['Segmento'] || '';
           mapped._Idade    = _idadeBin(mapped['Idade'] ?? '');
           mapped._Termino  = termY && /^\d{4}$/.test(termY) ? termY : '';
           return mapped;
@@ -3293,6 +3461,19 @@ function InscricoesView({ projects, token }) {
   const clearCol = useCallback(col => setFilters(f => { const nf={...f}; delete nf[col]; return nf; }), []);
   const clearAll = useCallback(() => setFilters({}), []);
 
+  // Tabela de programas
+  const progTableData = useMemo(()=>{
+    if (!filteredRows.length) return [];
+    const map = {};
+    for (const row of filteredRows) {
+      const key = String(row._NomeProg || '').trim();
+      if (!key) continue;
+      if (!map[key]) map[key] = { nome:key, publico:String(row._Publico||''), segmento:String(row._Segmento||''), count:0 };
+      map[key].count++;
+    }
+    return Object.values(map).sort((a,b)=>b.count-a.count);
+  },[filteredRows]);
+
   const activeN = Object.values(filters).reduce((n,s) => n+(s?.size||0), 0);
   const total   = filteredRows.length;
   const totalAll = rows.length;
@@ -3320,6 +3501,13 @@ function InscricoesView({ projects, token }) {
       ),
       React.createElement('p',{className:'ml-auto text-xs text-slate-400 hidden sm:block'},'Clique em qualquer valor para filtrar · Múltipla seleção')
     ),
+    // Tabela de programas
+    progTableData.length > 0 && React.createElement(InscricoesProgramasTable,{
+      data: progTableData,
+      filters,
+      onToggle: toggleFilter,
+      onClearCol: clearCol
+    }),
     // DEBUG: show actual parquet column names
     dbgCols && React.createElement('details',{className:'mb-4 bg-amber-50 border border-amber-200 rounded-xl px-4 py-2 text-xs'},
       React.createElement('summary',{className:'cursor-pointer font-semibold text-amber-700 py-1'},'🔍 Debug (', dbgCols.length, ' linhas)'),
