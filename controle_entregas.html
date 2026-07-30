@@ -3384,11 +3384,9 @@ function InscricoesView({ projects, token }) {
           });
           return found ? found[1] : null;
         }
-        // Build desired → actual map — only safe columns in extras (avoid ambiguous fuzzy hits)
-        // CÓDIGO = ATS program ID in Parquet (joins with SP.pulseData['ID_do_Programa_ATS'])
+        // Build desired → actual map
         const allDesired = _IC.map(c=>c.col).concat([
-          'CÓDIGO','Término','Idade','Segmento','Público',
-          'Processo Seletivo','Programa','PROCESSO_SELETIVO'
+          'Nome_Programa','Término','Idade','Segmento','Público'
         ]);
         const cMap = {};
         for (const d of allDesired) { const a = resolveCol(d); if (a) cMap[d] = a; }
@@ -3418,14 +3416,10 @@ function InscricoesView({ projects, token }) {
           for (const [des, act] of Object.entries(cMap)) { if (des !== act) mapped[des] = row[act]; }
           const termRaw = mapped['Término'] ?? '';
           const termY = termRaw ? String(termRaw).replace(/\.0$/,'').replace(/[^0-9]/g,'').slice(0,4) : '';
-          // Nome do programa: tenta colunas conhecidas do Parquet, depois fallback no schemaColNames[0]
-          const _nomeCols = [
-            cMap['Processo Seletivo'], cMap['PROCESSO_SELETIVO'], cMap['Programa'],
-            schemaColNames?.[0]
-          ].filter(Boolean);
-          const parqNome = _nomeCols.reduce((acc,k) => acc || String(mapped[k]||'').trim(), '');
+          // Parquet.Nome_Programa ↔ SP.pulseData['Nome_Programa'] (mesma coluna, join direto)
+          const parqNome = String(mapped['Nome_Programa'] ?? mapped[cMap['Nome_Programa']] ?? '').trim();
           const proj = projMap[_normN(parqNome)] || null;
-          mapped._NomeProg = parqNome || proj?.pulseData?.['Nome_Programa'] || '';
+          mapped._NomeProg = parqNome;
           mapped._Publico       = proj?.pulseData?.['Público'] || proj?.publico || mapped['Público'] || '';
           mapped._Segmento      = proj?.pulseData?.['Segmento'] || proj?.['Segmento'] || mapped['Segmento'] || '';
           mapped._MicroSegmento = proj?.pulseData?.['Micro_Segmento'] || proj?.['Micro_Segmento'] || mapped['Micro_Segmento'] || '';
