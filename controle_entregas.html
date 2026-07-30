@@ -818,7 +818,7 @@ function calPhaseStatus(start, end, today) {
 }
 
 // Campos básicos para fetchSPList — PULSE_FIELDS carregados separadamente via fetchSPItemFull
-const SP_SELECT = ['Id', 'indice', 'Cliente', 'Status_Programa', 'Nome_Programa', 'Ciclo_Orcamentario', 'Title', 'KA', 'Quantidade_Vagas_Prevista', 'Trimestre_Orcamentario', 'Periodo', 'Codigo_Proposta', 'Publico', 'Pedra', 'Responsavel_Pedra', 'Tipo_Programa', 'Segmento', 'Micro_Segmento',
+const SP_SELECT = ['Id', 'indice', 'Cliente', 'Status_Programa', 'Nome_Programa', 'Ciclo_Orcamentario', 'Title', 'KA', 'Quantidade_Vagas_Prevista', 'Trimestre_Orcamentario', 'Periodo', 'Codigo_Proposta', 'Publico', 'Pedra', 'Responsavel_Pedra', 'Tipo_Programa',
 // FrenteNegocio adicionado dinamicamente em fetchSPList após confirmar existência no SP
 'Frente_Negocio',
 // coluna "Solução" (legado)
@@ -968,8 +968,6 @@ function parseSPItem(item) {
     semestre: item.Periodo || '',
     codigoProposta: item.Codigo_Proposta || '',
     publico: item.Publico || '',
-    segmento: item.Segmento || '',
-    microSegmento: item.Micro_Segmento || '',
     pedra: item.Pedra || '',
     respPedra: normRespPedra(item.Responsavel_Pedra || ''),
     tipoProg: item.Tipo_Programa || '',
