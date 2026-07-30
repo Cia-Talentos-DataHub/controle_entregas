@@ -3135,12 +3135,35 @@ function InscricoesView({ projects, token }) {
 
         setProg('Lendo Parquet...');
         const asyncBuf = { byteLength: received, slice: (s,e) => Promise.resolve(buf.buffer.slice(s,e)) };
+
+        // Get column names from schema (hyparquet may return rows as arrays in some versions)
+        let schemaColNames = null;
+        if (window._hyparquet.parquetMetadata) {
+          try {
+            const meta = await window._hyparquet.parquetMetadata(asyncBuf);
+            // Leaf schema nodes (no num_children) are the actual columns; first node is root
+            schemaColNames = (meta.schema || []).filter(s => !s.num_children).map(s => s.name);
+            console.log('[InscricoesView] Schema cols (first 10):', schemaColNames.slice(0,10).join(', '));
+          } catch(metaErr) {
+            console.warn('[InscricoesView] parquetMetadata failed:', metaErr);
+          }
+        }
+
         const rawRows = [];
         await window._hyparquet.parquetRead({
           file: asyncBuf,
           // sem filtro de colunas — carrega tudo e faz fuzzy-match depois
           onComplete: data => {
-            for (const r of data) rawRows.push(r);
+            for (const r of data) {
+              // If hyparquet returns rows as arrays (positional), convert to named objects
+              if (Array.isArray(r) && schemaColNames) {
+                const obj = {};
+                for (let i = 0; i < schemaColNames.length; i++) obj[schemaColNames[i]] = r[i];
+                rawRows.push(obj);
+              } else {
+                rawRows.push(r);
+              }
+            }
             setProg(`Processando... ${rawRows.length.toLocaleString('pt-BR')} registros`);
           }
         });
