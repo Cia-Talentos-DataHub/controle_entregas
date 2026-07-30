@@ -3385,8 +3385,10 @@ function InscricoesView({ projects, token }) {
           return found ? found[1] : null;
         }
         // Build desired → actual map — only safe columns in extras (avoid ambiguous fuzzy hits)
+        // CÓDIGO = ATS program ID in Parquet (joins with SP.pulseData['ID_do_Programa_ATS'])
         const allDesired = _IC.map(c=>c.col).concat([
-          'ID_do_Programa_ATS','Término','Idade','Segmento','Público'
+          'CÓDIGO','Término','Idade','Segmento','Público',
+          'Processo Seletivo','Programa','PROCESSO_SELETIVO'
         ]);
         const cMap = {};
         for (const d of allDesired) { const a = resolveCol(d); if (a) cMap[d] = a; }
@@ -3402,31 +3404,40 @@ function InscricoesView({ projects, token }) {
         setDbgCols(_dbgLines);
 
         setProg('Enriquecendo com dados do SharePoint...');
-        // Join por ID_do_Programa_ATS (confiável); join por nome será ativado
-        // quando identificarmos a coluna correta no Parquet via debug
+        // Join por Nome_Programa: SP.pulseData['Nome_Programa'] ↔ coluna de processo do Parquet
+        const _normN = s => String(s||'').toLowerCase()
+          .normalize('NFD').replace(/[̀-ͯ]/g,'')
+          .replace(/[^a-z0-9\s]/g,' ').replace(/\s+/g,' ').trim();
         const projMap = {};
         for (const p2 of (projects||[])) {
-          const id = p2.pulseData?.['ID_do_Programa_ATS'];
-          if (id) projMap[String(id).trim()] = p2;
+          const nm = p2.pulseData?.['Nome_Programa'];
+          if (nm) projMap[_normN(nm)] = p2;
         }
         const enriched = rawRows.map(row => {
           const mapped = { ...row };
           for (const [des, act] of Object.entries(cMap)) { if (des !== act) mapped[des] = row[act]; }
-          // Nome do programa: usa ID_do_Programa_ATS como chave de join com SP
-          // (coluna real do Parquet com nome do programa será adicionada quando identificada no debug)
-          const atsId = String(mapped['ID_do_Programa_ATS'] ?? '').trim();
-          const proj = projMap[atsId] || null;
           const termRaw = mapped['Término'] ?? '';
           const termY = termRaw ? String(termRaw).replace(/\.0$/,'').replace(/[^0-9]/g,'').slice(0,4) : '';
-          mapped._NomeProg      = proj?.pulseData?.['Nome_Programa'] || proj?.title || proj?.displayTitle || (atsId ? `Processo ${atsId}` : '');
+          // Nome do programa: tenta colunas conhecidas do Parquet, depois fallback no schemaColNames[0]
+          const _nomeCols = [
+            cMap['Processo Seletivo'], cMap['PROCESSO_SELETIVO'], cMap['Programa'],
+            schemaColNames?.[0]
+          ].filter(Boolean);
+          const parqNome = _nomeCols.reduce((acc,k) => acc || String(mapped[k]||'').trim(), '');
+          const proj = projMap[_normN(parqNome)] || null;
+          mapped._NomeProg = parqNome || proj?.pulseData?.['Nome_Programa'] || '';
           mapped._Publico       = proj?.pulseData?.['Público'] || proj?.publico || mapped['Público'] || '';
-          mapped._Segmento      = proj?.pulseData?.['Segmento'] || mapped['Segmento'] || '';
-          mapped._MicroSegmento = proj?.pulseData?.['Micro_Segmento'] || mapped['Micro_Segmento'] || '';
+          mapped._Segmento      = proj?.pulseData?.['Segmento'] || proj?.['Segmento'] || mapped['Segmento'] || '';
+          mapped._MicroSegmento = proj?.pulseData?.['Micro_Segmento'] || proj?.['Micro_Segmento'] || mapped['Micro_Segmento'] || '';
           mapped._Idade         = _idadeBin(mapped['Idade'] ?? '');
           mapped._Termino       = termY && /^\d{4}$/.test(termY) ? termY : '';
           return mapped;
         });
         setRows(enriched);
+
+        // ── Diagnóstico do join SP ────────────────────────────────────────────
+        const joinedCount = enriched.filter(r => r._Segmento || r._NomeProg?.startsWith('Processo') === false).length;
+        console.log(`[InscricoesView] projMap size: ${Object.keys(projMap).length}, joined rows: ~${joinedCount}`);
 
         // ── Análise de colunas não mapeadas ──────────────────────────────────
         const icActual = new Set(Object.values(cMap));
