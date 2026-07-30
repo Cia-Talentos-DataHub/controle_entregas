@@ -3166,13 +3166,15 @@ function InscricoesChartTable({ chart, data, filters, onToggle, onClearCol }) {
 
 // ─── Tabela de programas ──────────────────────────────────────────────────────
 function InscricoesProgramasTable({ data, filters, onToggle, onClearCol }) {
-  const [sort, setSort] = React.useState('count'); // 'count' | 'nome'
+  const [sort, setSort]   = React.useState('count');
+  const [expanded, setExpanded] = React.useState(false);
   const colF = filters['_NomeProg'];
   const nSel = colF?.size || 0;
 
   const sorted = React.useMemo(()=>{
     return [...data].sort((a,b)=> sort==='count' ? b.count-a.count : a.nome.localeCompare(b.nome,'pt-BR'));
   },[data,sort]);
+  const visible = expanded ? sorted : sorted.slice(0,30);
 
   const handleDownload = () => {
     const tot = data.reduce((s,r)=>s+r.count,0);
@@ -3204,9 +3206,9 @@ function InscricoesProgramasTable({ data, filters, onToggle, onClearCol }) {
         },'⬇ Excel')
       )
     ),
-    React.createElement('div',{className:'overflow-x-auto'},
+    React.createElement('div',{className:'overflow-x-auto',style:{maxHeight:360,overflowY:'auto'}},
       React.createElement('table',{className:'w-full text-xs'},
-        React.createElement('thead',null,
+        React.createElement('thead',{style:{position:'sticky',top:0,background:'#fff',zIndex:1}},
           React.createElement('tr',{className:'border-b border-slate-100 text-slate-500 font-semibold'},
             React.createElement('th',{className:'text-left px-4 py-2'},'Programa'),
             React.createElement('th',{className:'text-left px-4 py-2 hidden sm:table-cell'},'Público'),
@@ -3216,37 +3218,45 @@ function InscricoesProgramasTable({ data, filters, onToggle, onClearCol }) {
           )
         ),
         React.createElement('tbody',null,
-          ...sorted.slice(0,80).map((r,i)=>{
-            const pct = data.reduce((s,x)=>s+x.count,0);
-            const p   = pct>0 ? r.count/pct*100 : 0;
-            const isAct = colF?.has(r.nome);
-            return React.createElement('tr',{
-              key:r.nome||i,
-              onClick:()=>onToggle('_NomeProg',r.nome),
-              className:'cursor-pointer border-b border-slate-50 transition-colors',
-              style:{ background: isAct ? '#6366f115' : i%2===0 ? '#fff' : '#f8fafc' }
-            },
-              React.createElement('td',{className:'px-4 py-2'},
-                React.createElement('div',{className:'flex items-center gap-2'},
-                  React.createElement('div',{
-                    className:'w-3.5 h-3.5 rounded shrink-0 flex items-center justify-center',
-                    style:{border:'2px solid #6366f1',background:isAct?'#6366f1':'transparent'}
-                  }, isAct && React.createElement('span',{style:{color:'#fff',fontSize:8}},'✓')),
-                  React.createElement('span',{
-                    className:'font-medium max-w-xs truncate',
-                    style:{color:isAct?'#6366f1':'#1e293b'},
-                    title:r.nome
-                  }, r.nome||'—')
-                )
-              ),
-              React.createElement('td',{className:'px-4 py-2 text-slate-500 hidden sm:table-cell'},r.publico||'—'),
-              React.createElement('td',{className:'px-4 py-2 text-slate-500 hidden md:table-cell'},r.segmento||'—'),
-              React.createElement('td',{className:'px-4 py-2 text-right font-semibold tabular-nums',style:{color:isAct?'#6366f1':'#475569'}},r.count.toLocaleString('pt-BR')),
-              React.createElement('td',{className:'px-4 py-2 text-right text-slate-400 tabular-nums'},p.toFixed(1),'%')
-            );
-          })
+          ...(() => {
+            const tot = data.reduce((s,x)=>s+x.count,0);
+            return visible.map((r,i)=>{
+              const p   = tot>0 ? r.count/tot*100 : 0;
+              const isAct = colF?.has(r.nome);
+              return React.createElement('tr',{
+                key:r.nome||i,
+                onClick:()=>onToggle('_NomeProg',r.nome),
+                className:'cursor-pointer border-b border-slate-50 transition-colors',
+                style:{ background: isAct ? '#6366f115' : i%2===0 ? '#fff' : '#f8fafc' }
+              },
+                React.createElement('td',{className:'px-4 py-2'},
+                  React.createElement('div',{className:'flex items-center gap-2'},
+                    React.createElement('div',{
+                      className:'w-3.5 h-3.5 rounded shrink-0 flex items-center justify-center',
+                      style:{border:'2px solid #6366f1',background:isAct?'#6366f1':'transparent'}
+                    }, isAct && React.createElement('span',{style:{color:'#fff',fontSize:8}},'✓')),
+                    React.createElement('span',{
+                      className:'font-medium max-w-xs truncate',
+                      style:{color:isAct?'#6366f1':'#1e293b'},
+                      title:r.nome
+                    }, r.nome||'—')
+                  )
+                ),
+                React.createElement('td',{className:'px-4 py-2 text-slate-500 hidden sm:table-cell'},r.publico||'—'),
+                React.createElement('td',{className:'px-4 py-2 text-slate-500 hidden md:table-cell'},r.segmento||'—'),
+                React.createElement('td',{className:'px-4 py-2 text-right font-semibold tabular-nums',style:{color:isAct?'#6366f1':'#475569'}},r.count.toLocaleString('pt-BR')),
+                React.createElement('td',{className:'px-4 py-2 text-right text-slate-400 tabular-nums'},p.toFixed(1),'%')
+              );
+            });
+          })()
         )
       )
+    ),
+    sorted.length > 30 && React.createElement('div',{className:'px-4 py-2 border-t border-slate-100 text-center'},
+      React.createElement('button',{
+        onClick:()=>setExpanded(e=>!e),
+        className:'text-xs text-indigo-600 hover:text-indigo-800 font-medium'
+      }, expanded ? `▲ Mostrar menos` : `▼ Ver todos (${sorted.length} programas)`)
     )
   );
 }
@@ -3363,53 +3373,50 @@ function InscricoesView({ projects, token }) {
           if (actualKeys.includes(desired)) return desired;
           const n = normK(desired);
           if (normToActual[n]) return normToActual[n];
-          // partial match: desired normalized starts with actual (or vice versa)
-          const found = Object.entries(normToActual).find(([ak]) => n.startsWith(ak) || ak.startsWith(n));
+          // partial match: only when strings are similar in length (>=80%) to avoid
+          // e.g. "nome" matching "nome do programa"
+          const found = Object.entries(normToActual).find(([ak]) => {
+            const [longer, shorter] = ak.length >= n.length ? [ak,n] : [n,ak];
+            if (shorter.length / longer.length < 0.8) return false;
+            return n.startsWith(ak) || ak.startsWith(n);
+          });
           return found ? found[1] : null;
         }
-        // Build desired → actual map for all chart cols + special cols
+        // Build desired → actual map — only safe columns in extras (avoid ambiguous fuzzy hits)
         const allDesired = _IC.map(c=>c.col).concat([
-          'ID_do_Programa_ATS','Término','Idade',
-          'Nome do Programa','Nome do Processo','Programa','Processo','Título','Segmento','Público'
+          'ID_do_Programa_ATS','Término','Idade','Segmento','Público'
         ]);
         const cMap = {};
         for (const d of allDesired) { const a = resolveCol(d); if (a) cMap[d] = a; }
         console.log('[InscricoesView] cMap (first 8):', JSON.stringify(Object.fromEntries(Object.entries(cMap).slice(0,8))));
+        // Debug: lista todas as colunas reais do Parquet para identificar coluna de nome do programa
         const _dbgLines = [
-          `hyp exports: ${_hypExports}`,
-          `schemaColNames: ${schemaColNames ? `OK (${schemaColNames.length} cols) ex: ${schemaColNames.slice(0,3).join(', ')}` : 'NULL – falhou'}`,
-          `onComplete diag: ${_onCompleteDiag ? JSON.stringify(_onCompleteDiag) : 'nenhum batch recebido'}`,
-          `row[0] isArray: ${rawRows.length > 0 ? Array.isArray(rawRows[0]) : 'N/A'}`,
-          `row[0] first 5 keys: ${actualKeys.slice(0,5).join(', ')}`,
-          `row[0] first 3 vals: ${rawRows.length > 0 ? Object.values(rawRows[0]).slice(0,3).map(v=>String(v).slice(0,20)).join(' | ') : 'N/A'}`,
+          `=== COLUNAS REAIS DO PARQUET (${actualKeys.length}) ===`,
+          ...actualKeys.map((k,i)=>`${i+1}. "${k}" → ex: "${String(rawRows[0]?.[k]??'').slice(0,30)}"`),
+          '',
+          `=== cMap ===`,
+          ...Object.entries(cMap).map(([d,a])=>`${d} → ${a}`),
         ];
         setDbgCols(_dbgLines);
 
         setProg('Enriquecendo com dados do SharePoint...');
-        // Join por Nome do Programa (normalizado) em vez de ID_do_Programa_ATS
-        const _normNome = s => String(s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').trim();
+        // Join por ID_do_Programa_ATS (confiável); join por nome será ativado
+        // quando identificarmos a coluna correta no Parquet via debug
         const projMap = {};
         for (const p2 of (projects||[])) {
-          // tenta vários campos de nome do projeto no SP
-          const names = [
-            p2.title, p2.displayTitle, p2.name,
-            p2.pulseData?.['Nome do Programa'], p2.pulseData?.['Nome do Processo'],
-            p2.pulseData?.['Programa']
-          ].filter(Boolean);
-          for (const nm of names) projMap[_normNome(nm)] = p2;
+          const id = p2.pulseData?.['ID_do_Programa_ATS'];
+          if (id) projMap[String(id).trim()] = p2;
         }
         const enriched = rawRows.map(row => {
           const mapped = { ...row };
           for (const [des, act] of Object.entries(cMap)) { if (des !== act) mapped[des] = row[act]; }
-          // Nome do programa vindo do Parquet (tenta vários campos)
-          const parqNome = String(
-            mapped['Nome do Programa'] ?? mapped['Nome do Processo'] ??
-            mapped['Programa'] ?? mapped['Processo'] ?? mapped['Título'] ?? ''
-          ).trim();
-          const proj = projMap[_normNome(parqNome)] || null;
+          // Nome do programa: usa ID_do_Programa_ATS como chave de join com SP
+          // (coluna real do Parquet com nome do programa será adicionada quando identificada no debug)
+          const atsId = String(mapped['ID_do_Programa_ATS'] ?? '').trim();
+          const proj = projMap[atsId] || null;
           const termRaw = mapped['Término'] ?? '';
           const termY = termRaw ? String(termRaw).replace(/\.0$/,'').replace(/[^0-9]/g,'').slice(0,4) : '';
-          mapped._NomeProg = parqNome || proj?.title || proj?.displayTitle || '';
+          mapped._NomeProg = proj?.title || proj?.displayTitle || proj?.name || (atsId ? `Processo ${atsId}` : '');
           mapped._Publico  = proj?.publico  || mapped['Público'] || '';
           mapped._Segmento = proj?.pulseData?.['Segmento'] || mapped['Segmento'] || '';
           mapped._Idade    = _idadeBin(mapped['Idade'] ?? '');
