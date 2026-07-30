@@ -19,6 +19,10 @@
 <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdn.tailwindcss.com"></script>
+<script type="module">
+  import { parquetRead, parquetMetadata } from 'https://esm.sh/hyparquet@1';
+  window._hyparquet = { parquetRead, parquetMetadata };
+</script>
 <style>
   body { font-family:'Segoe UI',sans-serif; background:#f8fafc; }
   .fade-in { animation:fadeIn .25s ease; }
@@ -2988,6 +2992,280 @@ function parseParte4(raw) {
     .filter(r => r.chave || r.valor);
 }
 
+// ─── InscricoesView ───────────────────────────────────────────────────────────
+const _PARQUET_PATH = "/sites/Public/Documentos Partilhados/CIA/GeralCT/Indicadores CT/Bases dos projetos/Bases de vagas/base_app_parquet/Candidatos_consolidado.parquet";
+const _PARQUET_COLS = [
+  'Código','Perfil','Status em inscrição',
+  'Status em Assessments / Testes',
+  'Status Etapa 1','Status Etapa 2','Status Etapa 3','Status na Contratação',
+  'Identidade de gênero','Autodeclaração racial','Orientação sexual',
+  'Deficiência','Renda Familiar','Inglês declarado','Como ficou sabendo?',
+  'Curso','Instituição','Tipo de graduação','Tipo de ensino','Duração','Término',
+  'Idade','Estado','Região',
+  'Ciclo_Orcamentario','Status_Programa','ID_do_Programa_ATS','Nome_Programa'
+];
+const _IC = [ // chart definitions: col, label, group, top
+  { col:'_Publico',                          label:'Público',                 g:'prog',  top:30 },
+  { col:'_Segmento',                         label:'Segmento',                g:'prog',  top:30 },
+  { col:'Status_Programa',                   label:'Status do programa',      g:'prog',  top:20 },
+  { col:'Ciclo_Orcamentario',                label:'Ciclo orçamentário',      g:'prog',  top:20 },
+  { col:'Perfil',                            label:'Perfil',                  g:'proc',  top:20 },
+  { col:'Status em inscrição',               label:'Status em inscrição',     g:'proc',  top:20 },
+  { col:'Status em Assessments / Testes',    label:'Assessments',             g:'proc',  top:20 },
+  { col:'Status Etapa 1',                    label:'Status Etapa 1',          g:'proc',  top:20 },
+  { col:'Status Etapa 2',                    label:'Status Etapa 2',          g:'proc',  top:20 },
+  { col:'Status Etapa 3',                    label:'Status Etapa 3',          g:'proc',  top:20 },
+  { col:'Status na Contratação',             label:'Status na contratação',   g:'proc',  top:20 },
+  { col:'Identidade de gênero',              label:'Identidade de gênero',    g:'div',   top:20 },
+  { col:'Autodeclaração racial',             label:'Autodeclaração racial',   g:'div',   top:20 },
+  { col:'Orientação sexual',                 label:'Orientação sexual',       g:'div',   top:20 },
+  { col:'Deficiência',                       label:'PCD',                     g:'div',   top:20 },
+  { col:'Renda Familiar',                    label:'Renda familiar',          g:'div',   top:20 },
+  { col:'Inglês declarado',                  label:'Inglês declarado',        g:'div',   top:20 },
+  { col:'_Idade',                            label:'Faixa etária',            g:'div',   top:20 },
+  { col:'Como ficou sabendo?',               label:'Como ficou sabendo',      g:'div',   top:20 },
+  { col:'Tipo de graduação',                 label:'Tipo de graduação',       g:'form',  top:20 },
+  { col:'Tipo de ensino',                    label:'Tipo de ensino',          g:'form',  top:20 },
+  { col:'Duração',                           label:'Duração do curso',        g:'form',  top:20 },
+  { col:'_Termino',                          label:'Conclusão por ano',       g:'form',  top:20, yr:true },
+  { col:'Curso',                             label:'Cursos (Top 15)',         g:'form',  top:15 },
+  { col:'Instituição',                       label:'Instituições (Top 15)',   g:'form',  top:15 },
+  { col:'Estado',                            label:'Estado',                  g:'geo',   top:30 },
+  { col:'Região',                            label:'Região',                  g:'geo',   top:10 },
+];
+const _IG = [
+  { key:'prog', label:'📋 Programa' },
+  { key:'proc', label:'📊 Processo Seletivo' },
+  { key:'div',  label:'🌈 Diversidade & Perfil' },
+  { key:'form', label:'🎓 Formação' },
+  { key:'geo',  label:'📍 Localização' },
+];
+const _IDADE_BINS = [
+  ['Menos de 18',0,17],['18 a 21',18,21],['22 a 25',22,25],['26 a 29',26,29],
+  ['30 a 34',30,34],['35 a 39',35,39],['40 a 44',40,44],['45+',45,999]
+];
+function _idadeBin(v) {
+  const a = Number(v);
+  if (!v || isNaN(a)) return '';
+  const b = _IDADE_BINS.find(([,mn,mx]) => a >= mn && a <= mx);
+  return b ? b[0] : '';
+}
+
+function InscricoesChartTable({ chart, data, filters, onToggle, onClearCol }) {
+  const entries = data || [];
+  const totalV = entries.reduce((s,[,n]) => s+n, 0);
+  const colF = filters[chart.col];
+  const maxV = entries[0]?.[1] || 1;
+  return React.createElement('div', { className:'bg-white rounded-xl border border-slate-200 overflow-hidden flex flex-col' },
+    React.createElement('div', { className:'px-3 py-2 bg-slate-50 border-b border-slate-200 flex items-center justify-between shrink-0' },
+      React.createElement('span', { className:'text-xs font-semibold text-slate-700 truncate' }, chart.label),
+      colF?.size > 0 && React.createElement('button', {
+        onClick: () => onClearCol(chart.col),
+        className:'text-xs text-indigo-500 hover:text-indigo-700 ml-2 shrink-0'
+      }, '✕')
+    ),
+    React.createElement('div', { className:'overflow-y-auto flex-1', style:{ maxHeight:240 } },
+      entries.length === 0
+        ? React.createElement('p', { className:'text-xs text-slate-400 px-3 py-4 text-center' }, '(sem dados)')
+        : React.createElement('table', { className:'w-full text-xs' },
+            React.createElement('tbody', null,
+              entries.map(([val, cnt]) => {
+                const pct = totalV > 0 ? cnt/totalV*100 : 0;
+                const isAct = colF?.has(val);
+                const bw = `${cnt/maxV*100}%`;
+                return React.createElement('tr', {
+                  key: val,
+                  onClick: () => onToggle(chart.col, val),
+                  className:`cursor-pointer border-b border-slate-100 transition-colors ${isAct ? 'bg-indigo-50' : 'hover:bg-slate-50'}`
+                },
+                  React.createElement('td', { className:'px-2 py-1.5', style:{ maxWidth:170 } },
+                    React.createElement('div', { className:'flex items-center gap-1' },
+                      isAct && React.createElement('span', { className:'text-indigo-500 text-xs shrink-0' }, '✓'),
+                      React.createElement('span', { className:'truncate text-slate-700', title:val }, val || '—')
+                    ),
+                    React.createElement('div', { className:'mt-0.5 h-1 rounded bg-slate-100 overflow-hidden' },
+                      React.createElement('div', { className:`h-full rounded ${isAct ? 'bg-indigo-400' : 'bg-slate-300'}`, style:{ width:bw } })
+                    )
+                  ),
+                  React.createElement('td', { className:'px-2 py-1.5 text-right text-slate-600 whitespace-nowrap' }, cnt.toLocaleString('pt-BR')),
+                  React.createElement('td', { className:'px-2 py-1.5 text-right text-slate-400 whitespace-nowrap w-12' }, pct.toFixed(1),'%')
+                );
+              })
+            )
+          )
+    )
+  );
+}
+
+function InscricoesView({ projects, token }) {
+  const [status, setStatus] = useState('idle');
+  const [prog, setProg]   = useState('');
+  const [rows, setRows]   = useState([]);
+  const [filters, setFilters] = useState({});
+  const [collapsed, setCollapsed] = useState({});
+
+  useEffect(() => {
+    if (!token) return;
+    async function load() {
+      setStatus('loading');
+      try {
+        // Wait for hyparquet module (it's deferred)
+        let tries = 0;
+        while (!window._hyparquet && tries < 30) { await new Promise(r=>setTimeout(r,200)); tries++; }
+        if (!window._hyparquet) throw new Error('Módulo Parquet não disponível — recarregue a página.');
+
+        setProg('Baixando base de candidatos...');
+        const url = `https://ciadetalentos.sharepoint.com/sites/Public/_api/web/GetFileByServerRelativeUrl('${_PARQUET_PATH}')/$value`;
+        const res = await fetch(url, { headers:{ 'Authorization':`Bearer ${token}` } });
+        if (!res.ok) { const t = await res.text().catch(()=>''); throw new Error(`Erro SP ${res.status}: ${t.slice(0,200)}`); }
+
+        const cl = parseInt(res.headers.get('content-length')||'0');
+        const reader = res.body.getReader();
+        const chunks = []; let received = 0;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value); received += value.length;
+          const pct = cl > 0 ? `${Math.round(received/cl*100)}%` : `${(received/1048576).toFixed(1)}MB`;
+          setProg(`Baixando... ${pct}`);
+        }
+        const buf = new Uint8Array(received);
+        let p = 0; for (const c of chunks) { buf.set(c, p); p += c.length; }
+
+        setProg('Lendo Parquet...');
+        const asyncBuf = { byteLength: received, slice: (s,e) => Promise.resolve(buf.buffer.slice(s,e)) };
+        const allRows = [];
+        await window._hyparquet.parquetRead({
+          file: asyncBuf,
+          columns: _PARQUET_COLS,
+          onComplete: data => {
+            for (const r of data) allRows.push(r);
+            setProg(`Processando... ${allRows.length.toLocaleString('pt-BR')} registros`);
+          }
+        });
+
+        setProg('Enriquecendo com dados do SharePoint...');
+        const projMap = {};
+        for (const p2 of (projects||[])) {
+          const id = p2.pulseData?.['ID_do_Programa_ATS'];
+          if (id) projMap[String(id)] = p2;
+        }
+        const enriched = allRows.map(row => {
+          const proj = projMap[String(row['ID_do_Programa_ATS']??'')] || null;
+          const termRaw = row['Término'];
+          const termY = termRaw ? String(termRaw).replace(/\.0$/,'').replace(/[^0-9]/g,'').slice(0,4) : '';
+          return { ...row,
+            _Publico:  proj?.publico || '',
+            _Segmento: proj?.pulseData?.['Segmento'] || '',
+            _Idade:    _idadeBin(row['Idade']),
+            _Termino:  termY && /^\d{4}$/.test(termY) ? termY : ''
+          };
+        });
+        setRows(enriched);
+        setStatus('ready');
+      } catch(e) { setProg(e.message); setStatus('error'); }
+    }
+    load();
+  }, []);
+
+  const filteredRows = useMemo(() => {
+    const active = Object.entries(filters).filter(([,s]) => s?.size > 0);
+    if (!active.length) return rows;
+    return rows.filter(row => active.every(([col,vals]) => vals.has(String(row[col]??''))));
+  }, [rows, filters]);
+
+  const chartData = useMemo(() => {
+    if (!filteredRows.length) return {};
+    const maps = {}; for (const c of _IC) maps[c.col] = {};
+    for (const row of filteredRows) {
+      for (const c of _IC) {
+        const v = String(row[c.col]??'');
+        if (v && v !== 'null' && v !== 'undefined') maps[c.col][v] = (maps[c.col][v]||0)+1;
+      }
+    }
+    const res = {};
+    for (const c of _IC) {
+      let entries = Object.entries(maps[c.col]).sort((a,b) => b[1]-a[1]);
+      if (c.yr) entries = entries.filter(([k])=>/^\d{4}$/.test(k)).sort((a,b)=>Number(a[0])-Number(b[0]));
+      else entries = entries.slice(0, c.top);
+      res[c.col] = entries;
+    }
+    return res;
+  }, [filteredRows]);
+
+  const toggleFilter = useCallback((col, val) => {
+    setFilters(f => {
+      const s = new Set(f[col]||[]);
+      if (s.has(val)) s.delete(val); else s.add(val);
+      const nf = {...f};
+      if (s.size === 0) delete nf[col]; else nf[col] = s;
+      return nf;
+    });
+  }, []);
+
+  const clearCol = useCallback(col => setFilters(f => { const nf={...f}; delete nf[col]; return nf; }), []);
+  const clearAll = useCallback(() => setFilters({}), []);
+
+  const activeN = Object.values(filters).reduce((n,s) => n+(s?.size||0), 0);
+  const total   = filteredRows.length;
+  const totalAll = rows.length;
+
+  if (status==='loading'||status==='idle') return React.createElement('div',{className:'flex flex-col items-center justify-center py-24 gap-4'},
+    React.createElement('div',{className:'w-10 h-10 border-4 border-indigo-300 border-t-indigo-600 rounded-full animate-spin'}),
+    React.createElement('p',{className:'text-sm text-slate-500 max-w-xs text-center'},prog||'Inicializando...')
+  );
+  if (status==='error') return React.createElement('div',{className:'flex flex-col items-center justify-center py-24 gap-4 px-8'},
+    React.createElement('p',{className:'text-red-600 text-sm text-center'},'⚠️ ',prog),
+    React.createElement('button',{onClick:()=>{setStatus('idle');setProg('');},className:'text-sm text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg px-4 py-2'},'Tentar novamente')
+  );
+
+  return React.createElement('div',{className:'px-4 pb-10'},
+    // KPI + clear
+    React.createElement('div',{className:'flex items-center gap-6 py-4 border-b border-slate-200 mb-5 flex-wrap'},
+      React.createElement('div',null,
+        React.createElement('div',{className:'text-4xl font-bold text-slate-900'},total.toLocaleString('pt-BR')),
+        React.createElement('div',{className:'text-sm text-slate-500 mt-0.5'},
+          activeN > 0 ? `inscrições filtradas de ${totalAll.toLocaleString('pt-BR')}` : 'inscrições no total'
+        )
+      ),
+      activeN > 0 && React.createElement('button',{onClick:clearAll,className:'flex items-center gap-1.5 text-sm text-red-600 border border-red-200 hover:bg-red-50 rounded-lg px-3 py-1.5 transition'},
+        '✕ Limpar ',activeN,' filtro(s)'
+      ),
+      React.createElement('p',{className:'ml-auto text-xs text-slate-400 hidden sm:block'},'Clique em qualquer valor para filtrar · Múltipla seleção')
+    ),
+    // Groups of charts
+    ..._IG.map(grp => {
+      const charts = _IC.filter(c=>c.g===grp.key);
+      const isCollapsed = collapsed[grp.key];
+      const hasActive = charts.some(c=>filters[c.col]?.size>0);
+      return React.createElement('div',{key:grp.key,className:'mb-6'},
+        React.createElement('button',{
+          onClick: ()=>setCollapsed(x=>({...x,[grp.key]:!x[grp.key]})),
+          className:`w-full flex items-center justify-between py-2 mb-3 border-b border-slate-200`
+        },
+          React.createElement('span',{className:`text-sm font-bold ${hasActive ? 'text-indigo-700' : 'text-slate-700'}`},
+            grp.label, hasActive && React.createElement('span',{className:'ml-2 text-xs font-normal text-indigo-500'},'(filtrado)')
+          ),
+          React.createElement('span',{className:'text-xs text-slate-400'},isCollapsed?'▼ expandir':'▲ recolher')
+        ),
+        !isCollapsed && React.createElement('div',{
+          className:'grid gap-3',
+          style:{gridTemplateColumns:'repeat(auto-fill, minmax(260px, 1fr))'}
+        },
+          ...charts.map(chart => React.createElement(InscricoesChartTable,{
+            key: chart.col,
+            chart,
+            data: chartData[chart.col],
+            filters,
+            onToggle: toggleFilter,
+            onClearCol: clearCol
+          }))
+        )
+      );
+    })
+  );
+}
+
 // ─── App ──────────────────────────────────────────────────────────────────────
 function App() {
   const local = loadLocal();
@@ -4164,6 +4442,21 @@ function App() {
     }));
   }
 
+  // ── Inscrições module ──
+  if (module === 'inscricoes') {
+    return React.createElement("div", { className: "min-h-screen bg-slate-50" },
+      React.createElement(AppHeader, {
+        view: view, setView: setView, authState: authState, onSignOut: signOut,
+        projectCount: projects.length, loading: loading,
+        onRefresh: () => loadAll(authState.token),
+        module: module, onHome: () => setModule(null),
+        onBackupDownload: handleBackupDownload, onBackupUpload: handleBackupUpload
+      }),
+      saveMsgBanner, errorBanner,
+      React.createElement(InscricoesView, { projects: projects, token: authState.token })
+    );
+  }
+
   // ── Gestão module ──
   // Entity-aware data: switch between Analistas and Heads
   const isHeadView = entityView === 'head';
@@ -4316,7 +4609,7 @@ function AppHeader({
     className: "w-7 h-7 bg-indigo-600 rounded-lg flex items-center justify-center text-white text-xs font-bold"
   }, "CT"), /*#__PURE__*/React.createElement("span", {
     className: "text-base font-bold text-slate-800"
-  }, module === 'pulse' ? 'Pulse' : module === 'gestao' ? 'Gestão A&S' : module === 'calendar' ? 'Calendário' : module === 'analytics' ? 'Analytics' : module === 'clientes' ? 'Clientes × Frentes' : module === 'nps' ? 'NPS' : module === 'cx' ? 'CX — Analytics' : module === 'cx_atend' ? 'CX — Atendimento' : module === 'escopo' ? 'Mapa de Escopo A&S' : MODULE_CONFIGS[module]?.label || 'Alocação'), module === 'gestao' && projectCount > 0 && /*#__PURE__*/React.createElement("span", {
+  }, module === 'pulse' ? 'Pulse' : module === 'gestao' ? 'Gestão A&S' : module === 'calendar' ? 'Calendário' : module === 'analytics' ? 'Analytics' : module === 'clientes' ? 'Clientes × Frentes' : module === 'nps' ? 'NPS' : module === 'cx' ? 'CX — Analytics' : module === 'cx_atend' ? 'CX — Atendimento' : module === 'escopo' ? 'Mapa de Escopo A&S' : module === 'inscricoes' ? 'Pessoas Inscritas' : MODULE_CONFIGS[module]?.label || 'Alocação'), module === 'gestao' && projectCount > 0 && /*#__PURE__*/React.createElement("span", {
     className: "bg-indigo-100 text-indigo-700 text-xs px-2 py-0.5 rounded-full"
   }, projectCount, " proj.")), module === 'gestao' && /*#__PURE__*/React.createElement("nav", {
     className: "flex gap-1 flex-wrap flex-1 items-center"
@@ -4615,7 +4908,25 @@ function HomeScreen({
     className: "mt-6 flex items-center text-sm font-semibold text-orange-600 group-hover:text-orange-700"
   }, "Abrir Mapa ", /*#__PURE__*/React.createElement("span", {
     className: "ml-1.5"
-  }, "→"))), Object.values(MODULE_CONFIGS).filter(cfg => fullAccess || cfg.key === 'cd' && isCandD || cfg.key === 'fi' && isLatam || cfg.key === 'eb' && isEB).map(cfg => {
+  }, "→"))),
+  /*#__PURE__*/React.createElement("button", {
+    onClick: () => onSelect('inscricoes'),
+    className: "group bg-white rounded-2xl border-2 border-slate-200 hover:border-pink-400 hover:shadow-xl transition-all p-8 text-left"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "w-14 h-14 bg-pink-100 rounded-2xl flex items-center justify-center mb-5 group-hover:bg-pink-200 transition-colors"
+  }, /*#__PURE__*/React.createElement("svg", {
+    xmlns: "http://www.w3.org/2000/svg", className: "w-7 h-7 text-pink-600",
+    fill: "none", viewBox: "0 0 24 24", stroke: "currentColor", strokeWidth: "1.8"
+  }, /*#__PURE__*/React.createElement("path", { strokeLinecap: "round", strokeLinejoin: "round",
+    d: "M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z"
+  }))), /*#__PURE__*/React.createElement("h2", {
+    className: "text-xl font-bold text-slate-900 mb-2"
+  }, "Pessoas Inscritas"), /*#__PURE__*/React.createElement("p", {
+    className: "text-sm text-slate-500 leading-relaxed"
+  }, "Indicadores de candidatos inscritos nos processos: perfil, diversidade, formação, status e mais."), /*#__PURE__*/React.createElement("div", {
+    className: "mt-6 flex items-center text-sm font-semibold text-pink-600 group-hover:text-pink-700"
+  }, "Abrir Relatório ", /*#__PURE__*/React.createElement("span", { className: "ml-1.5" }, "→"))),
+  Object.values(MODULE_CONFIGS).filter(cfg => fullAccess || cfg.key === 'cd' && isCandD || cfg.key === 'fi' && isLatam || cfg.key === 'eb' && isEB).map(cfg => {
     const colors = {
       blue: {
         border: 'hover:border-blue-400',
@@ -15049,7 +15360,7 @@ function BtKanbanCard({ task, taskUrl, onDragStart, onDragEnd, isUpdating, onSel
 function BtKanbanColumn({ title, tasks, color, taskUrl, stageId, onDrop, isDragOver, onDragOver, onDragLeave, onDragStart, onDragEnd, updating, onSelect }) {
   const hex = (color && !color.startsWith('#') ? '#' : '') + (color || '64748b');
   return React.createElement('div', {
-    className: `flex flex-col gap-2 rounded-xl transition-all ${isDragOver ? 'ring-2 ring-indigo-400 ring-offset-1' : ''}`,
+    className: `h-full flex flex-col gap-2 rounded-xl transition-all ${isDragOver ? 'ring-2 ring-indigo-400 ring-offset-1' : ''}`,
     style: { width: '280px', minWidth: '280px' },
     onDragOver: e => { e.preventDefault(); onDragOver && onDragOver(stageId); },
     onDragLeave: onDragLeave,
@@ -15066,7 +15377,7 @@ function BtKanbanColumn({ title, tasks, color, taskUrl, stageId, onDrop, isDragO
     isDragOver && React.createElement('div', {
       className: 'border-2 border-dashed border-indigo-300 rounded-xl h-16 flex items-center justify-center text-indigo-400 text-xs font-medium bg-indigo-50'
     }, '⬇ Soltar aqui'),
-    React.createElement('div', { className: 'flex flex-col gap-2' },
+    React.createElement('div', { className: 'flex flex-col gap-2 overflow-y-auto flex-1 min-h-0 pr-0.5' },
       tasks.map(t => React.createElement(BtKanbanCard, {
         key: t.id, task: t, taskUrl,
         onDragStart, onDragEnd, onSelect,
@@ -15223,8 +15534,8 @@ function CdGerencialView({ projects, onSave, onPulseSave, spChoices, saving, isS
       }, '🔄')
     ),
     // Kanban board
-    React.createElement('div', { className: 'overflow-x-auto pb-6' },
-      React.createElement('div', { className: 'flex gap-4', style: { minWidth: 'max-content' } },
+    React.createElement('div', { className: 'overflow-x-scroll', style: { height: 'calc(100vh - 185px)' } },
+      React.createElement('div', { className: 'flex gap-4 h-full pb-3', style: { minWidth: 'max-content' } },
         showSemEtapa && React.createElement(BtKanbanColumn, {
           key: '__none__', title: '📌 Sem etapa', tasks: tasksByStage['0'] || [],
           color: '#94a3b8', taskUrl, stageId: '0', updating, onSelect, ...dragHandlers,
