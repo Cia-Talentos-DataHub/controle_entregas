@@ -3103,6 +3103,7 @@ function InscricoesView({ projects, token }) {
   const [rows, setRows]   = useState([]);
   const [filters, setFilters] = useState({});
   const [collapsed, setCollapsed] = useState({});
+  const [dbgCols, setDbgCols] = useState(null); // debug: actual parquet column names
 
   useEffect(() => {
     if (!token) return;
@@ -3146,7 +3147,9 @@ function InscricoesView({ projects, token }) {
 
         // Fuzzy column mapping: normalize (remove accents, lowercase) and find best match
         const actualKeys = rawRows.length > 0 ? Object.keys(rawRows[0]) : [];
+        console.log('[InscricoesView] Parquet columns (first 20):', actualKeys.slice(0,20));
         function normK(s) {
+          // use explicit unicode escapes for combining diacritical marks range
           return String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^a-z0-9]+/g,' ').trim();
         }
         const normToActual = {};
@@ -3163,6 +3166,8 @@ function InscricoesView({ projects, token }) {
         const allDesired = _IC.map(c=>c.col).concat(['ID_do_Programa_ATS','Término','Idade']);
         const cMap = {};
         for (const d of allDesired) { const a = resolveCol(d); if (a) cMap[d] = a; }
+        console.log('[InscricoesView] cMap (first 8):', JSON.stringify(Object.fromEntries(Object.entries(cMap).slice(0,8))));
+        setDbgCols(actualKeys.slice(0, 30));
 
         setProg('Enriquecendo com dados do SharePoint...');
         const projMap = {};
@@ -3255,6 +3260,14 @@ function InscricoesView({ projects, token }) {
         '✕ Limpar ',activeN,' filtro(s)'
       ),
       React.createElement('p',{className:'ml-auto text-xs text-slate-400 hidden sm:block'},'Clique em qualquer valor para filtrar · Múltipla seleção')
+    ),
+    // DEBUG: show actual parquet column names
+    dbgCols && React.createElement('details',{className:'mb-4 bg-amber-50 border border-amber-200 rounded-xl px-4 py-2 text-xs'},
+      React.createElement('summary',{className:'cursor-pointer font-semibold text-amber-700 py-1'},'🔍 Debug: colunas encontradas no Parquet (', dbgCols.length, ')'),
+      React.createElement('div',{className:'mt-2 text-amber-800 font-mono whitespace-pre-wrap'},
+        dbgCols.map((c,i)=>`${i+1}. "${c}"`).join('\n')
+      ),
+      React.createElement('button',{onClick:()=>setDbgCols(null),className:'mt-2 text-xs text-amber-600 underline'},'fechar')
     ),
     // Groups of charts
     ..._IG.map(grp => {
