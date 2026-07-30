@@ -3134,15 +3134,35 @@ function InscricoesView({ projects, token }) {
 
         setProg('Lendo Parquet...');
         const asyncBuf = { byteLength: received, slice: (s,e) => Promise.resolve(buf.buffer.slice(s,e)) };
-        const allRows = [];
+        const rawRows = [];
         await window._hyparquet.parquetRead({
           file: asyncBuf,
-          columns: _PARQUET_COLS,
+          // sem filtro de colunas — carrega tudo e faz fuzzy-match depois
           onComplete: data => {
-            for (const r of data) allRows.push(r);
-            setProg(`Processando... ${allRows.length.toLocaleString('pt-BR')} registros`);
+            for (const r of data) rawRows.push(r);
+            setProg(`Processando... ${rawRows.length.toLocaleString('pt-BR')} registros`);
           }
         });
+
+        // Fuzzy column mapping: normalize (remove accents, lowercase) and find best match
+        const actualKeys = rawRows.length > 0 ? Object.keys(rawRows[0]) : [];
+        function normK(s) {
+          return String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^a-z0-9]+/g,' ').trim();
+        }
+        const normToActual = {};
+        for (const k of actualKeys) normToActual[normK(k)] = k;
+        function resolveCol(desired) {
+          if (actualKeys.includes(desired)) return desired;
+          const n = normK(desired);
+          if (normToActual[n]) return normToActual[n];
+          // partial match: desired normalized starts with actual (or vice versa)
+          const found = Object.entries(normToActual).find(([ak]) => n.startsWith(ak) || ak.startsWith(n));
+          return found ? found[1] : null;
+        }
+        // Build desired → actual map for all chart cols + special cols
+        const allDesired = _IC.map(c=>c.col).concat(['ID_do_Programa_ATS','Término','Idade']);
+        const cMap = {};
+        for (const d of allDesired) { const a = resolveCol(d); if (a) cMap[d] = a; }
 
         setProg('Enriquecendo com dados do SharePoint...');
         const projMap = {};
@@ -3150,16 +3170,19 @@ function InscricoesView({ projects, token }) {
           const id = p2.pulseData?.['ID_do_Programa_ATS'];
           if (id) projMap[String(id)] = p2;
         }
-        const enriched = allRows.map(row => {
-          const proj = projMap[String(row['ID_do_Programa_ATS']??'')] || null;
-          const termRaw = row['Término'];
+        const enriched = rawRows.map(row => {
+          // Add aliases so chart code can use desired column names
+          const mapped = { ...row };
+          for (const [des, act] of Object.entries(cMap)) { if (des !== act) mapped[des] = row[act]; }
+          const atsId = String(mapped['ID_do_Programa_ATS'] ?? row[cMap['ID_do_Programa_ATS']] ?? '');
+          const proj = projMap[atsId] || null;
+          const termRaw = mapped['Término'] ?? '';
           const termY = termRaw ? String(termRaw).replace(/\.0$/,'').replace(/[^0-9]/g,'').slice(0,4) : '';
-          return { ...row,
-            _Publico:  proj?.publico || '',
-            _Segmento: proj?.pulseData?.['Segmento'] || '',
-            _Idade:    _idadeBin(row['Idade']),
-            _Termino:  termY && /^\d{4}$/.test(termY) ? termY : ''
-          };
+          mapped._Publico  = proj?.publico || '';
+          mapped._Segmento = proj?.pulseData?.['Segmento'] || '';
+          mapped._Idade    = _idadeBin(mapped['Idade'] ?? '');
+          mapped._Termino  = termY && /^\d{4}$/.test(termY) ? termY : '';
+          return mapped;
         });
         setRows(enriched);
         setStatus('ready');
