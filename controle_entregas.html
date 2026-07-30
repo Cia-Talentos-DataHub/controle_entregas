@@ -818,7 +818,7 @@ function calPhaseStatus(start, end, today) {
 }
 
 // Campos básicos para fetchSPList — PULSE_FIELDS carregados separadamente via fetchSPItemFull
-const SP_SELECT = ['Id', 'indice', 'Cliente', 'Status_Programa', 'Nome_Programa', 'Ciclo_Orcamentario', 'Title', 'KA', 'Quantidade_Vagas_Prevista', 'Trimestre_Orcamentario', 'Periodo', 'Codigo_Proposta', 'Publico', 'Pedra', 'Responsavel_Pedra', 'Tipo_Programa',
+const SP_SELECT = ['Id', 'indice', 'Cliente', 'Status_Programa', 'Nome_Programa', 'Ciclo_Orcamentario', 'Title', 'KA', 'Quantidade_Vagas_Prevista', 'Trimestre_Orcamentario', 'Periodo', 'Codigo_Proposta', 'Publico', 'Pedra', 'Responsavel_Pedra', 'Tipo_Programa', 'Segmento', 'Micro_Segmento',
 // FrenteNegocio adicionado dinamicamente em fetchSPList após confirmar existência no SP
 'Frente_Negocio',
 // coluna "Solução" (legado)
@@ -968,6 +968,8 @@ function parseSPItem(item) {
     semestre: item.Periodo || '',
     codigoProposta: item.Codigo_Proposta || '',
     publico: item.Publico || '',
+    segmento: item.Segmento || '',
+    microSegmento: item.Micro_Segmento || '',
     pedra: item.Pedra || '',
     respPedra: normRespPedra(item.Responsavel_Pedra || ''),
     tipoProg: item.Tipo_Programa || '',
@@ -3408,7 +3410,8 @@ function InscricoesView({ projects, token }) {
           .replace(/[^a-z0-9\s]/g,' ').replace(/\s+/g,' ').trim();
         const projMap = {};
         for (const p2 of (projects||[])) {
-          const nm = p2.pulseData?.['Nome_Programa'];
+          // project.title = item.Nome_Programa (see parseSPItem line 962)
+          const nm = p2.title || p2.pulseData?.['Nome_Programa'] || '';
           if (nm) projMap[_normN(nm)] = p2;
         }
         const enriched = rawRows.map(row => {
@@ -3420,9 +3423,9 @@ function InscricoesView({ projects, token }) {
           const parqNome = String(mapped['Nome_Programa'] ?? mapped[cMap['Nome_Programa']] ?? '').trim();
           const proj = projMap[_normN(parqNome)] || null;
           mapped._NomeProg = parqNome;
-          mapped._Publico       = proj?.pulseData?.['Público'] || proj?.publico || mapped['Público'] || '';
-          mapped._Segmento      = proj?.pulseData?.['Segmento'] || proj?.['Segmento'] || mapped['Segmento'] || '';
-          mapped._MicroSegmento = proj?.pulseData?.['Micro_Segmento'] || proj?.['Micro_Segmento'] || mapped['Micro_Segmento'] || '';
+          mapped._Publico       = proj?.publico       || proj?.pulseData?.['Publico']       || '';
+          mapped._Segmento      = proj?.segmento      || proj?.pulseData?.['Segmento']      || '';
+          mapped._MicroSegmento = proj?.microSegmento || proj?.pulseData?.['Micro_Segmento'] || '';
           mapped._Idade         = _idadeBin(mapped['Idade'] ?? '');
           mapped._Termino       = termY && /^\d{4}$/.test(termY) ? termY : '';
           return mapped;
