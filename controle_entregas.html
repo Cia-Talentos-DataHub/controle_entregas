@@ -3412,6 +3412,26 @@ function InscricoesView({ projects, token }) {
           const nm = p2.title || p2.pulseData?.['Nome_Programa'] || '';
           if (nm) projMap[_normN(nm)] = p2;
         }
+
+        // Fetch ALL SP fields ($select=*) to dynamically resolve Segmento/MicroSegmento
+        // (same approach as Mapa de Escopo — avoids 400 error from hardcoded unknown field names)
+        setProg('Buscando campos Segmento e Micro Segmento...');
+        let escopoMap = {};
+        let escopoFM = {};
+        try {
+          const escopoItems = await fetchEscopoItems(token, SP_SITE_URL);
+          escopoFM = buildEscopoFM(escopoItems);
+          for (const it of escopoItems) {
+            const nm = String(it[escopoFM.nome] || '').trim();
+            if (nm) escopoMap[_normN(nm)] = it;
+          }
+          console.log('[InscricoesView] escopoMap size:', Object.keys(escopoMap).length,
+            '| fm.segmento:', escopoFM.segmento, '| fm.microSeg:', escopoFM.microSeg);
+        } catch(e) {
+          console.warn('[InscricoesView] fetchEscopoItems failed (Segmento/MicroSeg will be empty):', e.message);
+        }
+
+        setProg('Processando registros...');
         const enriched = rawRows.map(row => {
           const mapped = { ...row };
           for (const [des, act] of Object.entries(cMap)) { if (des !== act) mapped[des] = row[act]; }
@@ -3420,10 +3440,14 @@ function InscricoesView({ projects, token }) {
           // Parquet.Nome_Programa ↔ SP.pulseData['Nome_Programa'] (mesma coluna, join direto)
           const parqNome = String(mapped['Nome_Programa'] ?? mapped[cMap['Nome_Programa']] ?? '').trim();
           const proj = projMap[_normN(parqNome)] || null;
+          const escopoIt = escopoMap[_normN(parqNome)] || null;
           mapped._NomeProg = parqNome;
           mapped._Publico       = proj?.publico       || proj?.pulseData?.['Publico']       || '';
-          mapped._Segmento      = proj?.segmento      || proj?.pulseData?.['Segmento']      || '';
-          mapped._MicroSegmento = proj?.microSegmento || proj?.pulseData?.['Micro_Segmento'] || '';
+          // Use dynamically-resolved field names from fetchEscopoItems ($select=*) to avoid 400 errors
+          mapped._Segmento      = (escopoIt && escopoFM.segmento ? String(escopoIt[escopoFM.segmento] || '') : '')
+                                  || proj?.pulseData?.['Segmento'] || '';
+          mapped._MicroSegmento = (escopoIt && escopoFM.microSeg  ? String(escopoIt[escopoFM.microSeg]  || '') : '')
+                                  || proj?.pulseData?.['Micro_Segmento'] || '';
           mapped._Idade         = _idadeBin(mapped['Idade'] ?? '');
           mapped._Termino       = termY && /^\d{4}$/.test(termY) ? termY : '';
           return mapped;
