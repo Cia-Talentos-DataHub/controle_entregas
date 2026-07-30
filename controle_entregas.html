@@ -20,8 +20,8 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdn.tailwindcss.com"></script>
 <script type="module">
-  import { parquetRead, parquetMetadata } from 'https://esm.sh/hyparquet@1';
-  window._hyparquet = { parquetRead, parquetMetadata };
+  import * as hyp from 'https://esm.sh/hyparquet@1';
+  window._hyparquet = hyp;
 </script>
 <style>
   body { font-family:'Segoe UI',sans-serif; background:#f8fafc; }
@@ -3136,29 +3136,51 @@ function InscricoesView({ projects, token }) {
         setProg('Lendo Parquet...');
         const asyncBuf = { byteLength: received, slice: (s,e) => Promise.resolve(buf.buffer.slice(s,e)) };
 
-        // Get column names from schema (hyparquet may return rows as arrays in some versions)
+        // Get column names from Parquet schema (hyparquet sometimes returns rows as arrays)
         let schemaColNames = null;
+        const _hypExports = Object.keys(window._hyparquet).join(', ');
         if (window._hyparquet.parquetMetadata) {
           try {
             const meta = await window._hyparquet.parquetMetadata(asyncBuf);
-            // Leaf schema nodes (no num_children) are the actual columns; first node is root
-            schemaColNames = (meta.schema || []).filter(s => !s.num_children).map(s => s.name);
-            console.log('[InscricoesView] Schema cols (first 10):', schemaColNames.slice(0,10).join(', '));
-          } catch(metaErr) {
-            console.warn('[InscricoesView] parquetMetadata failed:', metaErr);
-          }
+            const elems = Array.isArray(meta?.schema) ? meta.schema : [];
+            const leafCols = elems.filter(s => !s.num_children).map(s => s.name).filter(Boolean);
+            if (leafCols.length > 0) schemaColNames = leafCols;
+          } catch(metaErr) { console.warn('[parquetMetadata]', metaErr.message); }
+        }
+        if (!schemaColNames && window._hyparquet.parquetSchema) {
+          try {
+            const sc = await window._hyparquet.parquetSchema(asyncBuf);
+            const fields = sc?.fields || sc?.children || [];
+            const names = fields.map(f => f.name || f.element?.name).filter(Boolean);
+            if (names.length > 0) schemaColNames = names;
+          } catch(e) { console.warn('[parquetSchema]', e.message); }
         }
 
         const rawRows = [];
+        let _onCompleteDiag = null; // capture first-call diagnostic
         await window._hyparquet.parquetRead({
           file: asyncBuf,
-          // sem filtro de colunas — carrega tudo e faz fuzzy-match depois
           onComplete: data => {
+            // Diagnose first batch
+            if (!_onCompleteDiag) {
+              const d0 = Array.isArray(data) ? data[0] : null;
+              _onCompleteDiag = {
+                dataIsArr: Array.isArray(data),
+                dataLen: Array.isArray(data) ? data.length : '?',
+                d0IsArr: d0 !== null ? Array.isArray(d0) : 'N/A',
+                d0Keys: d0 ? Object.keys(d0).slice(0,5).join(',') : 'N/A',
+                d0Vals: d0 ? (Array.isArray(d0) ? d0.slice(0,3).map(String).join('|') : Object.values(d0).slice(0,3).map(String).join('|')) : 'N/A',
+              };
+            }
             for (const r of data) {
-              // If hyparquet returns rows as arrays (positional), convert to named objects
-              if (Array.isArray(r) && schemaColNames) {
+              const rIsArr = Array.isArray(r);
+              // Also handle plain objects with numeric string keys {"0":v,"1":v,...}
+              const rIsNumObj = !rIsArr && r !== null && typeof r === 'object' && '0' in r;
+              if ((rIsArr || rIsNumObj) && schemaColNames) {
                 const obj = {};
-                for (let i = 0; i < schemaColNames.length; i++) obj[schemaColNames[i]] = r[i];
+                for (let i = 0; i < schemaColNames.length; i++) {
+                  obj[schemaColNames[i]] = rIsArr ? r[i] : r[String(i)];
+                }
                 rawRows.push(obj);
               } else {
                 rawRows.push(r);
@@ -3190,7 +3212,15 @@ function InscricoesView({ projects, token }) {
         const cMap = {};
         for (const d of allDesired) { const a = resolveCol(d); if (a) cMap[d] = a; }
         console.log('[InscricoesView] cMap (first 8):', JSON.stringify(Object.fromEntries(Object.entries(cMap).slice(0,8))));
-        setDbgCols(actualKeys.slice(0, 30));
+        const _dbgLines = [
+          `hyp exports: ${_hypExports}`,
+          `schemaColNames: ${schemaColNames ? `OK (${schemaColNames.length} cols) ex: ${schemaColNames.slice(0,3).join(', ')}` : 'NULL – falhou'}`,
+          `onComplete diag: ${_onCompleteDiag ? JSON.stringify(_onCompleteDiag) : 'nenhum batch recebido'}`,
+          `row[0] isArray: ${rawRows.length > 0 ? Array.isArray(rawRows[0]) : 'N/A'}`,
+          `row[0] first 5 keys: ${actualKeys.slice(0,5).join(', ')}`,
+          `row[0] first 3 vals: ${rawRows.length > 0 ? Object.values(rawRows[0]).slice(0,3).map(v=>String(v).slice(0,20)).join(' | ') : 'N/A'}`,
+        ];
+        setDbgCols(_dbgLines);
 
         setProg('Enriquecendo com dados do SharePoint...');
         const projMap = {};
@@ -3286,7 +3316,7 @@ function InscricoesView({ projects, token }) {
     ),
     // DEBUG: show actual parquet column names
     dbgCols && React.createElement('details',{className:'mb-4 bg-amber-50 border border-amber-200 rounded-xl px-4 py-2 text-xs'},
-      React.createElement('summary',{className:'cursor-pointer font-semibold text-amber-700 py-1'},'🔍 Debug: colunas encontradas no Parquet (', dbgCols.length, ')'),
+      React.createElement('summary',{className:'cursor-pointer font-semibold text-amber-700 py-1'},'🔍 Debug (', dbgCols.length, ' linhas)'),
       React.createElement('div',{className:'mt-2 text-amber-800 font-mono whitespace-pre-wrap'},
         dbgCols.map((c,i)=>`${i+1}. "${c}"`).join('\n')
       ),
