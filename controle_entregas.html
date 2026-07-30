@@ -3007,6 +3007,7 @@ const _PARQUET_COLS = [
 const _IC = [ // chart definitions: col, label, group, top
   { col:'_Publico',                          label:'Público',                 g:'prog',  top:30 },
   { col:'_Segmento',                         label:'Segmento',                g:'prog',  top:30 },
+  { col:'_MicroSegmento',                    label:'Micro segmento',          g:'prog',  top:30 },
   { col:'Status_Programa',                   label:'Status do programa',      g:'prog',  top:20 },
   { col:'Ciclo_Orcamentario',                label:'Ciclo orçamentário',      g:'prog',  top:20 },
   { col:'Perfil',                            label:'Perfil',                  g:'proc',  top:20 },
@@ -3262,12 +3263,13 @@ function InscricoesProgramasTable({ data, filters, onToggle, onClearCol }) {
 }
 
 function InscricoesView({ projects, token }) {
-  const [status, setStatus] = useState('idle');
-  const [prog, setProg]   = useState('');
-  const [rows, setRows]   = useState([]);
-  const [filters, setFilters] = useState({});
+  const [status, setStatus]     = useState('idle');
+  const [prog, setProg]         = useState('');
+  const [rows, setRows]         = useState([]);
+  const [filters, setFilters]   = useState({});
   const [collapsed, setCollapsed] = useState({});
-  const [dbgCols, setDbgCols] = useState(null); // debug: actual parquet column names
+  const [dbgCols, setDbgCols]   = useState(null);
+  const [colAnalysis, setColAnalysis] = useState(null); // colunas do Parquet sem gráfico
 
   useEffect(() => {
     if (!token) return;
@@ -3416,14 +3418,36 @@ function InscricoesView({ projects, token }) {
           const proj = projMap[atsId] || null;
           const termRaw = mapped['Término'] ?? '';
           const termY = termRaw ? String(termRaw).replace(/\.0$/,'').replace(/[^0-9]/g,'').slice(0,4) : '';
-          mapped._NomeProg = proj?.title || proj?.displayTitle || proj?.name || (atsId ? `Processo ${atsId}` : '');
-          mapped._Publico  = proj?.publico  || mapped['Público'] || '';
-          mapped._Segmento = proj?.pulseData?.['Segmento'] || mapped['Segmento'] || '';
-          mapped._Idade    = _idadeBin(mapped['Idade'] ?? '');
-          mapped._Termino  = termY && /^\d{4}$/.test(termY) ? termY : '';
+          mapped._NomeProg      = proj?.pulseData?.['Nome_Programa'] || proj?.title || proj?.displayTitle || (atsId ? `Processo ${atsId}` : '');
+          mapped._Publico       = proj?.pulseData?.['Público'] || proj?.publico || mapped['Público'] || '';
+          mapped._Segmento      = proj?.pulseData?.['Segmento'] || mapped['Segmento'] || '';
+          mapped._MicroSegmento = proj?.pulseData?.['Micro_Segmento'] || mapped['Micro_Segmento'] || '';
+          mapped._Idade         = _idadeBin(mapped['Idade'] ?? '');
+          mapped._Termino       = termY && /^\d{4}$/.test(termY) ? termY : '';
           return mapped;
         });
         setRows(enriched);
+
+        // ── Análise de colunas não mapeadas ──────────────────────────────────
+        const icActual = new Set(Object.values(cMap));
+        // colunas internas _XX não fazem parte do Parquet
+        const notMapped = actualKeys.filter(k => !icActual.has(k));
+        if (notMapped.length > 0 && enriched.length > 0) {
+          const sampleSize = Math.min(enriched.length, 10000);
+          const analysis = notMapped.map(col => {
+            const freq = {};
+            for (let i = 0; i < sampleSize; i++) {
+              const v = String(enriched[i][col]??'');
+              if (v && v !== 'null' && v !== 'undefined' && v !== '') freq[v] = (freq[v]||0)+1;
+            }
+            const top = Object.entries(freq).sort((a,b)=>b[1]-a[1]).slice(0,5);
+            const distinct = Object.keys(freq).length;
+            return { col, distinct, top, sample: sampleSize };
+          }).filter(a => a.distinct > 0 && a.distinct <= 500) // excluir colunas com muitos valores únicos (IDs) ou vazias
+            .sort((a,b) => a.distinct - b.distinct); // mais categóricas primeiro
+          setColAnalysis(analysis);
+        }
+
         setStatus('ready');
       } catch(e) { setProg(e.message); setStatus('error'); }
     }
@@ -3436,24 +3460,39 @@ function InscricoesView({ projects, token }) {
     return rows.filter(row => active.every(([col,vals]) => vals.has(String(row[col]??''))));
   }, [rows, filters]);
 
+  // Faceted filtering: each chart computes its data excluding its OWN filter,
+  // so the user can always see all options and select multiple items.
   const chartData = useMemo(() => {
-    if (!filteredRows.length) return {};
-    const maps = {}; for (const c of _IC) maps[c.col] = {};
-    for (const row of filteredRows) {
-      for (const c of _IC) {
-        const v = String(row[c.col]??'');
-        if (v && v !== 'null' && v !== 'undefined') maps[c.col][v] = (maps[c.col][v]||0)+1;
-      }
-    }
+    if (!rows.length) return {};
+    const activeFilters = Object.entries(filters).filter(([,s]) => s?.size > 0);
+
+    // Cache: for a given excludeCol, get rows filtered by all OTHER active filters
+    const srcCache = {};
+    const getSource = (excludeCol) => {
+      if (srcCache[excludeCol]) return srcCache[excludeCol];
+      const others = activeFilters.filter(([c]) => c !== excludeCol);
+      const src = others.length
+        ? rows.filter(row => others.every(([c,vals]) => vals.has(String(row[c]??''))))
+        : rows;
+      srcCache[excludeCol] = src;
+      return src;
+    };
+
     const res = {};
     for (const c of _IC) {
-      let entries = Object.entries(maps[c.col]).sort((a,b) => b[1]-a[1]);
+      const src = getSource(c.col);
+      const map = {};
+      for (const row of src) {
+        const v = String(row[c.col]??'');
+        if (v && v !== 'null' && v !== 'undefined') map[v] = (map[v]||0)+1;
+      }
+      let entries = Object.entries(map).sort((a,b) => b[1]-a[1]);
       if (c.yr) entries = entries.filter(([k])=>/^\d{4}$/.test(k)).sort((a,b)=>Number(a[0])-Number(b[0]));
       else entries = entries.slice(0, c.top);
       res[c.col] = entries;
     }
     return res;
-  }, [filteredRows]);
+  }, [rows, filters]);
 
   const toggleFilter = useCallback((col, val) => {
     setFilters(f => {
@@ -3552,7 +3591,49 @@ function InscricoesView({ projects, token }) {
           }))
         )
       );
-    })
+    }),
+    // ── Análise de colunas não mapeadas ─────────────────────────────────────
+    colAnalysis && colAnalysis.length > 0 && React.createElement('details',{
+      className:'mt-8 bg-white rounded-2xl shadow-sm overflow-hidden',
+      style:{border:'1px solid #6366f133',borderTop:'3px solid #6366f1'}
+    },
+      React.createElement('summary',{
+        className:'px-4 py-3 cursor-pointer font-bold text-sm flex items-center gap-2',
+        style:{background:'#eef2ff',color:'#6366f1'}
+      },'🔎 Colunas do Parquet sem gráfico (', colAnalysis.length, ') — clique para avaliar inclusão'),
+      React.createElement('div',{className:'p-4'},
+        React.createElement('p',{className:'text-xs text-slate-500 mb-3'},
+          'Colunas com até 500 valores distintos (excluídas colunas de ID/livre). Amostra de 10.000 registros.'
+        ),
+        React.createElement('div',{
+          className:'grid gap-3',
+          style:{gridTemplateColumns:'repeat(auto-fill, minmax(280px,1fr))'}
+        },
+          ...colAnalysis.map(a => React.createElement('div',{
+            key:a.col,
+            className:'bg-slate-50 rounded-xl p-3 border border-slate-200'
+          },
+            React.createElement('div',{className:'flex items-center justify-between mb-2'},
+              React.createElement('span',{className:'text-xs font-bold text-slate-700'},a.col),
+              React.createElement('span',{className:'text-xs text-slate-400'},a.distinct,' valores distintos')
+            ),
+            React.createElement('div',{className:'space-y-1'},
+              ...a.top.map(([v,n])=> React.createElement('div',{
+                key:v,
+                className:'flex items-center gap-2 text-xs'
+              },
+                React.createElement('div',{
+                  className:'h-1.5 rounded-full bg-indigo-300 shrink-0',
+                  style:{width:`${Math.round(n/a.top[0][1]*60)}px`}
+                }),
+                React.createElement('span',{className:'text-slate-600 truncate',title:v},v),
+                React.createElement('span',{className:'text-slate-400 ml-auto shrink-0'},n.toLocaleString('pt-BR'))
+              ))
+            )
+          ))
+        )
+      )
+    )
   );
 }
 
