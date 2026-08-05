@@ -15608,7 +15608,13 @@ function EscopoView({ authState, projects }) {
       React.createElement(Sec, { title: 'Periodicidade das Contratações', icon: '🔄' },
         periodicCounts.length
           ? React.createElement('div', null, ...periodicCounts.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total, color: '#14b8a6' })))
-          : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados')
+          : React.createElement('div', null,
+              React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados'),
+              React.createElement('p', { className: 'text-xs text-slate-300 mt-1 font-mono' },
+                'campo SP: ', fm.periodic || '(não resolvido)',
+                ' | itens A&S: ', filtered.length
+              )
+            )
       )
     ),
 
