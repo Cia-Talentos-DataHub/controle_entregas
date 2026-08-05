@@ -15240,7 +15240,7 @@ function buildEscopoFM(items) {
   return {
     nome:         resolve('nomeprograma')          || 'Nome_Programa',
     cliente:      resolve('cliente')               || 'Cliente',
-    assessments:  resolve('assessmentsutilizados') || 'Assessments_Utilizados',
+    assessments:  resolve('assessments') || resolve('assessmentsutilizados') || 'Assessments',
     segmento:     resolve('segmento')              || 'Segmento',
     microSeg:     resolve('microsegmento')         || 'Micro_Segmento',
     periodic:     resolve('periodicidadecontrat')  || 'Periodicidade_contratacoes',
@@ -15271,7 +15271,7 @@ function buildEscopoFM(items) {
     pctEfetiv:    resolve('efetivacaoestag')       || resolve('efetivacao')  || 'pct_efetivacao',
     cargoFinal:   resolve('cargonofinal')          || resolve('cargofinal')  || 'Cargo_final',
     presencial:   resolve('temetapapresenci')      || resolve('etapapresenc')|| 'Etapa_presencial',
-    arcouCusto:   resolve('empresaarcou')          || 'Empresa_arcou',
+    arcouCusto:   resolve('aempresaarcou') || resolve('empresaarcou') || 'Aempresaarcoucomoscustosdoscandi',
     politicaCusto:resolve('qualfoiapolitica')      || resolve('politicadec') || 'Politica_custos',
     tempoExiste:  resolve('haquantotempoexiste')   || resolve('haquantotempo')|| 'Tempo_programa',
     ciclo:        resolve('cicloorcamentario')      || 'Ciclo_Orcamentario',
@@ -15724,20 +15724,23 @@ function EscopoView({ authState, projects }) {
         React.createElement(YNBar, { yes: presencial.yes, no: presencial.no })
       ),
       React.createElement(Sec, { title: 'Empresa Arcou com Custos', icon: '💰' },
-        React.createElement(YNBar, { yes: arcou.yes, no: arcou.no }),
-        arcou.yes > 0 && React.createElement('div', { className: 'mt-3 space-y-1' },
-          React.createElement('div', { className: 'text-xs text-slate-400 font-medium mb-1' }, 'Política de custos:'),
-          ...countVals('politicaCusto', false).slice(0, 4).map(([l, c]) =>
-            React.createElement('div', { key: l, className: 'text-xs flex justify-between bg-slate-50 px-2 py-1 rounded' },
-              React.createElement('span', { className: 'text-slate-600 truncate mr-2', title: l }, l),
-              React.createElement('span', { className: 'text-slate-400 shrink-0' }, c)
-            )
-          )
-        )
+        React.createElement(YNBar, { yes: arcou.yes, no: arcou.no })
       ),
       React.createElement(Sec, { title: 'Auxílio Mudança', icon: '🚚' },
         React.createElement(YNBar, { yes: auxilio.yes, no: auxilio.no })
       )
+    ),
+
+    // Política de custos (etapa presencial) — seção independente
+    React.createElement(Sec, { title: 'Qual foi a política de custos? (etapa presencial)', icon: '📋' },
+      (() => {
+        const politicaCounts = countVals('politicaCusto', false);
+        return politicaCounts.length
+          ? React.createElement('div', null, ...politicaCounts.slice(0, 8).map(([l, c]) =>
+              React.createElement(HBar, { key: l, label: l, count: c, total, color: '#0ea5e9' })
+            ))
+          : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados');
+      })()
     ),
 
     // Tabela de processos
