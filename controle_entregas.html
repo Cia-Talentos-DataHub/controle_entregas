@@ -15237,6 +15237,14 @@ function buildEscopoFM(items) {
       return nk === normPat || (normPat.length >= 8 && nk.startsWith(normPat.slice(0, Math.min(14, normPat.length))));
     }) || null;
   }
+  // Debug: log key resolutions for fields que costumam dar problema
+  const _dbgPeriodic   = resolve('periodicidadecontrat')  || 'Periodicidade_contratacoes';
+  const _dbgFrenteNeg  = resolve('frenegocio') || resolve('frente_negocio') || resolve('frenegoc') || resolve('frentenegocio') || 'Frente_Negocio';
+  const _dbgAssessments = resolve('assessments') || resolve('assessmentsutilizados') || 'Assessments';
+  console.log('[buildEscopoFM] SP keys total:', allKeys.length,
+    '\n  periodic →', _dbgPeriodic, '| val[0]:', items[0][_dbgPeriodic],
+    '\n  frenteNeg →', _dbgFrenteNeg, '| val[0]:', items[0][_dbgFrenteNeg],
+    '\n  assessments →', _dbgAssessments, '| val[0]:', items[0][_dbgAssessments]);
   return {
     nome:         resolve('nomeprograma')          || 'Nome_Programa',
     cliente:      resolve('cliente')               || 'Cliente',
@@ -15275,7 +15283,7 @@ function buildEscopoFM(items) {
     politicaCusto:resolve('qualfoiapolitica')      || resolve('politicadec') || 'Politica_custos',
     tempoExiste:  resolve('haquantotempoexiste')   || resolve('haquantotempo')|| 'Tempo_programa',
     ciclo:        resolve('cicloorcamentario')      || 'Ciclo_Orcamentario',
-    frenteNeg:    resolve('frenegocio')            || resolve('frente_negocio') || resolve('frenegoc') || 'Frente_Negocio',
+    frenteNeg:    resolve('frenegocio')            || resolve('frente_negocio') || resolve('frenegoc') || resolve('frentenegocio') || 'Frente_Negocio',
   };
 }
 
@@ -15340,15 +15348,25 @@ function EscopoView({ authState, projects }) {
 
   const filtered = useMemo(() => {
     if (!enrichedItems.length) return [];
-    return enrichedItems.filter(it => {
-      // Filtro fixo: apenas projetos de A&S — cruza por Nome_Programa com projects
+    const result = enrichedItems.filter(it => {
+      // Filtro fixo: apenas projetos de A&S
+      // Estratégia dual: primeiro tenta cruzar por Nome_Programa com projects;
+      // fallback: aceita pelo campo frenteNeg do próprio escopo (cobre nomes não coincidentes)
       const nome = _normN(String(it[fm.nome] || ''));
-      if (!nome || !asNomes.has(nome)) return false;
+      if (!nome) return false;
+      if (!asNomes.has(nome)) {
+        const frente = _normN(String(it[fm.frenteNeg] || ''));
+        if (!frente.includes('atracao') || !frente.includes('selecao')) return false;
+      }
       if (fSeg.size    > 0 && !fSeg.has(it[fm.segmento]  || '')) return false;
       if (fCiclo.size  > 0 && !fCiclo.has(it[fm.ciclo]   || '')) return false;
       if (fPublico.size > 0 && !fPublico.has(it._publico  || '')) return false;
       return true;
     });
+    console.log('[EscopoView] filtered A&S:', result.length,
+      '| fm.periodic:', fm.periodic,
+      '| sample periodic:', result.slice(0, 5).map(it => it[fm.periodic]));
+    return result;
   }, [enrichedItems, fSeg, fCiclo, fPublico, fm, asNomes]);
 
   function g(it, key) {
