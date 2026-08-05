@@ -15286,7 +15286,6 @@ function EscopoView({ authState }) {
   const [showTable, setShowTable] = useState(false);
   const [fSeg, setFSeg] = useState('');
   const [fCiclo, setFCiclo] = useState('');
-  const [fFrente, setFFrente] = useState('');
 
   useEffect(() => {
     if (!authState?.token) return;
@@ -15302,12 +15301,14 @@ function EscopoView({ authState }) {
   const filtered = useMemo(() => {
     if (!items) return [];
     return items.filter(it => {
+      // Filtro fixo: apenas projetos de A&S (Atração e Seleção)
+      const frente = String(it[fm.frenteNeg] || '').toLowerCase();
+      if (!(frente.includes('atra') && frente.includes('sele'))) return false;
       if (fSeg   && (it[fm.segmento]  || '') !== fSeg)   return false;
       if (fCiclo && (it[fm.ciclo]     || '') !== fCiclo)  return false;
-      if (fFrente && (it[fm.frenteNeg]|| '') !== fFrente) return false;
       return true;
     });
-  }, [items, fSeg, fCiclo, fFrente, fm]);
+  }, [items, fSeg, fCiclo, fm]);
 
   function g(it, key) {
     const f = fm[key]; return f ? (it[f] ?? null) : null;
@@ -15401,10 +15402,13 @@ function EscopoView({ authState }) {
   const total = filtered.length;
   const allItems = items || [];
 
-  // Opções de filtro derivadas de TODOS os itens (não apenas filtered)
-  const segOpts    = [...new Set(allItems.map(it => it[fm.segmento]  ).filter(Boolean))].sort();
-  const cicloOpts  = [...new Set(allItems.map(it => it[fm.ciclo]     ).filter(Boolean))].sort();
-  const frenteOpts = [...new Set(allItems.map(it => it[fm.frenteNeg] ).filter(Boolean))].sort();
+  // Opções de filtro derivadas apenas dos itens A&S (base já pré-filtrada)
+  const asBase     = allItems.filter(it => {
+    const frente = String(it[fm.frenteNeg] || '').toLowerCase();
+    return frente.includes('atra') && frente.includes('sele');
+  });
+  const segOpts    = [...new Set(asBase.map(it => it[fm.segmento]  ).filter(Boolean))].sort();
+  const cicloOpts  = [...new Set(asBase.map(it => it[fm.ciclo]     ).filter(Boolean))].sort();
 
   const segCounts       = countVals('segmento', false);
   const microCounts     = countVals('microSeg', false);
@@ -15439,7 +15443,7 @@ function EscopoView({ authState }) {
     ? filtered.filter(it => divMetas.some(d => { const v = String(g(it, d.textKey) || '').trim(); return v && v !== '-' && v !== '—'; })).length
     : 0;
 
-  const activeFilters = [fSeg && `Seg: ${fSeg}`, fCiclo && `Ciclo: ${fCiclo}`, fFrente && `Frente: ${fFrente}`].filter(Boolean);
+  const activeFilters = [fSeg && `Seg: ${fSeg}`, fCiclo && `Ciclo: ${fCiclo}`].filter(Boolean);
 
   // ── Render ──
   return React.createElement('div', { className: 'max-w-7xl mx-auto px-4 py-6 space-y-5 fade-in' },
@@ -15464,7 +15468,6 @@ function EscopoView({ authState }) {
         ...[
           { label: 'Segmento', val: fSeg,    set: setFSeg,    opts: segOpts },
           { label: 'Ciclo',    val: fCiclo,  set: setFCiclo,  opts: cicloOpts },
-          { label: 'Frente',   val: fFrente, set: setFFrente, opts: frenteOpts },
         ].map(({ label, val, set, opts }) =>
           React.createElement('div', { key: label, className: 'flex items-center gap-1' },
             React.createElement('label', { className: 'text-xs text-slate-400' }, label + ':'),
@@ -15477,8 +15480,8 @@ function EscopoView({ authState }) {
             )
           )
         ),
-        (fSeg || fCiclo || fFrente) && React.createElement('button', {
-          onClick: () => { setFSeg(''); setFCiclo(''); setFFrente(''); },
+        (fSeg || fCiclo) && React.createElement('button', {
+          onClick: () => { setFSeg(''); setFCiclo(''); },
           className: 'text-xs text-slate-400 hover:text-red-500 transition px-1'
         }, '✕ limpar')
       )
