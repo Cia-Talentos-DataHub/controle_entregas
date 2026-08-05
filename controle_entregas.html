@@ -2994,6 +2994,7 @@ function parseParte4(raw) {
 
 // ─── InscricoesView ───────────────────────────────────────────────────────────
 const _PARQUET_PATH = "/sites/Public/Documentos Partilhados/CIA/GeralCT/Indicadores CT/Bases dos projetos/Bases de vagas/base_app_parquet/Candidatos_consolidado.parquet";
+const _VAGAS_PARQUET_PATH = "/sites/Public/Documentos Partilhados/CIA/GeralCT/Indicadores CT/Bases dos projetos/Bases de vagas/base_app_parquet/Vagas_consolidado.parquet";
 const _PARQUET_COLS = [
   'Código','Perfil','Status em inscrição',
   'Status em Assessments / Testes',
@@ -15227,6 +15228,107 @@ async function fetchEscopoItems(token, siteUrl) {
   return items;
 }
 
+// ─── Vagas Parquet loader ─────────────────────────────────────────────────────
+async function fetchVagasParquet(token, onProgress) {
+  let tries = 0;
+  while (!window._hyparquet && tries < 30) { await new Promise(r => setTimeout(r, 200)); tries++; }
+  if (!window._hyparquet) throw new Error('Módulo Parquet não disponível.');
+
+  onProgress && onProgress('Baixando base de vagas...');
+  const url = `https://ciadetalentos.sharepoint.com/sites/Public/_api/web/GetFileByServerRelativeUrl('${_VAGAS_PARQUET_PATH}')/$value`;
+  const res = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` } });
+  if (!res.ok) { const t = await res.text().catch(() => ''); throw new Error(`Erro SP ${res.status}: ${t.slice(0, 200)}`); }
+
+  const cl = parseInt(res.headers.get('content-length') || '0');
+  const reader = res.body.getReader();
+  const chunks = []; let received = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value); received += value.length;
+    const pct = cl > 0 ? `${Math.round(received / cl * 100)}%` : `${(received / 1048576).toFixed(1)}MB`;
+    onProgress && onProgress(`Baixando vagas... ${pct}`);
+  }
+  const buf = new Uint8Array(received);
+  let p = 0; for (const c of chunks) { buf.set(c, p); p += c.length; }
+
+  onProgress && onProgress('Lendo Parquet de vagas...');
+  const asyncBuf = { byteLength: received, slice: (s, e) => Promise.resolve(buf.buffer.slice(s, e)) };
+
+  let schemaColNames = null;
+  if (window._hyparquet.parquetMetadataAsync) {
+    try {
+      const meta = await window._hyparquet.parquetMetadataAsync(asyncBuf);
+      const elems = Array.isArray(meta?.schema) ? meta.schema : [];
+      const leafCols = elems.filter(s => !s.num_children).map(s => s.name).filter(Boolean);
+      if (leafCols.length) schemaColNames = leafCols;
+    } catch (e) { console.warn('[Vagas parquetMetadataAsync]', e.message); }
+  }
+  if (!schemaColNames && window._hyparquet.parquetMetadata) {
+    try {
+      const syncBuf = { byteLength: received, slice: (s, e) => buf.buffer.slice(s, e) };
+      const meta = window._hyparquet.parquetMetadata(syncBuf);
+      const elems = Array.isArray(meta?.schema) ? meta.schema : [];
+      const leafCols = elems.filter(s => !s.num_children).map(s => s.name).filter(Boolean);
+      if (leafCols.length) schemaColNames = leafCols;
+    } catch (e) { console.warn('[Vagas parquetMetadata sync]', e.message); }
+  }
+
+  const rawRows = [];
+  await window._hyparquet.parquetRead({
+    file: asyncBuf,
+    onComplete: data => {
+      for (const r of data) {
+        const rIsArr = Array.isArray(r);
+        const rIsNumObj = !rIsArr && r !== null && typeof r === 'object' && '0' in r;
+        if ((rIsArr || rIsNumObj) && schemaColNames) {
+          const obj = {};
+          for (let i = 0; i < schemaColNames.length; i++) obj[schemaColNames[i]] = rIsArr ? r[i] : r[String(i)];
+          rawRows.push(obj);
+        } else { rawRows.push(r); }
+      }
+    }
+  });
+
+  const actualKeys = rawRows.length > 0 ? Object.keys(rawRows[0]) : [];
+  console.log('[Vagas] colunas:', actualKeys);
+
+  function normK(s) {
+    return String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+  }
+  const normToActual = {};
+  for (const k of actualKeys) normToActual[normK(k)] = k;
+  function resolveCol(desired) {
+    if (actualKeys.includes(desired)) return desired;
+    const n = normK(desired);
+    if (normToActual[n]) return normToActual[n];
+    const found = Object.entries(normToActual).find(([ak]) => {
+      const [longer, shorter] = ak.length >= n.length ? [ak, n] : [n, ak];
+      if (shorter.length / longer.length < 0.8) return false;
+      return n.startsWith(ak) || ak.startsWith(n);
+    });
+    return found ? found[1] : null;
+  }
+
+  const desiredCols = [
+    'Nome_Programa', 'Quantidade de posicoes', 'Necessario proxima etapa',
+    'Cidades aceitas', 'Estado', 'Curso', 'Duracao',
+    'Termino de', 'Termino ate', 'Tipo de graduacao', 'Tipo de ensino',
+    'Ingles', 'Idade', 'Valor da Bolsa'
+  ];
+  const cMap = {};
+  for (const d of desiredCols) { const a = resolveCol(d); if (a) cMap[d] = a; }
+  console.log('[Vagas] cMap:', cMap);
+
+  const rows = rawRows.map(r => {
+    const mapped = { ...r };
+    for (const [des, act] of Object.entries(cMap)) { if (des !== act) mapped[des] = r[act]; }
+    return mapped;
+  });
+
+  return { rows, cMap, actualKeys };
+}
+
 function buildEscopoFM(items) {
   if (!items.length) return {};
   const allKeys = Object.keys(items[0]);
@@ -15287,6 +15389,10 @@ function EscopoView({ authState, projects }) {
   const [fSeg, setFSeg] = useState(new Set());
   const [fCiclo, setFCiclo] = useState(new Set());
   const [fPublico, setFPublico] = useState(new Set());
+  const [vagas, setVagas] = useState(null);
+  const [vagasLoading, setVagasLoading] = useState(false);
+  const [vagasErr, setVagasErr] = useState(null);
+  const [vagasProg, setVagasProg] = useState('');
 
   useEffect(() => {
     if (!authState?.token) return;
@@ -15295,6 +15401,15 @@ function EscopoView({ authState, projects }) {
       .then(r => setItems(r))
       .catch(e => setErr(e.message))
       .finally(() => setLoading(false));
+  }, [authState?.token]);
+
+  useEffect(() => {
+    if (!authState?.token) return;
+    setVagasLoading(true);
+    fetchVagasParquet(authState.token, setVagasProg)
+      .then(d => setVagas(d))
+      .catch(e => setVagasErr(e.message))
+      .finally(() => setVagasLoading(false));
   }, [authState?.token]);
 
   const fm = useMemo(() => items ? buildEscopoFM(items) : {}, [items]);
@@ -15350,6 +15465,36 @@ function EscopoView({ authState, projects }) {
       return true;
     });
   }, [enrichedItems, fSeg, fCiclo, fPublico, fm, asNomes]);
+
+  // ── Vagas: filtro + enriquecimento ───────────────────────────────────────────
+  const filteredVagas = useMemo(() => {
+    if (!vagas?.rows?.length || !filtered.length) return [];
+    const projNomes = new Set(filtered.map(it => _normN(String(it[fm.nome] || ''))));
+    return vagas.rows.filter(v => projNomes.has(_normN(String(v['Nome_Programa'] || ''))));
+  }, [vagas, filtered, fm]);
+
+  const enrichedVagas = useMemo(() => {
+    if (!filteredVagas.length) return [];
+    // Lookup segmento/microseg/publico por nome de programa (vindo de filtered)
+    const infoByNome = {};
+    filtered.forEach(it => {
+      const n = _normN(String(it[fm.nome] || ''));
+      if (n && !infoByNome[n]) infoByNome[n] = {
+        seg:   String(it[fm.segmento] || ''),
+        micro: String(it[fm.microSeg] || ''),
+        pub:   it._publico || '',
+        nome:  String(it[fm.nome] || ''),
+      };
+    });
+    return filteredVagas.map(v => {
+      const n = _normN(String(v['Nome_Programa'] || ''));
+      const info = infoByNome[n] || {};
+      // Idade: >=100 = qualquer, outros = "até X anos"
+      const idadeRaw = parseFloat(String(v['Idade'] || '').replace(',', '.'));
+      const idadeLabel = isNaN(idadeRaw) ? '' : (idadeRaw >= 100 ? 'Qualquer' : `Até ${Math.round(idadeRaw)} anos`);
+      return { ...v, _seg: info.seg || '', _micro: info.micro || '', _pub: info.pub || '', _nomeProj: info.nome || v['Nome_Programa'] || '', _idadeLabel: idadeLabel };
+    });
+  }, [filteredVagas, filtered, fm]);
 
   function g(it, key) {
     if (key === '_publico') return it._publico ?? null;
@@ -15742,6 +15887,198 @@ function EscopoView({ authState, projects }) {
           : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados');
       })()
     ),
+
+    // ── Seção Vagas ─────────────────────────────────────────────────────────────
+    (() => {
+      if (vagasLoading) return React.createElement('div', { className: 'bg-white rounded-2xl border border-slate-200 p-6 text-sm text-slate-500 text-center' },
+        React.createElement('div', { className: 'animate-spin w-5 h-5 border-2 border-orange-400 border-t-transparent rounded-full mx-auto mb-2' }),
+        vagasProg || 'Carregando base de vagas...'
+      );
+      if (vagasErr) return React.createElement('div', { className: 'bg-red-50 border border-red-200 rounded-2xl p-4 text-sm text-red-600' }, '⚠ Vagas: ' + vagasErr);
+      if (!enrichedVagas.length) return null;
+
+      const tv = enrichedVagas.length; // total vagas (linhas)
+      // Soma de posições
+      const totalPos = enrichedVagas.reduce((s, v) => {
+        const n = parseFloat(String(v['Quantidade de posicoes'] || '').replace(',', '.'));
+        return s + (isNaN(n) ? 0 : n);
+      }, 0);
+      const mediaProx = (() => {
+        const vals = enrichedVagas.map(v => parseFloat(String(v['Necessario proxima etapa'] || '').replace(',', '.'))).filter(n => !isNaN(n) && n >= 0);
+        return vals.length ? (vals.reduce((s, n) => s + n, 0) / vals.length).toFixed(1) : null;
+      })();
+
+      // countV: contar vagas por valor de um campo (split opcional por vírgula/ponto-vírgula)
+      function countV(key, splitBy = false) {
+        const counts = {};
+        enrichedVagas.forEach(v => {
+          const raw = String(v[key] || '').trim();
+          if (!raw || raw === 'null' || raw === 'undefined') return;
+          const parts = splitBy ? raw.split(/[;,]/).map(s => s.trim()).filter(Boolean) : [raw];
+          parts.forEach(p => { if (p) counts[p] = (counts[p] || 0) + 1; });
+        });
+        return Object.entries(counts).sort((a, b) => b[1] - a[1]);
+      }
+
+      // Remuneração: min/avg/max de Valor da Bolsa agrupado
+      function remunByKey(groupKey) {
+        const groups = {};
+        enrichedVagas.forEach(v => {
+          let raw = v['Valor da Bolsa'];
+          const val = parseFloat(typeof raw === 'number' ? raw : String(raw || '').replace(/[R$\s]/g, '').replace(/\./g, '').replace(',', '.'));
+          if (isNaN(val) || val <= 0) return;
+          const gk = v[groupKey] || 'Não informado';
+          if (!groups[gk]) groups[gk] = [];
+          groups[gk].push(val);
+        });
+        return Object.entries(groups)
+          .map(([label, vals]) => ({
+            label,
+            min: Math.min(...vals),
+            avg: Math.round(vals.reduce((s, n) => s + n, 0) / vals.length),
+            max: Math.max(...vals),
+            n: vals.length
+          }))
+          .sort((a, b) => b.avg - a.avg);
+      }
+
+      const brl = n => n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', maximumFractionDigits: 0 });
+
+      function RemunTable({ title, icon, rows }) {
+        if (!rows.length) return null;
+        return React.createElement(Sec, { title, icon },
+          React.createElement('div', { className: 'overflow-auto' },
+            React.createElement('table', { className: 'text-xs w-full' },
+              React.createElement('thead', null,
+                React.createElement('tr', { className: 'text-slate-500 border-b border-slate-100' },
+                  React.createElement('th', { className: 'text-left py-1.5 pr-4 font-medium' }, 'Grupo'),
+                  React.createElement('th', { className: 'text-right py-1.5 px-2 font-medium' }, 'Mín'),
+                  React.createElement('th', { className: 'text-right py-1.5 px-2 font-medium' }, 'Média'),
+                  React.createElement('th', { className: 'text-right py-1.5 px-2 font-medium' }, 'Máx'),
+                  React.createElement('th', { className: 'text-right py-1.5 pl-2 font-medium text-slate-400' }, 'Vagas')
+                )
+              ),
+              React.createElement('tbody', null,
+                ...rows.slice(0, 20).map(r =>
+                  React.createElement('tr', { key: r.label, className: 'border-b border-slate-50 hover:bg-slate-50' },
+                    React.createElement('td', { className: 'py-1.5 pr-4 text-slate-700 font-medium max-w-[180px] truncate' }, r.label),
+                    React.createElement('td', { className: 'text-right px-2 text-slate-600' }, brl(r.min)),
+                    React.createElement('td', { className: 'text-right px-2 font-semibold text-orange-600' }, brl(r.avg)),
+                    React.createElement('td', { className: 'text-right px-2 text-slate-600' }, brl(r.max)),
+                    React.createElement('td', { className: 'text-right pl-2 text-slate-400' }, r.n)
+                  )
+                )
+              )
+            )
+          )
+        );
+      }
+
+      return React.createElement(React.Fragment, null,
+
+        // ── Requisitos das vagas ──────────────────────────────────────────────
+        React.createElement('div', { className: 'border-t-4 border-orange-400 pt-1' },
+          React.createElement('h2', { className: 'text-base font-bold text-slate-700 mb-4' }, '📋 Requisitos das vagas — quantidade de vagas que pedem:')
+        ),
+
+        // KPIs
+        React.createElement('div', { className: 'grid grid-cols-2 sm:grid-cols-3 gap-4' },
+          React.createElement(Kpi, { label: 'Total de vagas', value: tv.toLocaleString('pt-BR'), sub: 'linhas na base', color: '#f97316' }),
+          totalPos > 0 && React.createElement(Kpi, { label: 'Total de posições', value: Math.round(totalPos).toLocaleString('pt-BR'), sub: 'soma quantidade', color: '#8b5cf6' }),
+          mediaProx !== null && React.createElement(Kpi, { label: 'Média necessário próx. etapa', value: mediaProx, sub: 'candidatos por vaga', color: '#0ea5e9' })
+        ),
+
+        // Posições por projeto
+        React.createElement(Sec, { title: 'Posições por projeto', icon: '🏢' },
+          React.createElement('div', null,
+            ...(() => {
+              const byProj = {};
+              enrichedVagas.forEach(v => {
+                const k = v._nomeProj || v['Nome_Programa'] || 'Desconhecido';
+                const q = parseFloat(String(v['Quantidade de posicoes'] || '1').replace(',', '.'));
+                byProj[k] = (byProj[k] || 0) + (isNaN(q) ? 1 : q);
+              });
+              const projTotal = Object.values(byProj).reduce((s, n) => s + n, 0);
+              return Object.entries(byProj)
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 20)
+                .map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: projTotal, color: '#f97316' }));
+            })()
+          )
+        ),
+
+        // Cidades + Estado
+        React.createElement('div', { className: 'grid grid-cols-1 lg:grid-cols-2 gap-5' },
+          React.createElement(Sec, { title: 'Cidades aceitas', icon: '🏙' },
+            (() => { const d = countV('Cidades aceitas', true); return d.length ? React.createElement('div', null, ...d.slice(0, 15).map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: tv, color: '#06b6d4' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados'); })()
+          ),
+          React.createElement(Sec, { title: 'Estado', icon: '🗺' },
+            (() => { const d = countV('Estado', true); return d.length ? React.createElement('div', null, ...d.slice(0, 15).map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: tv, color: '#6366f1' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados'); })()
+          )
+        ),
+
+        // Tipo de graduação + Tipo de ensino
+        React.createElement('div', { className: 'grid grid-cols-1 lg:grid-cols-2 gap-5' },
+          React.createElement(Sec, { title: 'Tipo de graduação', icon: '🎓' },
+            (() => { const d = countV('Tipo de graduacao'); return d.length ? React.createElement('div', null, ...d.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: tv, color: '#8b5cf6' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados'); })()
+          ),
+          React.createElement(Sec, { title: 'Tipo de ensino', icon: '🏫' },
+            (() => { const d = countV('Tipo de ensino'); return d.length ? React.createElement('div', null, ...d.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: tv, color: '#ec4899' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados'); })()
+          )
+        ),
+
+        // Duração + Inglês
+        React.createElement('div', { className: 'grid grid-cols-1 lg:grid-cols-2 gap-5' },
+          React.createElement(Sec, { title: 'Duração do curso', icon: '📅' },
+            (() => { const d = countV('Duracao'); return d.length ? React.createElement('div', null, ...d.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: tv, color: '#14b8a6' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados'); })()
+          ),
+          React.createElement(Sec, { title: 'Inglês', icon: '🌐' },
+            (() => { const d = countV('Ingles'); return d.length ? React.createElement('div', null, ...d.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: tv, color: '#f59e0b' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados'); })()
+          )
+        ),
+
+        // Curso (top 15)
+        React.createElement(Sec, { title: 'Curso (Top 15)', icon: '📚' },
+          (() => { const d = countV('Curso', true); return d.length ? React.createElement('div', null, ...d.slice(0, 15).map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: tv, color: '#3b82f6' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados'); })()
+        ),
+
+        // Idade + Término de/até
+        React.createElement('div', { className: 'grid grid-cols-1 lg:grid-cols-2 gap-5' },
+          React.createElement(Sec, { title: 'Idade', icon: '🎂' },
+            (() => {
+              const d = enrichedVagas.reduce((acc, v) => {
+                const l = v._idadeLabel; if (!l) return acc;
+                acc[l] = (acc[l] || 0) + 1; return acc;
+              }, {});
+              const entries = Object.entries(d).sort((a, b) => {
+                if (a[0] === 'Qualquer') return -1; if (b[0] === 'Qualquer') return 1;
+                return parseInt(a[0]) - parseInt(b[0]);
+              });
+              return entries.length ? React.createElement('div', null, ...entries.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: tv, color: l === 'Qualquer' ? '#22c55e' : '#f97316' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados');
+            })()
+          ),
+          React.createElement(Sec, { title: 'Término de', icon: '📆' },
+            (() => { const d = countV('Termino de'); return d.length ? React.createElement('div', null, ...d.slice(0, 12).map(([l, c]) => React.createElement(HBar, { key: l, label: String(l).replace(/\.0$/, ''), count: c, total: tv, color: '#64748b' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados'); })()
+          )
+        ),
+        React.createElement(Sec, { title: 'Término até', icon: '📆' },
+          (() => { const d = countV('Termino ate'); return d.length ? React.createElement('div', null, ...d.slice(0, 12).map(([l, c]) => React.createElement(HBar, { key: l, label: String(l).replace(/\.0$/, ''), count: c, total: tv, color: '#0ea5e9' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados'); })()
+        ),
+
+        // ── Remuneração ───────────────────────────────────────────────────────
+        React.createElement('div', { className: 'border-t-4 border-orange-400 pt-1 mt-2' },
+          React.createElement('h2', { className: 'text-base font-bold text-slate-700 mb-4' }, '💰 Remuneração')
+        ),
+
+        React.createElement(RemunTable, { title: 'Por projeto', icon: '🏢', rows: remunByKey('_nomeProj') }),
+        React.createElement('div', { className: 'grid grid-cols-1 lg:grid-cols-2 gap-5' },
+          React.createElement(RemunTable, { title: 'Por segmento', icon: '🏷', rows: remunByKey('_seg') }),
+          React.createElement(RemunTable, { title: 'Por micro segmento', icon: '🔖', rows: remunByKey('_micro') })
+        ),
+        React.createElement(RemunTable, { title: 'Por público', icon: '👥', rows: remunByKey('_pub') })
+
+      ); // end Fragment
+    })(),
 
     // Tabela de processos
     React.createElement('div', { className: 'bg-white rounded-2xl border border-slate-200' },
