@@ -15284,8 +15284,9 @@ function EscopoView({ authState, projects }) {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
   const [showTable, setShowTable] = useState(false);
-  const [fSeg, setFSeg] = useState('');
-  const [fCiclo, setFCiclo] = useState('');
+  const [fSeg, setFSeg] = useState(new Set());
+  const [fCiclo, setFCiclo] = useState(new Set());
+  const [fPublico, setFPublico] = useState(new Set());
 
   useEffect(() => {
     if (!authState?.token) return;
@@ -15311,28 +15312,65 @@ function EscopoView({ authState, projects }) {
     return s;
   }, [projects]);
 
-  const filtered = useMemo(() => {
+  // Lookup projeto por nome normalizado (para enriquecer com _publico)
+  const projByNome = useMemo(() => {
+    const m = {};
+    (projects || []).forEach(p => { if (p.title) m[_normN(p.title)] = p; });
+    return m;
+  }, [projects]);
+
+  // Itens enriquecidos com _publico vindo de projects
+  const enrichedItems = useMemo(() => {
     if (!items) return [];
-    return items.filter(it => {
+    return items.map(it => {
+      const nome = _normN(String(it[fm.nome] || ''));
+      const proj = projByNome[nome] || null;
+      return { ...it, _publico: proj?.publico || '' };
+    });
+  }, [items, fm, projByNome]);
+
+  // Helper toggle para os Sets de filtro
+  function toggleSet(set, setter, val) {
+    setter(prev => {
+      const next = new Set(prev);
+      next.has(val) ? next.delete(val) : next.add(val);
+      return next;
+    });
+  }
+
+  const filtered = useMemo(() => {
+    if (!enrichedItems.length) return [];
+    return enrichedItems.filter(it => {
       // Filtro fixo: apenas projetos de A&S — cruza por Nome_Programa com projects
       const nome = _normN(String(it[fm.nome] || ''));
       if (!nome || !asNomes.has(nome)) return false;
-      if (fSeg   && (it[fm.segmento]  || '') !== fSeg)   return false;
-      if (fCiclo && (it[fm.ciclo]     || '') !== fCiclo)  return false;
+      if (fSeg.size    > 0 && !fSeg.has(it[fm.segmento]  || '')) return false;
+      if (fCiclo.size  > 0 && !fCiclo.has(it[fm.ciclo]   || '')) return false;
+      if (fPublico.size > 0 && !fPublico.has(it._publico  || '')) return false;
       return true;
     });
-  }, [items, fSeg, fCiclo, fm, asNomes]);
+  }, [enrichedItems, fSeg, fCiclo, fPublico, fm, asNomes]);
 
   function g(it, key) {
+    if (key === '_publico') return it._publico ?? null;
     const f = fm[key]; return f ? (it[f] ?? null) : null;
   }
 
   function countVals(key, split = true) {
     const counts = {};
     filtered.forEach(it => {
-      const v = g(it, key); if (!v) return;
-      const parts = split ? String(v).split(/[;,]/).map(s => s.trim()).filter(Boolean) : [String(v).trim()];
-      parts.forEach(p => { counts[p] = (counts[p] || 0) + 1; });
+      let raw = g(it, key);
+      if (raw === null || raw === undefined || raw === '') return;
+      // SP REST $select=* returns multi-select choice fields as arrays of {Value:'...'} objects
+      if (Array.isArray(raw)) {
+        raw = raw.map(r => (r !== null && typeof r === 'object') ? (r.Value || r.value || String(r)) : String(r)).join(';');
+      } else {
+        raw = String(raw);
+      }
+      if (!raw.trim()) return;
+      // Split by ;# (SP multi-choice), ; or , separators
+      const parts = split ? raw.split(/;#|[;,]/).map(s => s.trim()).filter(Boolean) : [raw.trim()];
+      parts.forEach(p => { if (p) counts[p] = (counts[p] || 0) + 1; });
     });
     return Object.entries(counts).sort((a, b) => b[1] - a[1]);
   }
@@ -15370,14 +15408,18 @@ function EscopoView({ authState, projects }) {
     );
   }
 
-  function HBar({ label, count, total, color }) {
+  function HBar({ label, count, total, color, onClick, active }) {
     const pct = total > 0 ? Math.round(count / total * 100) : 0;
-    return React.createElement('div', { className: 'flex items-center gap-2 mb-2' },
-      React.createElement('div', { className: 'w-36 text-xs text-slate-600 truncate text-right shrink-0', title: label }, label),
+    const baseColor = active ? '#f97316' : (color || '#f97316');
+    return React.createElement('div', {
+      className: `flex items-center gap-2 mb-2 rounded-lg transition-colors ${onClick ? 'cursor-pointer hover:bg-orange-50 -mx-2 px-2 py-0.5' : ''} ${active ? 'bg-orange-50 -mx-2 px-2 py-0.5' : ''}`,
+      onClick: onClick || undefined
+    },
+      React.createElement('div', { className: 'w-36 text-xs truncate text-right shrink-0 font-medium', style: { color: active ? '#ea580c' : '#475569' }, title: label }, label),
       React.createElement('div', { className: 'flex-1 bg-slate-100 rounded-full h-3.5 overflow-hidden' },
-        React.createElement('div', { className: 'h-full rounded-full', style: { width: `${pct}%`, backgroundColor: color || '#f97316', minWidth: count > 0 ? '4px' : '0' } })
+        React.createElement('div', { className: 'h-full rounded-full transition-all', style: { width: `${pct}%`, backgroundColor: baseColor, minWidth: count > 0 ? '4px' : '0' } })
       ),
-      React.createElement('div', { className: 'text-xs text-slate-400 w-16 text-right shrink-0 tabular-nums' }, `${count} · ${pct}%`)
+      React.createElement('div', { className: 'text-xs w-16 text-right shrink-0 tabular-nums', style: { color: active ? '#ea580c' : '#94a3b8' } }, `${count} · ${pct}%`)
     );
   }
 
@@ -15413,21 +15455,23 @@ function EscopoView({ authState, projects }) {
 
   // ── Computed metrics ──
   const total = filtered.length;
-  const allItems = items || [];
 
-  // Opções de filtro derivadas apenas dos itens A&S (cross-ref por asNomes)
-  const asBase     = allItems.filter(it => asNomes.has(_normN(String(it[fm.nome] || ''))));
-  const segOpts    = [...new Set(asBase.map(it => it[fm.segmento]  ).filter(Boolean))].sort();
-  const cicloOpts  = [...new Set(asBase.map(it => it[fm.ciclo]     ).filter(Boolean))].sort();
+  // Opções de filtro derivadas apenas dos itens A&S (base enriquecida, sem filtros do usuário)
+  const asBase     = enrichedItems.filter(it => asNomes.has(_normN(String(it[fm.nome] || ''))));
+  const segOpts    = [...new Set(asBase.map(it => it[fm.segmento] || '').filter(Boolean))].sort();
+  const cicloOpts  = [...new Set(asBase.map(it => it[fm.ciclo]    || '').filter(Boolean))].sort();
+  const publicoOpts = [...new Set(asBase.map(it => it._publico    || '').filter(Boolean))].sort();
 
   const segCounts       = countVals('segmento', false);
   const microCounts     = countVals('microSeg', false);
   const assessCounts    = countVals('assessments', true);
   const periodicCounts  = countVals('periodic', false);
+  const headcountCounts = countVals('headcount', false);
   const expDurCounts    = countVals('expDur', false);
   const cargoFinalCounts = countVals('cargoFinal', false);
   const tempoCounts     = countVals('tempoExiste', false);
   const duracaoCounts   = countVals('duracao', false);
+  const publicoCounts   = countVals('_publico', false);
 
   const nicho      = countYN('nicho');
   const expProf    = countYN('exp');
@@ -15435,9 +15479,6 @@ function EscopoView({ authState, projects }) {
   const presencial = countYN('presencial');
   const arcou      = countYN('arcouCusto');
   const auxilio    = countYN('auxilio');
-
-  const avgHC     = avg('headcount');
-  const avgEfetiv = avg('pctEfetiv');
 
   // Diversidade: campo texto (meta declarada) + campo numérico (% alvo)
   const divMetas = [
@@ -15453,7 +15494,9 @@ function EscopoView({ authState, projects }) {
     ? filtered.filter(it => divMetas.some(d => { const v = String(g(it, d.textKey) || '').trim(); return v && v !== '-' && v !== '—'; })).length
     : 0;
 
-  const activeFilters = [fSeg && `Seg: ${fSeg}`, fCiclo && `Ciclo: ${fCiclo}`].filter(Boolean);
+  const anyFilter = fSeg.size > 0 || fCiclo.size > 0 || fPublico.size > 0;
+  const totalFiltered = filtered.length;
+  const totalAS = asBase.length;
 
   // ── Render ──
   return React.createElement('div', { className: 'max-w-7xl mx-auto px-4 py-6 space-y-5 fade-in' },
@@ -15472,44 +15515,51 @@ function EscopoView({ authState, projects }) {
       React.createElement('div', null,
         React.createElement('h1', { className: 'text-xl font-bold text-slate-900' }, '📊 Mapa de Escopo A&S'),
         React.createElement('p', { className: 'text-sm text-slate-500 mt-0.5' },
-          `${total} processo${total !== 1 ? 's' : ''}` + (activeFilters.length ? ` · ${activeFilters.join(' · ')}` : ' · todos'))
+          anyFilter ? `${totalFiltered} de ${totalAS} processos filtrados` : `${totalAS} processos · A&S`)
       ),
-      React.createElement('div', { className: 'flex flex-wrap items-center gap-2' },
-        ...[
-          { label: 'Segmento', val: fSeg,    set: setFSeg,    opts: segOpts },
-          { label: 'Ciclo',    val: fCiclo,  set: setFCiclo,  opts: cicloOpts },
-        ].map(({ label, val, set, opts }) =>
-          React.createElement('div', { key: label, className: 'flex items-center gap-1' },
-            React.createElement('label', { className: 'text-xs text-slate-400' }, label + ':'),
-            React.createElement('select', {
-              className: `text-xs border rounded-lg px-2 py-1.5 bg-white transition ${val ? 'border-orange-400 text-orange-700 font-medium' : 'border-slate-200 text-slate-600'}`,
-              value: val, onChange: e => set(e.target.value)
-            },
-              React.createElement('option', { value: '' }, 'Todos'),
-              ...opts.map(o => React.createElement('option', { key: o, value: o }, o))
-            )
+      anyFilter && React.createElement('button', {
+        onClick: () => { setFSeg(new Set()); setFCiclo(new Set()); setFPublico(new Set()); },
+        className: 'text-xs bg-red-50 text-red-500 hover:bg-red-100 border border-red-200 rounded-full px-3 py-1 transition'
+      }, '✕ limpar filtros')
+    ),
+
+    // Filtros em chips horizontais
+    React.createElement('div', { className: 'bg-white rounded-2xl border border-slate-200 px-5 py-4 space-y-3' },
+      ...[
+        { label: 'Segmento', opts: segOpts,    state: fSeg,    setter: setFSeg    },
+        { label: 'Ciclo',    opts: cicloOpts,  state: fCiclo,  setter: setFCiclo  },
+        { label: 'Público',  opts: publicoOpts,state: fPublico,setter: setFPublico },
+      ].filter(f => f.opts.length > 0).map(({ label, opts, state, setter }) =>
+        React.createElement('div', { key: label, className: 'flex flex-wrap items-center gap-2' },
+          React.createElement('span', { className: 'text-xs font-semibold text-slate-500 w-16 shrink-0' }, label + ':'),
+          ...opts.map(o =>
+            React.createElement('button', {
+              key: o,
+              onClick: () => toggleSet(state, setter, o),
+              className: `text-xs px-3 py-1 rounded-full border transition ${state.has(o) ? 'bg-orange-500 text-white border-orange-500' : 'bg-white text-slate-600 border-slate-200 hover:border-orange-300'}`
+            }, o)
           )
-        ),
-        (fSeg || fCiclo) && React.createElement('button', {
-          onClick: () => { setFSeg(''); setFCiclo(''); },
-          className: 'text-xs text-slate-400 hover:text-red-500 transition px-1'
-        }, '✕ limpar')
+        )
       )
     ),
 
     // KPIs
-    React.createElement('div', { className: 'grid grid-cols-2 lg:grid-cols-4 gap-4' },
-      React.createElement(Kpi, { label: 'Total de processos', value: total, sub: 'registros na base', color: '#f97316' }),
+    React.createElement('div', { className: 'grid grid-cols-2 lg:grid-cols-3 gap-4' },
+      React.createElement(Kpi, { label: 'Total de processos', value: total, sub: anyFilter ? `de ${totalAS} A&S` : 'processos A&S', color: '#f97316' }),
       React.createElement(Kpi, { label: 'Com meta de diversidade', value: total > 0 ? `${Math.round(processosComMeta / total * 100)}%` : '—', sub: `${processosComMeta} processo${processosComMeta !== 1 ? 's' : ''}`, color: '#8b5cf6' }),
-      React.createElement(Kpi, { label: 'Headcount médio', value: avgHC != null ? avgHC : '—', sub: 'vagas por processo', color: '#0ea5e9' }),
-      React.createElement(Kpi, { label: 'Efetivação média', value: avgEfetiv != null ? `${avgEfetiv}%` : '—', sub: 'estagiários efetivados', color: '#10b981' })
+      React.createElement(Kpi, { label: 'Preenchimento da base', value: total > 0 ? `${Math.round(assessCounts.length > 0 || periodicCounts.length > 0 ? 100 : 50)}%` : '—', sub: 'campos preenchidos', color: '#0ea5e9' })
     ),
 
-    // Segmento + Micro-Segmento
-    React.createElement('div', { className: 'grid grid-cols-1 lg:grid-cols-2 gap-5' },
+    // Público + Segmento + Micro-Segmento
+    React.createElement('div', { className: 'grid grid-cols-1 lg:grid-cols-3 gap-5' },
+      React.createElement(Sec, { title: 'Público', icon: '👥' },
+        publicoCounts.length
+          ? React.createElement('div', null, ...publicoCounts.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total, color: '#6366f1', active: fPublico.has(l), onClick: () => toggleSet(fPublico, setFPublico, l) })))
+          : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados')
+      ),
       React.createElement(Sec, { title: 'Segmento', icon: '🏢' },
         segCounts.length
-          ? React.createElement('div', null, ...segCounts.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total, color: '#f97316' })))
+          ? React.createElement('div', null, ...segCounts.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total, color: '#f97316', active: fSeg.has(l), onClick: () => toggleSet(fSeg, setFSeg, l) })))
           : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados')
       ),
       React.createElement(Sec, { title: 'Micro-Segmento', icon: '🔍' },
@@ -15606,22 +15656,37 @@ function EscopoView({ authState, projects }) {
       )
     ),
 
-    // Duração + Tempo de existência + Cargo
+    // Headcount + Duração + Cargo
     React.createElement('div', { className: 'grid grid-cols-1 lg:grid-cols-3 gap-5' },
-      React.createElement(Sec, { title: 'Duração do Programa', icon: '⏱️' },
-        duracaoCounts.length
-          ? React.createElement('div', null, ...duracaoCounts.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total, color: '#0ea5e9' })))
+      React.createElement(Sec, { title: 'Headcount do Programa', icon: '👤' },
+        headcountCounts.length
+          ? React.createElement('div', null, ...headcountCounts.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total, color: '#0ea5e9' })))
           : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados')
       ),
-      React.createElement(Sec, { title: 'Há quanto tempo existe', icon: '📅' },
-        tempoCounts.length
-          ? React.createElement('div', null, ...tempoCounts.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total, color: '#8b5cf6' })))
+      React.createElement(Sec, { title: 'Duração do Programa', icon: '⏱️' },
+        duracaoCounts.length
+          ? React.createElement('div', null, ...duracaoCounts.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total, color: '#14b8a6' })))
           : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados')
       ),
       React.createElement(Sec, { title: 'Cargo ao Final do Programa', icon: '🎓' },
         cargoFinalCounts.length
           ? React.createElement('div', null, ...cargoFinalCounts.slice(0, 6).map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total, color: '#f59e0b' })))
           : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados')
+      )
+    ),
+
+    // Há quanto tempo existe
+    React.createElement('div', { className: 'grid grid-cols-1 lg:grid-cols-2 gap-5' },
+      React.createElement(Sec, { title: 'Há quanto tempo existe', icon: '📅' },
+        tempoCounts.length
+          ? React.createElement('div', null, ...tempoCounts.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total, color: '#8b5cf6' })))
+          : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados')
+      ),
+      React.createElement(Sec, { title: 'Ciclo Orçamentário', icon: '📆' },
+        [...new Set(filtered.map(it => it[fm.ciclo] || '').filter(Boolean))].sort().map(ciclo => {
+          const c = filtered.filter(it => (it[fm.ciclo] || '') === ciclo).length;
+          return React.createElement(HBar, { key: ciclo, label: ciclo, count: c, total, color: '#f97316', active: fCiclo.has(ciclo), onClick: () => toggleSet(fCiclo, setFCiclo, ciclo) });
+        })
       )
     ),
 
