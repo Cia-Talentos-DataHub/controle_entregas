@@ -15234,6 +15234,19 @@ async function fetchVagasParquet(token, onProgress) {
   while (!window._hyparquet && tries < 30) { await new Promise(r => setTimeout(r, 200)); tries++; }
   if (!window._hyparquet) throw new Error('Módulo Parquet não disponível.');
 
+  // Busca metadados (TimeLastModified) — chamada leve antes do download
+  let lastModified = null;
+  try {
+    const metaRes = await fetch(
+      `https://ciadetalentos.sharepoint.com/sites/Public/_api/web/GetFileByServerRelativeUrl('${_VAGAS_PARQUET_PATH}')?$select=TimeLastModified`,
+      { headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json;odata=nometadata' } }
+    );
+    if (metaRes.ok) {
+      const metaJson = await metaRes.json();
+      lastModified = metaJson.TimeLastModified || metaJson.d?.TimeLastModified || null;
+    }
+  } catch (e) { console.warn('[Vagas] metadata fetch failed:', e.message); }
+
   onProgress && onProgress('Baixando base de vagas...');
   const url = `https://ciadetalentos.sharepoint.com/sites/Public/_api/web/GetFileByServerRelativeUrl('${_VAGAS_PARQUET_PATH}')/$value`;
   const res = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` } });
@@ -15326,7 +15339,7 @@ async function fetchVagasParquet(token, onProgress) {
     return mapped;
   });
 
-  return { rows, cMap, actualKeys };
+  return { rows, cMap, actualKeys, lastModified };
 }
 
 function buildEscopoFM(items) {
@@ -15671,7 +15684,14 @@ function EscopoView({ authState, projects }) {
       React.createElement('div', null,
         React.createElement('h1', { className: 'text-xl font-bold text-slate-900' }, '📊 Mapa de Escopo A&S'),
         React.createElement('p', { className: 'text-sm text-slate-500 mt-0.5' },
-          anyFilter ? `${totalFiltered} de ${totalAS} processos filtrados` : `${totalAS} processos · A&S`)
+          anyFilter ? `${totalFiltered} de ${totalAS} processos filtrados` : `${totalAS} processos · A&S`,
+          vagas?.lastModified && React.createElement('span', { className: 'ml-3 text-xs text-slate-400 font-normal' },
+            '· Base atualizada em ',
+            React.createElement('span', { className: 'font-medium text-slate-500' },
+              new Date(vagas.lastModified).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: 'numeric' })
+            )
+          )
+        )
       ),
       anyFilter && React.createElement('button', {
         onClick: () => { setFSeg(new Set()); setFCiclo(new Set()); setFPublico(new Set()); },
@@ -15897,21 +15917,27 @@ function EscopoView({ authState, projects }) {
       if (vagasErr) return React.createElement('div', { className: 'bg-red-50 border border-red-200 rounded-2xl p-4 text-sm text-red-600' }, '⚠ Vagas: ' + vagasErr);
       if (!enrichedVagas.length) return null;
 
-      const tv = enrichedVagas.length; // total vagas (linhas)
-      // Soma de posições
-      const totalPos = enrichedVagas.reduce((s, v) => {
+      // Base válida: somente linhas com Quantidade de posições preenchida (ignora linhas em branco)
+      const vagasValidas = enrichedVagas.filter(v => {
+        const q = parseFloat(String(v['Quantidade de posicoes'] || '').replace(',', '.'));
+        return !isNaN(q) && q > 0;
+      });
+      if (!vagasValidas.length) return React.createElement('p', { className: 'text-sm text-slate-400 text-center py-4' }, 'Sem vagas com quantidade preenchida.');
+
+      const tv = vagasValidas.length; // total de linhas válidas
+      const totalPos = vagasValidas.reduce((s, v) => {
         const n = parseFloat(String(v['Quantidade de posicoes'] || '').replace(',', '.'));
         return s + (isNaN(n) ? 0 : n);
       }, 0);
       const mediaProx = (() => {
-        const vals = enrichedVagas.map(v => parseFloat(String(v['Necessario proxima etapa'] || '').replace(',', '.'))).filter(n => !isNaN(n) && n >= 0);
+        const vals = vagasValidas.map(v => parseFloat(String(v['Necessario proxima etapa'] || '').replace(',', '.'))).filter(n => !isNaN(n) && n >= 0);
         return vals.length ? (vals.reduce((s, n) => s + n, 0) / vals.length).toFixed(1) : null;
       })();
 
-      // countV: contar vagas por valor de um campo (split opcional por vírgula/ponto-vírgula)
+      // countV: contar vagas válidas por valor de um campo (split opcional por vírgula/ponto-vírgula)
       function countV(key, splitBy = false) {
         const counts = {};
-        enrichedVagas.forEach(v => {
+        vagasValidas.forEach(v => {
           const raw = String(v[key] || '').trim();
           if (!raw || raw === 'null' || raw === 'undefined') return;
           const parts = splitBy ? raw.split(/[;,]/).map(s => s.trim()).filter(Boolean) : [raw];
@@ -15923,7 +15949,7 @@ function EscopoView({ authState, projects }) {
       // Remuneração: min/avg/max de Valor da Bolsa agrupado
       function remunByKey(groupKey) {
         const groups = {};
-        enrichedVagas.forEach(v => {
+        vagasValidas.forEach(v => {
           let raw = v['Valor da Bolsa'];
           const val = parseFloat(typeof raw === 'number' ? raw : String(raw || '').replace(/[R$\s]/g, '').replace(/\./g, '').replace(',', '.'));
           if (isNaN(val) || val <= 0) return;
@@ -15993,10 +16019,10 @@ function EscopoView({ authState, projects }) {
           React.createElement('div', null,
             ...(() => {
               const byProj = {};
-              enrichedVagas.forEach(v => {
+              vagasValidas.forEach(v => {
                 const k = v._nomeProj || v['Nome_Programa'] || 'Desconhecido';
-                const q = parseFloat(String(v['Quantidade de posicoes'] || '1').replace(',', '.'));
-                byProj[k] = (byProj[k] || 0) + (isNaN(q) ? 1 : q);
+                const q = parseFloat(String(v['Quantidade de posicoes'] || '').replace(',', '.'));
+                byProj[k] = (byProj[k] || 0) + (isNaN(q) ? 0 : q);
               });
               const projTotal = Object.values(byProj).reduce((s, n) => s + n, 0);
               return Object.entries(byProj)
@@ -16010,43 +16036,43 @@ function EscopoView({ authState, projects }) {
         // Cidades + Estado
         React.createElement('div', { className: 'grid grid-cols-1 lg:grid-cols-2 gap-5' },
           React.createElement(Sec, { title: 'Cidades aceitas', icon: '🏙' },
-            (() => { const d = countV('Cidades aceitas', true); return d.length ? React.createElement('div', null, ...d.slice(0, 15).map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: tv, color: '#06b6d4' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados'); })()
+            (() => { const d = countV('Cidades aceitas', true); return d.length ? React.createElement('div', { className: 'max-h-72 overflow-y-auto pr-1' }, ...d.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: tv, color: '#06b6d4' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados'); })()
           ),
           React.createElement(Sec, { title: 'Estado', icon: '🗺' },
-            (() => { const d = countV('Estado', true); return d.length ? React.createElement('div', null, ...d.slice(0, 15).map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: tv, color: '#6366f1' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados'); })()
+            (() => { const d = countV('Estado', true); return d.length ? React.createElement('div', { className: 'max-h-72 overflow-y-auto pr-1' }, ...d.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: tv, color: '#6366f1' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados'); })()
           )
         ),
 
         // Tipo de graduação + Tipo de ensino
         React.createElement('div', { className: 'grid grid-cols-1 lg:grid-cols-2 gap-5' },
           React.createElement(Sec, { title: 'Tipo de graduação', icon: '🎓' },
-            (() => { const d = countV('Tipo de graduacao'); return d.length ? React.createElement('div', null, ...d.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: tv, color: '#8b5cf6' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados'); })()
+            (() => { const d = countV('Tipo de graduacao'); return d.length ? React.createElement('div', { className: 'max-h-72 overflow-y-auto pr-1' }, ...d.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: tv, color: '#8b5cf6' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados'); })()
           ),
           React.createElement(Sec, { title: 'Tipo de ensino', icon: '🏫' },
-            (() => { const d = countV('Tipo de ensino'); return d.length ? React.createElement('div', null, ...d.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: tv, color: '#ec4899' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados'); })()
+            (() => { const d = countV('Tipo de ensino'); return d.length ? React.createElement('div', { className: 'max-h-72 overflow-y-auto pr-1' }, ...d.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: tv, color: '#ec4899' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados'); })()
           )
         ),
 
         // Duração + Inglês
         React.createElement('div', { className: 'grid grid-cols-1 lg:grid-cols-2 gap-5' },
           React.createElement(Sec, { title: 'Duração do curso', icon: '📅' },
-            (() => { const d = countV('Duracao'); return d.length ? React.createElement('div', null, ...d.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: tv, color: '#14b8a6' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados'); })()
+            (() => { const d = countV('Duracao'); return d.length ? React.createElement('div', { className: 'max-h-72 overflow-y-auto pr-1' }, ...d.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: tv, color: '#14b8a6' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados'); })()
           ),
           React.createElement(Sec, { title: 'Inglês', icon: '🌐' },
-            (() => { const d = countV('Ingles'); return d.length ? React.createElement('div', null, ...d.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: tv, color: '#f59e0b' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados'); })()
+            (() => { const d = countV('Ingles'); return d.length ? React.createElement('div', { className: 'max-h-72 overflow-y-auto pr-1' }, ...d.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: tv, color: '#f59e0b' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados'); })()
           )
         ),
 
-        // Curso (top 15)
-        React.createElement(Sec, { title: 'Curso (Top 15)', icon: '📚' },
-          (() => { const d = countV('Curso', true); return d.length ? React.createElement('div', null, ...d.slice(0, 15).map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: tv, color: '#3b82f6' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados'); })()
+        // Curso (todos com scroll)
+        React.createElement(Sec, { title: 'Curso', icon: '📚' },
+          (() => { const d = countV('Curso', true); return d.length ? React.createElement('div', { className: 'max-h-96 overflow-y-auto pr-1' }, ...d.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: tv, color: '#3b82f6' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados'); })()
         ),
 
         // Idade + Término de/até
         React.createElement('div', { className: 'grid grid-cols-1 lg:grid-cols-2 gap-5' },
           React.createElement(Sec, { title: 'Idade', icon: '🎂' },
             (() => {
-              const d = enrichedVagas.reduce((acc, v) => {
+              const d = vagasValidas.reduce((acc, v) => {
                 const l = v._idadeLabel; if (!l) return acc;
                 acc[l] = (acc[l] || 0) + 1; return acc;
               }, {});
@@ -16058,11 +16084,11 @@ function EscopoView({ authState, projects }) {
             })()
           ),
           React.createElement(Sec, { title: 'Término de', icon: '📆' },
-            (() => { const d = countV('Termino de'); return d.length ? React.createElement('div', null, ...d.slice(0, 12).map(([l, c]) => React.createElement(HBar, { key: l, label: String(l).replace(/\.0$/, ''), count: c, total: tv, color: '#64748b' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados'); })()
+            (() => { const d = countV('Termino de'); return d.length ? React.createElement('div', { className: 'max-h-72 overflow-y-auto pr-1' }, ...d.map(([l, c]) => React.createElement(HBar, { key: l, label: String(l).replace(/\.0$/, ''), count: c, total: tv, color: '#64748b' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados'); })()
           )
         ),
         React.createElement(Sec, { title: 'Término até', icon: '📆' },
-          (() => { const d = countV('Termino ate'); return d.length ? React.createElement('div', null, ...d.slice(0, 12).map(([l, c]) => React.createElement(HBar, { key: l, label: String(l).replace(/\.0$/, ''), count: c, total: tv, color: '#0ea5e9' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados'); })()
+          (() => { const d = countV('Termino ate'); return d.length ? React.createElement('div', { className: 'max-h-72 overflow-y-auto pr-1' }, ...d.map(([l, c]) => React.createElement(HBar, { key: l, label: String(l).replace(/\.0$/, ''), count: c, total: tv, color: '#0ea5e9' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados'); })()
         ),
 
         // ── Remuneração ───────────────────────────────────────────────────────
