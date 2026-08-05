@@ -4818,7 +4818,7 @@ function App() {
       onHome: () => setModule(null),
       onBackupDownload: handleBackupDownload,
       onBackupUpload: handleBackupUpload
-    }), /*#__PURE__*/React.createElement(EscopoView, { authState: authState }));
+    }), /*#__PURE__*/React.createElement(EscopoView, { authState: authState, projects: projects }));
   }
 
   // ── Calendar module ──
@@ -15279,7 +15279,7 @@ function buildEscopoFM(items) {
   };
 }
 
-function EscopoView({ authState }) {
+function EscopoView({ authState, projects }) {
   const [items, setItems] = useState(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
@@ -15298,17 +15298,30 @@ function EscopoView({ authState }) {
 
   const fm = useMemo(() => items ? buildEscopoFM(items) : {}, [items]);
 
+  // Conjunto de nomes de programas A&S — usa projects (mesma fonte de Clientes×Frentes)
+  // como fonte de verdade para garantir consistência (evita depender de fm.frenteNeg)
+  const _normN = s => String(s||'').toLowerCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g,'')
+    .replace(/[^a-z0-9\s]/g,' ').replace(/\s+/g,' ').trim();
+  const asNomes = useMemo(() => {
+    const s = new Set();
+    (projects || []).forEach(p => {
+      if (getClientFrente(p.solucao) === 'Atração e Seleção') s.add(_normN(p.title || ''));
+    });
+    return s;
+  }, [projects]);
+
   const filtered = useMemo(() => {
     if (!items) return [];
     return items.filter(it => {
-      // Filtro fixo: apenas projetos de A&S (Atração e Seleção)
-      const frente = String(it[fm.frenteNeg] || '').toLowerCase();
-      if (!(frente.includes('atra') && frente.includes('sele'))) return false;
+      // Filtro fixo: apenas projetos de A&S — cruza por Nome_Programa com projects
+      const nome = _normN(String(it[fm.nome] || ''));
+      if (!nome || !asNomes.has(nome)) return false;
       if (fSeg   && (it[fm.segmento]  || '') !== fSeg)   return false;
       if (fCiclo && (it[fm.ciclo]     || '') !== fCiclo)  return false;
       return true;
     });
-  }, [items, fSeg, fCiclo, fm]);
+  }, [items, fSeg, fCiclo, fm, asNomes]);
 
   function g(it, key) {
     const f = fm[key]; return f ? (it[f] ?? null) : null;
@@ -15402,11 +15415,8 @@ function EscopoView({ authState }) {
   const total = filtered.length;
   const allItems = items || [];
 
-  // Opções de filtro derivadas apenas dos itens A&S (base já pré-filtrada)
-  const asBase     = allItems.filter(it => {
-    const frente = String(it[fm.frenteNeg] || '').toLowerCase();
-    return frente.includes('atra') && frente.includes('sele');
-  });
+  // Opções de filtro derivadas apenas dos itens A&S (cross-ref por asNomes)
+  const asBase     = allItems.filter(it => asNomes.has(_normN(String(it[fm.nome] || ''))));
   const segOpts    = [...new Set(asBase.map(it => it[fm.segmento]  ).filter(Boolean))].sort();
   const cicloOpts  = [...new Set(asBase.map(it => it[fm.ciclo]     ).filter(Boolean))].sort();
 
