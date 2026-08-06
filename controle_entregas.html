@@ -5011,7 +5011,7 @@ function AppHeader({
     className: "w-7 h-7 bg-indigo-600 rounded-lg flex items-center justify-center text-white text-xs font-bold"
   }, "CT"), /*#__PURE__*/React.createElement("span", {
     className: "text-base font-bold text-slate-800"
-  }, module === 'pulse' ? 'Pulse' : module === 'gestao' ? 'Gestão A&S' : module === 'calendar' ? 'Calendário' : module === 'analytics' ? 'Analytics' : module === 'clientes' ? 'Clientes × Frentes' : module === 'nps' ? 'NPS' : module === 'cx' ? 'CX — Analytics' : module === 'cx_atend' ? 'CX — Atendimento' : module === 'escopo' ? 'Mapa de Escopo A&S' : module === 'inscricoes' ? 'Pessoas Inscritas' : MODULE_CONFIGS[module]?.label || 'Alocação'), module === 'gestao' && projectCount > 0 && /*#__PURE__*/React.createElement("span", {
+  }, module === 'pulse' ? 'Pulse' : module === 'gestao' ? 'Gestão A&S' : module === 'calendar' ? 'Calendário' : module === 'analytics' ? 'Analytics' : module === 'clientes' ? 'Clientes × Frentes' : module === 'nps' ? 'NPS' : module === 'cx' ? 'CX — Analytics' : module === 'cx_atend' ? 'CX — Atendimento' : module === 'escopo' ? 'Vagas: Escopo, Requisitos e Remuneração' : module === 'inscricoes' ? 'Pessoas Inscritas' : MODULE_CONFIGS[module]?.label || 'Alocação'), module === 'gestao' && projectCount > 0 && /*#__PURE__*/React.createElement("span", {
     className: "bg-indigo-100 text-indigo-700 text-xs px-2 py-0.5 rounded-full"
   }, projectCount, " proj.")), module === 'gestao' && /*#__PURE__*/React.createElement("nav", {
     className: "flex gap-1 flex-wrap flex-1 items-center"
@@ -5304,11 +5304,11 @@ function HomeScreen({
     d: "M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z"
   }))), /*#__PURE__*/React.createElement("h2", {
     className: "text-xl font-bold text-slate-900 mb-2"
-  }, "Mapa de Escopo A&S"), /*#__PURE__*/React.createElement("p", {
+  }, "Vagas: Escopo, Requisitos e Remuneração"), /*#__PURE__*/React.createElement("p", {
     className: "text-sm text-slate-500 leading-relaxed"
-  }, "Indicadores de escopo dos processos: segmento, assessments, diversidade, características de programa e mais."), /*#__PURE__*/React.createElement("div", {
+  }, "Escopo dos processos A&S, requisitos das vagas (cidades, cursos, inglês, remuneração) e metas de diversidade."), /*#__PURE__*/React.createElement("div", {
     className: "mt-6 flex items-center text-sm font-semibold text-orange-600 group-hover:text-orange-700"
-  }, "Abrir Mapa ", /*#__PURE__*/React.createElement("span", {
+  }, "Abrir ", /*#__PURE__*/React.createElement("span", {
     className: "ml-1.5"
   }, "→"))),
   /*#__PURE__*/React.createElement("button", {
@@ -10363,7 +10363,7 @@ function AnalyticsView({
     nps: 'NPS',
     cx: 'CX',
     clientes: 'Clientes × Frentes',
-    escopo: 'Mapa de Escopo A&S'
+    escopo: 'Vagas: Escopo, Requisitos e Remuneração'
   };
   const fmtDate = ts => {
     if (!ts) return '—';
@@ -15406,6 +15406,7 @@ function EscopoView({ authState, projects }) {
   const [vagasLoading, setVagasLoading] = useState(false);
   const [vagasErr, setVagasErr] = useState(null);
   const [vagasProg, setVagasProg] = useState('');
+  const [fProjVagas, setFProjVagas] = useState(new Set());
 
   useEffect(() => {
     if (!authState?.token) return;
@@ -15569,10 +15570,40 @@ function EscopoView({ authState, projects }) {
   }
 
   // ── Sub-components ──
-  function Sec({ title, icon, children }) {
+  function _dlCSV(title, rows) {
+    if (!rows || !rows.length) return;
+    const bom = '﻿';
+    const header = 'Valor,Contagem\n';
+    const body = rows.map(([l, c]) => `"${String(l ?? '').replace(/"/g, '""')}",${c}`).join('\n');
+    const blob = new Blob([bom + header + body], { type: 'text/csv;charset=utf-8;' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+    a.download = (title || 'dados').replace(/[^a-zA-Z0-9_\- ]/g, '_') + '.csv';
+    a.click(); URL.revokeObjectURL(a.href);
+  }
+
+  // Multi-column CSV export: headers = string[], rows = array of arrays
+  function _dlCSVTable(title, headers, rows) {
+    if (!rows || !rows.length) return;
+    const bom = '﻿';
+    const esc = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const header = headers.map(esc).join(',') + '\n';
+    const body = rows.map(r => r.map(v => typeof v === 'number' ? v : esc(v)).join(',')).join('\n');
+    const blob = new Blob([bom + header + body], { type: 'text/csv;charset=utf-8;' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+    a.download = (title || 'dados').replace(/[^a-zA-Z0-9_\- ]/g, '_') + '.csv';
+    a.click(); URL.revokeObjectURL(a.href);
+  }
+
+  function Sec({ title, icon, children, csvRows, csvName }) {
     return React.createElement('div', { className: 'bg-white rounded-2xl border border-slate-200 p-5' },
-      React.createElement('h3', { className: 'text-sm font-bold text-slate-700 mb-4 flex items-center gap-2' },
-        icon, ' ', title),
+      React.createElement('div', { className: 'flex items-center justify-between mb-4' },
+        React.createElement('h3', { className: 'text-sm font-bold text-slate-700 flex items-center gap-2' }, icon, ' ', title),
+        csvRows && csvRows.length > 0 && React.createElement('button', {
+          onClick: () => _dlCSV(csvName || title, csvRows),
+          title: 'Exportar para Excel (CSV)',
+          className: 'text-xs px-2 py-0.5 rounded border border-slate-200 text-slate-400 hover:text-green-600 hover:border-green-400 transition'
+        }, '↓ xlsx')
+      ),
       children
     );
   }
@@ -15670,19 +15701,10 @@ function EscopoView({ authState, projects }) {
   // ── Render ──
   return React.createElement('div', { className: 'max-w-7xl mx-auto px-4 py-6 space-y-5 fade-in' },
 
-    // Banner: página em construção
-    React.createElement('div', { className: 'flex items-center gap-3 bg-amber-50 border-2 border-amber-400 rounded-2xl px-5 py-4' },
-      React.createElement('span', { className: 'text-3xl flex-shrink-0' }, '🚧'),
-      React.createElement('div', null,
-        React.createElement('p', { className: 'text-base font-bold text-amber-800' }, 'Página em construção'),
-        React.createElement('p', { className: 'text-sm text-amber-700 mt-0.5' }, 'Dados em fase de validação — as informações exibidas podem estar incompletas ou imprecisas.')
-      )
-    ),
-
     // Header
     React.createElement('div', { className: 'flex flex-wrap items-start justify-between gap-3' },
       React.createElement('div', null,
-        React.createElement('h1', { className: 'text-xl font-bold text-slate-900' }, '📊 Mapa de Escopo A&S'),
+        React.createElement('h1', { className: 'text-xl font-bold text-slate-900' }, '📊 Vagas: Escopo, Requisitos e Remuneração'),
         React.createElement('p', { className: 'text-sm text-slate-500 mt-0.5' },
           anyFilter ? `${totalFiltered} de ${totalAS} processos filtrados` : `${totalAS} processos · A&S`,
           vagas?.lastModified && React.createElement('span', { className: 'ml-3 text-xs text-slate-400 font-normal' },
@@ -15720,39 +15742,38 @@ function EscopoView({ authState, projects }) {
     ),
 
     // KPIs
-    React.createElement('div', { className: 'grid grid-cols-2 lg:grid-cols-3 gap-4' },
+    React.createElement('div', { className: 'grid grid-cols-2 gap-4' },
       React.createElement(Kpi, { label: 'Total de processos', value: total, sub: anyFilter ? `de ${totalAS} A&S` : 'processos A&S', color: '#f97316' }),
-      React.createElement(Kpi, { label: 'Com meta de diversidade', value: total > 0 ? `${Math.round(processosComMeta / total * 100)}%` : '—', sub: `${processosComMeta} processo${processosComMeta !== 1 ? 's' : ''}`, color: '#8b5cf6' }),
-      React.createElement(Kpi, { label: 'Preenchimento da base', value: total > 0 ? `${Math.round(assessCounts.length > 0 || periodicCounts.length > 0 ? 100 : 50)}%` : '—', sub: 'campos preenchidos', color: '#0ea5e9' })
+      React.createElement(Kpi, { label: 'Com meta de diversidade', value: total > 0 ? `${Math.round(processosComMeta / total * 100)}%` : '—', sub: `${processosComMeta} processo${processosComMeta !== 1 ? 's' : ''}`, color: '#8b5cf6' })
     ),
 
     // Público + Segmento + Micro-Segmento
     React.createElement('div', { className: 'grid grid-cols-1 lg:grid-cols-3 gap-5' },
-      React.createElement(Sec, { title: 'Público', icon: '👥' },
+      React.createElement(Sec, { title: 'Público', icon: '👥', csvRows: publicoCounts, csvName: 'Publico' },
         publicoCounts.length
           ? React.createElement('div', null, ...publicoCounts.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total, color: '#6366f1', active: fPublico.has(l), onClick: () => toggleSet(fPublico, setFPublico, l) })))
           : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados')
       ),
-      React.createElement(Sec, { title: 'Segmento', icon: '🏢' },
+      React.createElement(Sec, { title: 'Segmento', icon: '🏢', csvRows: segCounts, csvName: 'Segmento' },
         segCounts.length
           ? React.createElement('div', null, ...segCounts.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total, color: '#f97316', active: fSeg.has(l), onClick: () => toggleSet(fSeg, setFSeg, l) })))
           : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados')
       ),
-      React.createElement(Sec, { title: 'Micro-Segmento', icon: '🔍' },
+      React.createElement(Sec, { title: 'Micro-Segmento', icon: '🔍', csvRows: microCounts, csvName: 'Micro_Segmento' },
         microCounts.length
-          ? React.createElement('div', null, ...microCounts.slice(0, 12).map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total, color: '#fb923c' })))
+          ? React.createElement('div', null, ...microCounts.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total, color: '#fb923c' })))
           : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados')
       )
     ),
 
     // Assessments + Periodicidade
     React.createElement('div', { className: 'grid grid-cols-1 lg:grid-cols-2 gap-5' },
-      React.createElement(Sec, { title: 'Assessments Utilizados', icon: '🧪' },
+      React.createElement(Sec, { title: 'Assessments Utilizados', icon: '🧪', csvRows: assessCounts, csvName: 'Assessments_Utilizados' },
         assessCounts.length
-          ? React.createElement('div', null, ...assessCounts.slice(0, 12).map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total, color: '#6366f1' })))
+          ? React.createElement('div', null, ...assessCounts.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total, color: '#6366f1' })))
           : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados')
       ),
-      React.createElement(Sec, { title: 'Periodicidade das Contratações', icon: '🔄' },
+      React.createElement(Sec, { title: 'Periodicidade das Contratações', icon: '🔄', csvRows: periodicCounts, csvName: 'Periodicidade_Contratacoes' },
         periodicCounts.length
           ? React.createElement('div', null, ...periodicCounts.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total, color: '#14b8a6' })))
           : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Campo não preenchido no SP')
@@ -15814,7 +15835,7 @@ function EscopoView({ authState, projects }) {
 
     // Nicho + Experiência + Flexibilização
     React.createElement('div', { className: 'grid grid-cols-1 lg:grid-cols-3 gap-5' },
-      React.createElement(Sec, { title: 'Nicho Específico', icon: '🎯' },
+      React.createElement(Sec, { title: 'Nicho Específico', icon: '🎯', csvRows: [['Sim', nicho.yes], ['Não', nicho.no]], csvName: 'Nicho_Especifico' },
         React.createElement(YNBar, { yes: nicho.yes, no: nicho.no }),
         nicho.yes > 0 && React.createElement('div', { className: 'mt-3 space-y-1' },
           React.createElement('div', { className: 'text-xs text-slate-400 font-medium mb-1' }, 'Nichos mencionados:'),
@@ -15826,7 +15847,7 @@ function EscopoView({ authState, projects }) {
           )
         )
       ),
-      React.createElement(Sec, { title: 'Experiência Profissional Exigida', icon: '💼' },
+      React.createElement(Sec, { title: 'Experiência Profissional Exigida', icon: '💼', csvRows: [['Sim', expProf.yes], ['Não', expProf.no]], csvName: 'Experiencia_Profissional' },
         React.createElement(YNBar, { yes: expProf.yes, no: expProf.no }),
         expDurCounts.length > 0 && React.createElement('div', { className: 'mt-4' },
           React.createElement('div', { className: 'text-xs text-slate-400 font-medium mb-2' }, 'Duração exigida:'),
@@ -15835,7 +15856,7 @@ function EscopoView({ authState, projects }) {
           )
         )
       ),
-      React.createElement(Sec, { title: 'Flexibilização para Internos', icon: '🔓' },
+      React.createElement(Sec, { title: 'Flexibilização para Internos', icon: '🔓', csvRows: [['Sim', flex.yes], ['Não', flex.no]], csvName: 'Flexibilizacao_Internos' },
         React.createElement(YNBar, { yes: flex.yes, no: flex.no }),
         flex.yes > 0 && React.createElement('div', { className: 'mt-3 space-y-1' },
           React.createElement('div', { className: 'text-xs text-slate-400 font-medium mb-1' }, 'Critérios flexibilizados:'),
@@ -15851,61 +15872,64 @@ function EscopoView({ authState, projects }) {
 
     // Headcount + Duração + Cargo
     React.createElement('div', { className: 'grid grid-cols-1 lg:grid-cols-3 gap-5' },
-      React.createElement(Sec, { title: 'Headcount do Programa', icon: '👤' },
+      React.createElement(Sec, { title: 'Headcount do Programa', icon: '👤', csvRows: headcountCounts, csvName: 'Headcount_Programa' },
         headcountCounts.length
           ? React.createElement('div', null, ...headcountCounts.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total, color: '#0ea5e9' })))
           : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados')
       ),
-      React.createElement(Sec, { title: 'Duração do Programa', icon: '⏱️' },
+      React.createElement(Sec, { title: 'Duração do Programa', icon: '⏱️', csvRows: duracaoCounts, csvName: 'Duracao_Programa' },
         duracaoCounts.length
           ? React.createElement('div', null, ...duracaoCounts.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total, color: '#14b8a6' })))
           : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados')
       ),
-      React.createElement(Sec, { title: 'Cargo ao Final do Programa', icon: '🎓' },
+      React.createElement(Sec, { title: 'Cargo ao Final do Programa', icon: '🎓', csvRows: cargoFinalCounts, csvName: 'Cargo_Final_Programa' },
         cargoFinalCounts.length
-          ? React.createElement('div', null, ...cargoFinalCounts.slice(0, 6).map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total, color: '#f59e0b' })))
+          ? React.createElement('div', null, ...cargoFinalCounts.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total, color: '#f59e0b' })))
           : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados')
       )
     ),
 
     // Há quanto tempo existe
-    React.createElement('div', { className: 'grid grid-cols-1 lg:grid-cols-2 gap-5' },
-      React.createElement(Sec, { title: 'Há quanto tempo existe', icon: '📅' },
-        tempoCounts.length
-          ? React.createElement('div', null, ...tempoCounts.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total, color: '#8b5cf6' })))
-          : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados')
-      ),
-      React.createElement(Sec, { title: 'Ciclo Orçamentário', icon: '📆' },
-        [...new Set(filtered.map(it => it[fm.ciclo] || '').filter(Boolean))].sort().map(ciclo => {
-          const c = filtered.filter(it => (it[fm.ciclo] || '') === ciclo).length;
-          return React.createElement(HBar, { key: ciclo, label: ciclo, count: c, total, color: '#f97316', active: fCiclo.has(ciclo), onClick: () => toggleSet(fCiclo, setFCiclo, ciclo) });
-        })
-      )
-    ),
+    (() => {
+      const cicloCsvRows = [...new Set(filtered.map(it => it[fm.ciclo] || '').filter(Boolean))].sort().map(ciclo => [ciclo, filtered.filter(it => (it[fm.ciclo] || '') === ciclo).length]);
+      return React.createElement('div', { className: 'grid grid-cols-1 lg:grid-cols-2 gap-5' },
+        React.createElement(Sec, { title: 'Há quanto tempo existe', icon: '📅', csvRows: tempoCounts, csvName: 'Tempo_Existe' },
+          tempoCounts.length
+            ? React.createElement('div', null, ...tempoCounts.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total, color: '#8b5cf6' })))
+            : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados')
+        ),
+        React.createElement(Sec, { title: 'Ciclo Orçamentário', icon: '📆', csvRows: cicloCsvRows, csvName: 'Ciclo_Orcamentario' },
+          cicloCsvRows.map(([ciclo, c]) =>
+            React.createElement(HBar, { key: ciclo, label: ciclo, count: c, total, color: '#f97316', active: fCiclo.has(ciclo), onClick: () => toggleSet(fCiclo, setFCiclo, ciclo) })
+          )
+        )
+      );
+    })(),
 
     // Presencial + Custos + Auxílio mudança
     React.createElement('div', { className: 'grid grid-cols-1 lg:grid-cols-3 gap-5' },
-      React.createElement(Sec, { title: 'Tem Etapa Presencial', icon: '🏛️' },
+      React.createElement(Sec, { title: 'Tem Etapa Presencial', icon: '🏛️', csvRows: [['Sim', presencial.yes], ['Não', presencial.no]], csvName: 'Etapa_Presencial' },
         React.createElement(YNBar, { yes: presencial.yes, no: presencial.no })
       ),
-      React.createElement(Sec, { title: 'Empresa Arcou com Custos', icon: '💰' },
+      React.createElement(Sec, { title: 'Empresa Arcou com Custos', icon: '💰', csvRows: [['Sim', arcou.yes], ['Não', arcou.no]], csvName: 'Empresa_Arcou_Custos' },
         React.createElement(YNBar, { yes: arcou.yes, no: arcou.no })
       ),
-      React.createElement(Sec, { title: 'Auxílio Mudança', icon: '🚚' },
+      React.createElement(Sec, { title: 'Auxílio Mudança', icon: '🚚', csvRows: [['Sim', auxilio.yes], ['Não', auxilio.no]], csvName: 'Auxilio_Mudanca' },
         React.createElement(YNBar, { yes: auxilio.yes, no: auxilio.no })
       )
     ),
 
     // Política de custos (etapa presencial) — seção independente
-    React.createElement(Sec, { title: 'Qual foi a política de custos? (etapa presencial)', icon: '📋' },
-      (() => {
-        const politicaCounts = countVals('politicaCusto', false);
-        return politicaCounts.length
-          ? React.createElement('div', null, ...politicaCounts.slice(0, 8).map(([l, c]) =>
+    (() => {
+      const politicaCounts = countVals('politicaCusto', false);
+      return React.createElement(Sec, { title: 'Qual foi a política de custos? (etapa presencial)', icon: '📋', csvRows: politicaCounts, csvName: 'Politica_Custos' },
+        politicaCounts.length
+          ? React.createElement('div', null, ...politicaCounts.map(([l, c]) =>
               React.createElement(HBar, { key: l, label: l, count: c, total, color: '#0ea5e9' })
             ))
-          : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados');
-      })()
+          : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados')
+      );
+    })()
     ),
 
     // ── Seção Vagas ─────────────────────────────────────────────────────────────
@@ -15972,7 +15996,21 @@ function EscopoView({ authState, projects }) {
 
       function RemunTable({ title, icon, rows }) {
         if (!rows.length) return null;
-        return React.createElement(Sec, { title, icon },
+        const exportTable = () => _dlCSVTable(
+          title.replace(/\s+/g, '_'),
+          ['Grupo', 'Mínimo (R$)', 'Média (R$)', 'Máximo (R$)', 'Qtd vagas'],
+          rows.map(r => [r.label, r.min, r.avg, r.max, r.n])
+        );
+        return React.createElement(Sec, { title, icon,
+          // Pass a dummy non-empty csvRows so the ↓ xlsx button shows; we override onClick below
+          csvRows: null },
+          React.createElement('div', { className: 'flex justify-end mb-2' },
+            React.createElement('button', {
+              onClick: exportTable,
+              title: 'Exportar para Excel (CSV)',
+              className: 'text-xs px-2 py-0.5 rounded border border-slate-200 text-slate-400 hover:text-green-600 hover:border-green-400 transition'
+            }, '↓ xlsx')
+          ),
           React.createElement('div', { className: 'overflow-auto' },
             React.createElement('table', { className: 'text-xs w-full' },
               React.createElement('thead', null,
@@ -15985,7 +16023,7 @@ function EscopoView({ authState, projects }) {
                 )
               ),
               React.createElement('tbody', null,
-                ...rows.slice(0, 20).map(r =>
+                ...rows.map(r =>
                   React.createElement('tr', { key: r.label, className: 'border-b border-slate-50 hover:bg-slate-50' },
                     React.createElement('td', { className: 'py-1.5 pr-4 text-slate-700 font-medium max-w-[180px] truncate' }, r.label),
                     React.createElement('td', { className: 'text-right px-2 text-slate-600' }, brl(r.min)),
@@ -16008,88 +16046,113 @@ function EscopoView({ authState, projects }) {
         ),
 
         // KPIs
-        React.createElement('div', { className: 'grid grid-cols-2 sm:grid-cols-3 gap-4' },
-          React.createElement(Kpi, { label: 'Total de vagas', value: tv.toLocaleString('pt-BR'), sub: 'linhas na base', color: '#f97316' }),
-          totalPos > 0 && React.createElement(Kpi, { label: 'Total de posições', value: Math.round(totalPos).toLocaleString('pt-BR'), sub: 'soma quantidade', color: '#8b5cf6' }),
+        React.createElement('div', { className: 'grid grid-cols-2 gap-4' },
+          totalPos > 0 && React.createElement(Kpi, { label: 'Posições mapeadas', value: Math.round(totalPos).toLocaleString('pt-BR'), sub: 'soma quantidade', color: '#8b5cf6' }),
           mediaProx !== null && React.createElement(Kpi, { label: 'Média necessário próx. etapa', value: mediaProx, sub: 'candidatos por vaga', color: '#0ea5e9' })
         ),
 
-        // Posições por projeto
-        React.createElement(Sec, { title: 'Posições por projeto', icon: '🏢' },
-          React.createElement('div', null,
-            ...(() => {
-              const byProj = {};
-              vagasValidas.forEach(v => {
-                const k = v._nomeProj || v['Nome_Programa'] || 'Desconhecido';
-                const q = parseFloat(String(v['Quantidade de posicoes'] || '').replace(',', '.'));
-                byProj[k] = (byProj[k] || 0) + (isNaN(q) ? 0 : q);
-              });
-              const projTotal = Object.values(byProj).reduce((s, n) => s + n, 0);
-              return Object.entries(byProj)
-                .sort((a, b) => b[1] - a[1])
-                .slice(0, 20)
-                .map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: projTotal, color: '#f97316' }));
-            })()
-          )
-        ),
+        // Posições mapeadas por projeto (filtrável, multi-select)
+        (() => {
+          const byProj = {};
+          vagasValidas.forEach(v => {
+            const k = v._nomeProj || v['Nome_Programa'] || 'Desconhecido';
+            const q = parseFloat(String(v['Quantidade de posicoes'] || '').replace(',', '.'));
+            byProj[k] = (byProj[k] || 0) + (isNaN(q) ? 0 : q);
+          });
+          const allProjEntries = Object.entries(byProj).sort((a, b) => b[1] - a[1]);
+          const projTotal = allProjEntries.reduce((s, [, n]) => s + n, 0);
+          const visEntries = fProjVagas.size > 0 ? allProjEntries.filter(([l]) => fProjVagas.has(l)) : allProjEntries;
+          const visTotal = visEntries.reduce((s, [, n]) => s + n, 0);
+          const csvRows = allProjEntries.map(([l, c]) => [l, c]);
+          return React.createElement(Sec, { title: 'Posições mapeadas por projeto', icon: '🏢', csvRows, csvName: 'Posicoes_por_projeto' },
+            // Filtro chips de projetos
+            React.createElement('div', { className: 'flex flex-wrap gap-1.5 mb-3' },
+              fProjVagas.size > 0 && React.createElement('button', {
+                onClick: () => setFProjVagas(new Set()),
+                className: 'text-xs px-2 py-0.5 rounded-full border border-red-200 text-red-400 hover:bg-red-50 transition'
+              }, '✕ limpar'),
+              ...allProjEntries.map(([l]) => React.createElement('button', {
+                key: l,
+                onClick: () => { setFProjVagas(prev => { const s = new Set(prev); s.has(l) ? s.delete(l) : s.add(l); return s; }); },
+                className: `text-xs px-2 py-0.5 rounded-full border transition ${fProjVagas.has(l) ? 'bg-orange-500 text-white border-orange-500' : 'bg-white text-slate-600 border-slate-200 hover:border-orange-300'}`
+              }, l))
+            ),
+            React.createElement('div', { className: 'max-h-96 overflow-y-auto pr-1' },
+              ...visEntries.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: visTotal, color: '#f97316' }))
+            )
+          );
+        })(),
 
         // Cidades + Estado
-        React.createElement('div', { className: 'grid grid-cols-1 lg:grid-cols-2 gap-5' },
-          React.createElement(Sec, { title: 'Cidades aceitas', icon: '🏙' },
-            (() => { const d = countV('Cidades aceitas', true); return d.length ? React.createElement('div', { className: 'max-h-72 overflow-y-auto pr-1' }, ...d.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: tv, color: '#06b6d4' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados'); })()
-          ),
-          React.createElement(Sec, { title: 'Estado', icon: '🗺' },
-            (() => { const d = countV('Estado', true); return d.length ? React.createElement('div', { className: 'max-h-72 overflow-y-auto pr-1' }, ...d.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: tv, color: '#6366f1' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados'); })()
-          )
-        ),
+        (() => {
+          const dCidades = countV('Cidades aceitas', true);
+          const dEstado  = countV('Estado', true);
+          return React.createElement('div', { className: 'grid grid-cols-1 lg:grid-cols-2 gap-5' },
+            React.createElement(Sec, { title: 'Cidades aceitas', icon: '🏙', csvRows: dCidades, csvName: 'Cidades_aceitas' },
+              dCidades.length ? React.createElement('div', { className: 'max-h-72 overflow-y-auto pr-1' }, ...dCidades.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: tv, color: '#06b6d4' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados')
+            ),
+            React.createElement(Sec, { title: 'Estado', icon: '🗺', csvRows: dEstado, csvName: 'Estado' },
+              dEstado.length ? React.createElement('div', { className: 'max-h-72 overflow-y-auto pr-1' }, ...dEstado.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: tv, color: '#6366f1' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados')
+            )
+          );
+        })(),
 
         // Tipo de graduação + Tipo de ensino
-        React.createElement('div', { className: 'grid grid-cols-1 lg:grid-cols-2 gap-5' },
-          React.createElement(Sec, { title: 'Tipo de graduação', icon: '🎓' },
-            (() => { const d = countV('Tipo de graduacao'); return d.length ? React.createElement('div', { className: 'max-h-72 overflow-y-auto pr-1' }, ...d.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: tv, color: '#8b5cf6' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados'); })()
-          ),
-          React.createElement(Sec, { title: 'Tipo de ensino', icon: '🏫' },
-            (() => { const d = countV('Tipo de ensino'); return d.length ? React.createElement('div', { className: 'max-h-72 overflow-y-auto pr-1' }, ...d.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: tv, color: '#ec4899' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados'); })()
-          )
-        ),
+        (() => {
+          const dGrad  = countV('Tipo de graduacao');
+          const dEnsin = countV('Tipo de ensino');
+          return React.createElement('div', { className: 'grid grid-cols-1 lg:grid-cols-2 gap-5' },
+            React.createElement(Sec, { title: 'Tipo de graduação', icon: '🎓', csvRows: dGrad, csvName: 'Tipo_de_graduacao' },
+              dGrad.length ? React.createElement('div', { className: 'max-h-72 overflow-y-auto pr-1' }, ...dGrad.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: tv, color: '#8b5cf6' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados')
+            ),
+            React.createElement(Sec, { title: 'Tipo de ensino', icon: '🏫', csvRows: dEnsin, csvName: 'Tipo_de_ensino' },
+              dEnsin.length ? React.createElement('div', { className: 'max-h-72 overflow-y-auto pr-1' }, ...dEnsin.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: tv, color: '#ec4899' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados')
+            )
+          );
+        })(),
 
         // Duração + Inglês
-        React.createElement('div', { className: 'grid grid-cols-1 lg:grid-cols-2 gap-5' },
-          React.createElement(Sec, { title: 'Duração do curso', icon: '📅' },
-            (() => { const d = countV('Duracao'); return d.length ? React.createElement('div', { className: 'max-h-72 overflow-y-auto pr-1' }, ...d.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: tv, color: '#14b8a6' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados'); })()
-          ),
-          React.createElement(Sec, { title: 'Inglês', icon: '🌐' },
-            (() => { const d = countV('Ingles'); return d.length ? React.createElement('div', { className: 'max-h-72 overflow-y-auto pr-1' }, ...d.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: tv, color: '#f59e0b' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados'); })()
-          )
-        ),
+        (() => {
+          const dDur  = countV('Duracao');
+          const dIng  = countV('Ingles');
+          return React.createElement('div', { className: 'grid grid-cols-1 lg:grid-cols-2 gap-5' },
+            React.createElement(Sec, { title: 'Duração do curso', icon: '📅', csvRows: dDur, csvName: 'Duracao_curso' },
+              dDur.length ? React.createElement('div', { className: 'max-h-72 overflow-y-auto pr-1' }, ...dDur.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: tv, color: '#14b8a6' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados')
+            ),
+            React.createElement(Sec, { title: 'Inglês', icon: '🌐', csvRows: dIng, csvName: 'Ingles' },
+              dIng.length ? React.createElement('div', { className: 'max-h-72 overflow-y-auto pr-1' }, ...dIng.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: tv, color: '#f59e0b' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados')
+            )
+          );
+        })(),
 
         // Curso (todos com scroll)
-        React.createElement(Sec, { title: 'Curso', icon: '📚' },
-          (() => { const d = countV('Curso', true); return d.length ? React.createElement('div', { className: 'max-h-96 overflow-y-auto pr-1' }, ...d.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: tv, color: '#3b82f6' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados'); })()
-        ),
+        (() => {
+          const dCurso = countV('Curso', true);
+          return React.createElement(Sec, { title: 'Curso', icon: '📚', csvRows: dCurso, csvName: 'Curso' },
+            dCurso.length ? React.createElement('div', { className: 'max-h-96 overflow-y-auto pr-1' }, ...dCurso.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: tv, color: '#3b82f6' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados')
+          );
+        })(),
 
         // Idade + Término de/até
-        React.createElement('div', { className: 'grid grid-cols-1 lg:grid-cols-2 gap-5' },
-          React.createElement(Sec, { title: 'Idade', icon: '🎂' },
-            (() => {
-              const d = vagasValidas.reduce((acc, v) => {
-                const l = v._idadeLabel; if (!l) return acc;
-                acc[l] = (acc[l] || 0) + 1; return acc;
-              }, {});
-              const entries = Object.entries(d).sort((a, b) => {
-                if (a[0] === 'Qualquer') return -1; if (b[0] === 'Qualquer') return 1;
-                return parseInt(a[0]) - parseInt(b[0]);
-              });
-              return entries.length ? React.createElement('div', null, ...entries.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: tv, color: l === 'Qualquer' ? '#22c55e' : '#f97316' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados');
-            })()
-          ),
-          React.createElement(Sec, { title: 'Término de', icon: '📆' },
-            (() => { const d = countV('Termino de'); return d.length ? React.createElement('div', { className: 'max-h-72 overflow-y-auto pr-1' }, ...d.map(([l, c]) => React.createElement(HBar, { key: l, label: String(l).replace(/\.0$/, ''), count: c, total: tv, color: '#64748b' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados'); })()
-          )
-        ),
-        React.createElement(Sec, { title: 'Término até', icon: '📆' },
-          (() => { const d = countV('Termino ate'); return d.length ? React.createElement('div', { className: 'max-h-72 overflow-y-auto pr-1' }, ...d.map(([l, c]) => React.createElement(HBar, { key: l, label: String(l).replace(/\.0$/, ''), count: c, total: tv, color: '#0ea5e9' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados'); })()
-        ),
+        (() => {
+          const dIdade = vagasValidas.reduce((acc, v) => { const l = v._idadeLabel; if (!l) return acc; acc[l] = (acc[l] || 0) + 1; return acc; }, {});
+          const idadeEntries = Object.entries(dIdade).sort((a, b) => { if (a[0] === 'Qualquer') return -1; if (b[0] === 'Qualquer') return 1; return parseInt(a[0]) - parseInt(b[0]); });
+          const dTermDe  = countV('Termino de').map(([l, c]) => [String(l).replace(/\.0$/, ''), c]);
+          const dTermAte = countV('Termino ate').map(([l, c]) => [String(l).replace(/\.0$/, ''), c]);
+          return React.createElement(React.Fragment, null,
+            React.createElement('div', { className: 'grid grid-cols-1 lg:grid-cols-2 gap-5' },
+              React.createElement(Sec, { title: 'Idade', icon: '🎂', csvRows: idadeEntries, csvName: 'Idade' },
+                idadeEntries.length ? React.createElement('div', null, ...idadeEntries.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: tv, color: l === 'Qualquer' ? '#22c55e' : '#f97316' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados')
+              ),
+              React.createElement(Sec, { title: 'Término de', icon: '📆', csvRows: dTermDe, csvName: 'Termino_de' },
+                dTermDe.length ? React.createElement('div', { className: 'max-h-72 overflow-y-auto pr-1' }, ...dTermDe.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: tv, color: '#64748b' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados')
+              )
+            ),
+            React.createElement(Sec, { title: 'Término até', icon: '📆', csvRows: dTermAte, csvName: 'Termino_ate' },
+              dTermAte.length ? React.createElement('div', { className: 'max-h-72 overflow-y-auto pr-1' }, ...dTermAte.map(([l, c]) => React.createElement(HBar, { key: l, label: l, count: c, total: tv, color: '#0ea5e9' }))) : React.createElement('p', { className: 'text-sm text-slate-400' }, 'Sem dados')
+            )
+          );
+        })(),
 
         // ── Remuneração ───────────────────────────────────────────────────────
         React.createElement('div', { className: 'border-t-4 border-orange-400 pt-1 mt-2' },
