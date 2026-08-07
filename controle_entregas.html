@@ -11853,25 +11853,12 @@ function NpsView({
     return map;
   }, [candRows, projects]);
 
-  // Extrai ciclo diretamente do nome do coletor SM quando não há match no SP
-  // Regra: qualquer par de anos consecutivos (ex: "26-27", "2026-2027") → "2026/2027"
+  // Ciclo de SM: prefixo "26-27" → "2026/2027"; todo o resto → "2025/2026"
   const smCollectorCiclo = useMemo(() => {
     if (!candRows) return {};
-    const normStr = s => (s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim();
-    const extractYR = s => {
-      const variants = [/\b(20\d{2}) (20\d{2})\b/,/\b(20\d{2}) (\d{2})\b/,/\b(\d{2}) (20\d{2})\b/,/\b(\d{2}) (\d{2})\b/];
-      for (const re of variants) {
-        const m = s.match(re); if (!m) continue;
-        const y1=m[1].length===2?'20'+m[1]:m[1], y2=m[2].length===2?'20'+m[2]:m[2];
-        const n1=parseInt(y1),n2=parseInt(y2);
-        if (n2-n1===1&&n1>=2020&&n1<=2035) return y1+'/'+y2;
-      }
-      return null;
-    };
     const map = {};
-    [...new Set(candRows.filter(r=>r.source==='SM').map(r=>r.programa).filter(Boolean))].forEach(prog => {
-      const ciclo = extractYR(normStr(prog));
-      if (ciclo) map[prog] = ciclo;
+    [...new Set(candRows.filter(r => r.source === 'SM').map(r => r.programa).filter(Boolean))].forEach(prog => {
+      map[prog] = /^26-27/i.test(prog.trim()) ? '2026/2027' : '2025/2026';
     });
     return map;
   }, [candRows]);
@@ -11936,26 +11923,57 @@ function NpsView({
     ).length;
   }, [candRows, classifiedRows, classMap]);
 
-  const candProgOpts     = useMemo(() => [...new Set((candRows||[]).map(r=>r.programa).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'pt-BR')), [candRows]);
-  // Opções de dimensão: união de atsToProject (Excel, primário) + progToProject (SM, fallback)
-  // O LOOKUP do filtro ainda usa atsToProject → progToProject em cascata — aqui só expandimos as opções
-  const _candDimProjects = useMemo(() => {
-    const byId = {};
-    Object.values(progToProject).forEach(p => { byId[p.id] = p; });
-    Object.values(atsToProject).forEach(p => { byId[p.id] = p; }); // ATS sobrescreve (mais confiável)
-    return Object.values(byId);
-  }, [atsToProject, progToProject]);
-  // Ciclo options: SP projects (via atsToProject + progToProject) + ciclos inferidos do nome do coletor SM
-  const candCicloOpts    = useMemo(() => {
-    const s = new Set(_candDimProjects.map(p=>p.ciclo).filter(Boolean));
-    Object.values(smCollectorCiclo).forEach(c => s.add(c));
-    return [...s].sort();
-  }, [_candDimProjects, smCollectorCiclo]);
-  const candSemestreOpts = useMemo(() => [...new Set(_candDimProjects.map(p=>p.semestre).filter(Boolean))].sort(), [_candDimProjects]);
-  const candPublicoOpts  = useMemo(() => [...new Set(_candDimProjects.map(p=>p.publico).filter(Boolean))].sort(), [_candDimProjects]);
-  const candProdutoOpts  = useMemo(() => [...new Set(_candDimProjects.map(p=>p.produto).filter(Boolean))].sort(), [_candDimProjects]);
-  const candTipoOpts     = useMemo(() => [...new Set(_candDimProjects.map(p=>p.tipoProg).filter(Boolean))].sort(), [_candDimProjects]);
-  const candTipoPesqOpts = useMemo(() => [...new Set((candRows||[]).map(r=>r.tipoPesquisa).filter(Boolean))].sort(), [candRows]);
+  // Linhas enriquecidas: resolve proj + ciclo uma vez por linha
+  const enrichedCandRows = useMemo(() => {
+    if (!candRows) return [];
+    return candRows.map(r => {
+      const proj = (r.idAts ? atsToProject[r.idAts] : null) || progToProject[r.programa] || null;
+      const ciclo = proj?.ciclo || smCollectorCiclo[r.programa] || null;
+      return { ...r, _proj: proj, _ciclo: ciclo };
+    });
+  }, [candRows, atsToProject, progToProject, smCollectorCiclo]);
+
+  // Linhas completamente filtradas (para exibição)
+  const filteredCandRows = useMemo(() => {
+    return enrichedCandRows.filter(r => {
+      if (candSource !== 'all' && r.source !== candSource) return false;
+      if (candFiltro.length && !candFiltro.includes(r.programa)) return false;
+      if (fCandTipoPesq.length && !fCandTipoPesq.includes(r.tipoPesquisa)) return false;
+      if (fCandCiclo.length    && !fCandCiclo.includes(r._ciclo))                              return false;
+      if (fCandSemestre.length && (!r._proj || !fCandSemestre.includes(r._proj.semestre)))     return false;
+      if (fCandPublico.length  && (!r._proj || !fCandPublico.includes(r._proj.publico)))       return false;
+      if (fCandProduto.length  && (!r._proj || !fCandProduto.includes(r._proj.produto)))       return false;
+      if (fCandTipo.length     && (!r._proj || !fCandTipo.includes(r._proj.tipoProg)))         return false;
+      return true;
+    });
+  }, [enrichedCandRows, candSource, candFiltro, fCandTipoPesq, fCandCiclo, fCandSemestre, fCandPublico, fCandProduto, fCandTipo]);
+
+  // Opções dinâmicas: cada filtro exclui a si mesmo para permitir troca de seleção
+  const _filt = (skip) => enrichedCandRows.filter(r => {
+    if (candSource !== 'all' && r.source !== candSource) return false;
+    if (skip !== 'prog'     && candFiltro.length     && !candFiltro.includes(r.programa))                        return false;
+    if (skip !== 'tipePesq' && fCandTipoPesq.length  && !fCandTipoPesq.includes(r.tipoPesquisa))                 return false;
+    if (skip !== 'ciclo'    && fCandCiclo.length     && !fCandCiclo.includes(r._ciclo))                          return false;
+    if (skip !== 'sem'      && fCandSemestre.length  && (!r._proj || !fCandSemestre.includes(r._proj.semestre))) return false;
+    if (skip !== 'pub'      && fCandPublico.length   && (!r._proj || !fCandPublico.includes(r._proj.publico)))   return false;
+    if (skip !== 'prod'     && fCandProduto.length   && (!r._proj || !fCandProduto.includes(r._proj.produto)))   return false;
+    if (skip !== 'tipo'     && fCandTipo.length      && (!r._proj || !fCandTipo.includes(r._proj.tipoProg)))     return false;
+    return true;
+  });
+  const candProgOpts     = useMemo(() => [...new Set(_filt('prog').map(r=>r.programa).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'pt-BR')),
+    [enrichedCandRows, candSource, fCandTipoPesq, fCandCiclo, fCandSemestre, fCandPublico, fCandProduto, fCandTipo]);
+  const candCicloOpts    = useMemo(() => [...new Set(_filt('ciclo').map(r=>r._ciclo).filter(Boolean))].sort(),
+    [enrichedCandRows, candSource, candFiltro, fCandTipoPesq, fCandSemestre, fCandPublico, fCandProduto, fCandTipo]);
+  const candSemestreOpts = useMemo(() => [...new Set(_filt('sem').map(r=>r._proj?.semestre).filter(Boolean))].sort(),
+    [enrichedCandRows, candSource, candFiltro, fCandTipoPesq, fCandCiclo, fCandPublico, fCandProduto, fCandTipo]);
+  const candPublicoOpts  = useMemo(() => [...new Set(_filt('pub').map(r=>r._proj?.publico).filter(Boolean))].sort(),
+    [enrichedCandRows, candSource, candFiltro, fCandTipoPesq, fCandCiclo, fCandSemestre, fCandProduto, fCandTipo]);
+  const candProdutoOpts  = useMemo(() => [...new Set(_filt('prod').map(r=>r._proj?.produto).filter(Boolean))].sort(),
+    [enrichedCandRows, candSource, candFiltro, fCandTipoPesq, fCandCiclo, fCandSemestre, fCandPublico, fCandTipo]);
+  const candTipoOpts     = useMemo(() => [...new Set(_filt('tipo').map(r=>r._proj?.tipoProg).filter(Boolean))].sort(),
+    [enrichedCandRows, candSource, candFiltro, fCandTipoPesq, fCandCiclo, fCandSemestre, fCandPublico, fCandProduto]);
+  const candTipoPesqOpts = useMemo(() => [...new Set(_filt('tipePesq').map(r=>r.tipoPesquisa).filter(Boolean))].sort(),
+    [enrichedCandRows, candSource, candFiltro, fCandCiclo, fCandSemestre, fCandPublico, fCandProduto, fCandTipo]);
   const [showInspector, setShowInspector] = useState(false);
 
   // Carregar Excel CLI ao montar (as_eb é aba padrão)
@@ -12910,22 +12928,7 @@ function NpsView({
   ),
   !candLoading && (() => {
     if (!candRows) return React.createElement('div',{className:'text-center text-slate-400 py-12'},'Nenhum dado carregado.');
-    const filtered = candRows.filter(r => {
-      if (candSource !== 'all' && r.source !== candSource) return false;
-      if (candFiltro.length && !candFiltro.includes(r.programa)) return false;
-      if (fCandTipoPesq.length && !fCandTipoPesq.includes(r.tipoPesquisa)) return false;
-      if (fCandCiclo.length || fCandSemestre.length || fCandPublico.length || fCandProduto.length || fCandTipo.length) {
-        const proj = (r.idAts ? atsToProject[r.idAts] : null) || progToProject[r.programa] || null;
-        // Ciclo: SP match tem prioridade; fallback = ciclo inferido do nome do coletor SM ("26-27" → "2026/2027")
-        const rowCiclo = proj?.ciclo || smCollectorCiclo[r.programa] || null;
-        if (fCandCiclo.length    && !fCandCiclo.includes(rowCiclo))                    return false;
-        if (fCandSemestre.length && (!proj || !fCandSemestre.includes(proj.semestre))) return false;
-        if (fCandPublico.length  && (!proj || !fCandPublico.includes(proj.publico)))   return false;
-        if (fCandProduto.length  && (!proj || !fCandProduto.includes(proj.produto)))   return false;
-        if (fCandTipo.length     && (!proj || !fCandTipo.includes(proj.tipoProg)))     return false;
-      }
-      return true;
-    });
+    const filtered = filteredCandRows;
     const withNps = filtered.filter(r => r.nps !== null && r.nps >= 0 && r.nps <= 10);
     const total = withNps.length;
     const promotores  = withNps.filter(r => r.nps >= 9).length;
@@ -12959,12 +12962,12 @@ function NpsView({
     const byProg = {};
     filtered.forEach(r=>{
       if (!r.programa) return;
-      if (!byProg[r.programa]) byProg[r.programa]={prog:r.programa, firstIdAts:r.idAts||'', codigo:r.codigo||'', total:0, npsRows:[]};
+      if (!byProg[r.programa]) byProg[r.programa]={prog:r.programa, firstIdAts:r.idAts||'', codigo:r.codigo||'', total:0, npsRows:[], _proj:r._proj};
       byProg[r.programa].total++;
       if (r.nps!==null&&r.nps>=0&&r.nps<=10) byProg[r.programa].npsRows.push(r.nps);
     });
     const allProgs = Object.values(byProg)
-      .map(p=>{ const pr=p.npsRows.filter(n=>n>=9).length, de=p.npsRows.filter(n=>n<=6).length, tot=p.npsRows.length; const proj=(p.firstIdAts?atsToProject[p.firstIdAts]:null)||progToProject[p.prog]||null; return {...p, pr, de, tot, nps:tot?Math.round(((pr-de)/tot)*100):null, cicloSP:proj?.ciclo||'', semestreSP:proj?.semestre||'', matched:!!proj}; })
+      .map(p=>{ const pr=p.npsRows.filter(n=>n>=9).length, de=p.npsRows.filter(n=>n<=6).length, tot=p.npsRows.length; const proj=p._proj; return {...p, pr, de, tot, nps:tot?Math.round(((pr-de)/tot)*100):null, cicloSP:proj?.ciclo||'', semestreSP:proj?.semestre||'', matched:!!proj}; })
       .sort((a,b)=>b.total-a.total);
     const smCount    = candRows.filter(r=>r.source==='SM').length;
     const excelCount = candRows.filter(r=>r.source==='Excel').length;
