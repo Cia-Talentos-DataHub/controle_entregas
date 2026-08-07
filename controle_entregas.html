@@ -1423,6 +1423,12 @@ const NPS_ALVO_REL = "/sites/Public/Documentos Partilhados/CIA/GeralCT/Globe (Ge
 const ALLOC_SIMPL_REL   = '/sites/Public/Documentos Partilhados/CIA/GeralCT/Alocações/Previsao_alocacao_2o_semestre_2026.xlsx';
 const ALLOC_SIMPL_SHEET = 'Visão Projetos'; // aba do Excel lida para consolidação
 
+// ─── Cronograma do Processo ────────────────────────────────────────────────────
+const CRONOGRAMA_SITE_URL    = 'https://ciadetalentos.sharepoint.com/sites/Arquivos';
+const CRONOGRAMA_SCOPE       = 'https://ciadetalentos.sharepoint.com/.default';
+const CRONOGRAMA_FOLDER_REL  = '/sites/Arquivos/Documentos Partilhados/Cronogramas';
+const CRONOGRAMA_COLORS = ['#1e3a5f','#4a7fb5','#2d7a4f','#b5793a','#7b3a9f','#c05050','#3a9f7b','#3a7b9f','#9f9f3a','#c47a3a'];
+
 // ─── SurveyMonkey CSAT ────────────────────────────────────────────────────────
 const SM_TOKEN = 'fkRXaMG1ciJ9NYhhSaSTCAtb1pJaGAkA6ZebpfoKrBC8r-tfhLcYE7MzmTJieN5aSizCarz1HHUwnZ25j8.CyHEKH48b0q4oJ.hy4eiEvQYCLfJQqOoiGQoW2baUkmcX';
 const SM_SURVEYS = [{
@@ -2073,6 +2079,214 @@ function _spListBase(siteUrl, listName) {
   const rel = new URL(siteUrl).pathname.replace(/\/$/, '');
   return `${siteUrl}/_api/web/GetList('${rel}/Lists/${listName}')`;
 }
+
+// ─── Cronograma SP helpers ────────────────────────────────────────────────────
+async function spUploadFile(token, siteUrl, folderRel, fileName, arrayBuffer) {
+  const safeFolder = folderRel.replace(/'/g, "''");
+  const safeFile = fileName.replace(/'/g, "''");
+  const url = `${siteUrl}/_api/web/GetFolderByServerRelativeUrl('${safeFolder}')/Files/add(url='${encodeURIComponent(safeFile)}',overwrite=true)`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/octet-stream',
+      'Accept': 'application/json;odata=nometadata'
+    },
+    body: arrayBuffer
+  });
+  if (!res.ok) {
+    const t = await res.text().catch(() => '');
+    throw new Error(`Upload SP ${res.status}: ${t.slice(0, 300)}`);
+  }
+  return res.json().catch(() => null);
+}
+
+async function spCronFileExists(token, siteUrl, fileRel) {
+  try {
+    const safeRel = fileRel.replace(/'/g, "''");
+    const res = await fetch(`${siteUrl}/_api/web/GetFileByServerRelativeUrl('${safeRel}')`, {
+      headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json;odata=nometadata' }
+    });
+    return res.ok;
+  } catch(e) { return false; }
+}
+
+async function readCronogramaExcel(token, siteUrl, fileRel) {
+  const safeRel = fileRel.replace(/'/g, "''");
+  const url = `${siteUrl}/_api/web/GetFileByServerRelativeUrl('${safeRel}')/$value`;
+  const res = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` } });
+  if (!res.ok) throw new Error(`Leitura SP ${res.status}`);
+  const buf = await res.arrayBuffer();
+  const wb = XLSX.read(buf, { type: 'array' });
+  const wsE = wb.Sheets['Etapas'];
+  const etapas = wsE ? XLSX.utils.sheet_to_json(wsE, { defval: '' }) : [];
+  const wsA = wb.Sheets['Atividades'];
+  const atFlat = wsA ? XLSX.utils.sheet_to_json(wsA, { defval: '' }) : [];
+  const atividades = {};
+  atFlat.forEach(a => {
+    const eid = a.etapaId || '';
+    if (!atividades[eid]) atividades[eid] = [];
+    atividades[eid].push(a);
+  });
+  return { etapas, atividades };
+}
+
+async function saveCronogramaExcel(token, siteUrl, folderRel, fileName, etapas, atividades) {
+  const wb = XLSX.utils.book_new();
+  const wsE = XLSX.utils.json_to_sheet(etapas.length ? etapas : [{ id:'',nome:'',inicio:'',termino:'',cor:'',tipo:'',obs:'' }]);
+  XLSX.utils.book_append_sheet(wb, wsE, 'Etapas');
+  const atFlat = Object.entries(atividades).flatMap(([eid, ats]) => ats.map(a => ({ ...a, etapaId: eid })));
+  const wsA = XLSX.utils.json_to_sheet(atFlat.length ? atFlat : [{ etapaId:'',id:'',nome:'',responsavel:'',inicio:'',termino:'',obs:'' }]);
+  XLSX.utils.book_append_sheet(wb, wsA, 'Atividades');
+  const buf = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
+  return await spUploadFile(token, siteUrl, folderRel, fileName, buf.buffer);
+}
+
+function generateCronogramaHTML(project, etapas, atividades) {
+  const titulo = `Cronograma — ${project?.title || 'Processo'}`;
+  const cliente = project?.client || '';
+  const vagas = project?.pulseData?.Qtd_Vagas || project?.vagas || '';
+  // Determina período total
+  const allDates = etapas.flatMap(e => [e.inicio, e.termino]).filter(Boolean).map(d => new Date(d));
+  if (!allDates.length) return `<html><body><h2>Sem etapas cadastradas</h2></body></html>`;
+  const dtStart = new Date(Math.min(...allDates));
+  const dtEnd   = new Date(Math.max(...allDates));
+  const totalMs = dtEnd - dtStart;
+  const totalDays = Math.round(totalMs / 86400000) || 1;
+
+  function pct(d) { return ((new Date(d) - dtStart) / totalMs * 100).toFixed(3) + '%'; }
+  function wid(s, e) { const ms = new Date(e) - new Date(s); return (Math.max(0, ms) / totalMs * 100).toFixed(3) + '%'; }
+  function fmt(d) { if (!d) return ''; const [y,m,dd] = String(d).split('-'); return `${dd}/${m}/${y}`; }
+  function diffDays(s, e) { return Math.round((new Date(e) - new Date(s)) / 86400000); }
+
+  // Month markers
+  const months = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+  const monthMarks = [];
+  const cur = new Date(dtStart); cur.setDate(1);
+  while (cur <= dtEnd) {
+    const off = ((cur - dtStart) / totalMs * 100).toFixed(3);
+    monthMarks.push(`<div class="month-mark" style="left:${off}%">${months[cur.getMonth()]}/${String(cur.getFullYear()).slice(2)}</div>`);
+    cur.setMonth(cur.getMonth() + 1);
+  }
+
+  // Gantt rows
+  const ganttRows = etapas.map((e, i) => {
+    if (!e.inicio || !e.termino) return '';
+    const left = pct(e.inicio), width = wid(e.inicio, e.termino);
+    const days = diffDays(e.inicio, e.termino);
+    const atvs = (atividades[e.id] || []).filter(a => a.nome);
+    const atvRows = atvs.map(a => {
+      if (!a.inicio || !a.termino) return `<div class="gantt-row gantt-activity"><div class="gantt-label" style="padding-left:28px;font-size:0.7rem;color:#64748b">↳ ${a.nome}${a.responsavel?' ('+a.responsavel+')':''}</div><div class="gantt-track"></div></div>`;
+      const al = pct(a.inicio), aw = wid(a.inicio, a.termino);
+      const adays = diffDays(a.inicio, a.termino);
+      return `<div class="gantt-row gantt-activity"><div class="gantt-label" style="padding-left:28px;font-size:0.7rem;color:#64748b">↳ ${a.nome}${a.responsavel?' ('+a.responsavel+')':''}</div><div class="gantt-track"><div class="gantt-bar" style="left:${al};width:${aw};background:${e.cor}aa;border:1.5px solid ${e.cor}"><span class="bar-text">${adays}d</span></div></div></div>`;
+    }).join('');
+    return `<div class="gantt-row"><div class="gantt-label">${i+1}. ${e.nome}</div><div class="gantt-track"><div class="gantt-bar" style="left:${left};width:${width};background:${e.cor}"><span class="bar-text">${days}d</span></div></div></div>${atvRows}`;
+  }).join('');
+
+  // Table rows
+  const tableRows = etapas.map((e, i) => {
+    const atvs = (atividades[e.id] || []).filter(a => a.nome);
+    const atvHtml = atvs.length ? `<ul style="margin:6px 0 0 0;padding-left:18px;font-size:0.78rem;color:#64748b;">${atvs.map(a=>`<li><b>${a.nome}</b>${a.responsavel?' — '+a.responsavel:''}${a.inicio&&a.termino?' ('+fmt(a.inicio)+' → '+fmt(a.termino)+')':''}</li>`).join('')}</ul>` : '';
+    const dias = (e.inicio && e.termino) ? diffDays(e.inicio, e.termino) + 'd' : '—';
+    return `<tr><td class="num center">${i+1}</td><td><div class="stage-name"><span class="dot" style="background:${e.cor}"></span>${e.nome}</div>${atvHtml}</td><td>${fmt(e.inicio)}</td><td>${fmt(e.termino)}</td><td class="center">${dias}</td></tr>`;
+  }).join('');
+
+  const now = new Date().toLocaleDateString('pt-BR');
+  const html = `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>${titulo}</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;}
+  :root{--bg:#f4f6f9;--card:#ffffff;--ink:#1a2332;--muted:#64748b;--line:#e2e8f0;--accent:#1e3a5f;}
+  body{background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:28px 16px 60px;}
+  .wrap{max-width:1180px;margin:0 auto;}
+  .card{background:var(--card);border-radius:16px;box-shadow:0 2px 12px rgba(0,0,0,.08);padding:28px;margin-bottom:24px;}
+  header{margin-bottom:24px;}
+  header h1{font-size:1.45rem;font-weight:700;color:var(--accent);margin-bottom:6px;}
+  .subtitle{font-size:0.88rem;color:var(--muted);}
+  .badge-row{display:flex;flex-wrap:wrap;gap:10px;margin-top:14px;}
+  .badge{background:#eef2f7;border-radius:10px;padding:8px 16px;font-size:0.82rem;color:var(--ink);}
+  .badge b{display:block;font-size:1.15rem;color:var(--accent);}
+  .view-switch{display:flex;gap:8px;margin-bottom:20px;border-bottom:1px solid var(--line);padding-bottom:14px;}
+  .view-btn{background:var(--bg);border:1px solid var(--line);color:var(--muted);font-size:0.85rem;font-weight:600;padding:8px 18px;border-radius:8px;cursor:pointer;transition:all .15s;}
+  .view-btn:hover{background:#eef1f4;}
+  .view-btn.active{background:var(--accent);color:#fff;border-color:var(--accent);}
+  .view-panel{display:none;} .view-panel.active{display:block;}
+  h2{font-size:1rem;font-weight:700;color:var(--ink);margin-bottom:18px;}
+  .gantt-container{position:relative;padding-top:30px;}
+  .month-track{position:relative;height:22px;margin-bottom:6px;border-bottom:1px solid var(--line);}
+  .month-mark{position:absolute;font-size:0.72rem;color:var(--muted);font-weight:600;transform:translateX(-50%);white-space:nowrap;}
+  .gantt-row{display:flex;align-items:center;margin-bottom:6px;min-height:32px;}
+  .gantt-row.gantt-activity{min-height:24px;margin-bottom:3px;}
+  .gantt-label{width:220px;flex:0 0 220px;font-size:0.78rem;font-weight:600;color:var(--ink);padding-right:12px;line-height:1.3;}
+  .gantt-track{flex:1;position:relative;height:28px;background:#f1f4f8;border-radius:6px;overflow:visible;}
+  .gantt-row.gantt-activity .gantt-track{height:20px;}
+  .gantt-bar{position:absolute;height:100%;border-radius:5px;display:flex;align-items:center;padding:0 7px;min-width:2px;overflow:hidden;}
+  .bar-text{font-size:0.65rem;color:#fff;font-weight:600;white-space:nowrap;}
+  table{width:100%;border-collapse:collapse;font-size:0.86rem;}
+  thead th{text-align:left;font-size:0.72rem;text-transform:uppercase;letter-spacing:.03em;color:var(--muted);border-bottom:2px solid var(--line);padding:8px 10px;}
+  tbody td{padding:10px;border-bottom:1px solid var(--line);vertical-align:top;}
+  tbody tr:hover{background:#fafbfc;}
+  .num{color:var(--muted);font-weight:600;width:28px;}
+  .center{text-align:center;}
+  .stage-name{font-weight:600;}
+  .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:8px;vertical-align:middle;}
+  footer{text-align:center;color:var(--muted);font-size:0.78rem;margin-top:8px;}
+  @media(max-width:720px){.gantt-label{width:130px;flex:0 0 130px;font-size:.68rem;}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>${titulo}</h1>
+    <div class="subtitle">${cliente ? cliente + ' · ' : ''}Período: ${fmt(etapas.filter(e=>e.inicio)[0]?.inicio)} a ${fmt(etapas.filter(e=>e.termino).slice(-1)[0]?.termino)}</div>
+    <div class="badge-row">
+      ${vagas ? `<div class="badge"><b>${vagas}</b>Vagas</div>` : ''}
+      <div class="badge"><b>${etapas.length}</b>Etapas</div>
+      <div class="badge"><b>${totalDays}</b>Dias corridos (total)</div>
+    </div>
+  </header>
+  <div class="card">
+    <div class="view-switch">
+      <button class="view-btn active" data-view="timeline">Linha do tempo</button>
+      <button class="view-btn" data-view="table">Tabela de etapas</button>
+    </div>
+    <div class="view-panel active" id="view-timeline">
+      <h2>Linha do tempo do processo</h2>
+      <div class="gantt-container">
+        <div class="month-track">${monthMarks.join('')}</div>
+        ${ganttRows}
+      </div>
+    </div>
+    <div class="view-panel" id="view-table">
+      <h2>Etapas do processo</h2>
+      <table>
+        <thead><tr><th class="num">#</th><th>Etapa</th><th>Início</th><th>Término</th><th class="center">Duração</th></tr></thead>
+        <tbody>${tableRows}</tbody>
+      </table>
+    </div>
+  </div>
+  <footer>Gerado em ${now} · ${titulo}</footer>
+</div>
+<script>
+  document.querySelectorAll('.view-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.view-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.view-panel').forEach(p => p.classList.remove('active'));
+      btn.classList.add('active');
+      document.getElementById('view-' + btn.dataset.view).classList.add('active');
+    });
+  });
+<\/script>
+</body>
+</html>`;
+  return html;
+}
+// ─── End Cronograma SP helpers ─────────────────────────────────────────────────
 // Campos extras do Clientes×Frentes — nomes resolvidos via _spFieldMap após fetchSPChoices
 const CF_EXTRA_KEYS = ['Vagas_Trabalhadas', 'Vagas_Fechadas', 'Vagas_Extras', 'Vagas_Canceladas', 'Vagas_Nao_Fechadas', 'Motivos_Celebrar', 'Devemos_Cuidar', 'Resumo_Semanal'];
 async function fetchSPList(token, siteUrl, listName) {
@@ -7832,6 +8046,7 @@ function PulseEditModal({
     c['Analistas e Fases'] = false;
     return c;
   });
+  const [showCronograma, setShowCronograma] = useState(false);
   function toggleSec(s) {
     setCollapsed(c => ({
       ...c,
@@ -8240,15 +8455,20 @@ function PulseEditModal({
       onChange: e => updPhaseField(ph.key, 'end', e.target.value),
       className: "border border-slate-200 rounded-lg px-2 py-1 text-xs focus:ring-1 focus:ring-indigo-300"
     })))))), /*#__PURE__*/React.createElement("div", {
-      className: "px-6 py-4 border-t border-slate-200 flex justify-end gap-3 shrink-0 bg-white rounded-b-2xl"
+      className: "px-6 py-4 border-t border-slate-200 flex items-center justify-between gap-3 shrink-0 bg-white rounded-b-2xl"
     }, /*#__PURE__*/React.createElement("button", {
+      onClick: () => setShowCronograma(true),
+      className: "text-sm text-indigo-700 border border-indigo-200 px-3 py-2 rounded-lg hover:bg-indigo-50 transition"
+    }, "📅 Cronograma do Processo"), /*#__PURE__*/React.createElement("div", { className: "flex gap-3" },
+    /*#__PURE__*/React.createElement("button", {
       onClick: onClose,
       className: "border border-slate-300 text-slate-600 px-4 py-2 rounded-lg text-sm hover:bg-slate-50"
     }, "Cancelar"), /*#__PURE__*/React.createElement("button", {
       onClick: handleSave,
       disabled: !title.trim() || saving,
       className: "bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white px-5 py-2 rounded-lg text-sm font-semibold"
-    }, saving ? '⏳ Salvando...' : '💾 Salvar'))));
+    }, saving ? '⏳ Salvando...' : '💾 Salvar'))),
+    showCronograma && React.createElement(CronogramaModal, { project, phases, onClose: () => setShowCronograma(false) })));
   }
   return /*#__PURE__*/React.createElement("div", {
     className: "modal-overlay",
@@ -8445,17 +8665,219 @@ function PulseEditModal({
   }, a || `Analista ${idx + 1}`))), /*#__PURE__*/React.createElement("p", {
     className: "text-xs text-slate-400 mt-3"
   }, "Percentuais e datas de alocação são geridos em Gestão → Projetos.")))), /*#__PURE__*/React.createElement("div", {
-    className: "px-6 py-4 border-t border-slate-200 flex items-center justify-end gap-3 shrink-0 rounded-b-2xl bg-white"
-  }, /*#__PURE__*/React.createElement("p", {
-    className: "text-xs text-slate-400 mr-auto"
-  }, "💾 Salva no SharePoint (List_Pulse)"), /*#__PURE__*/React.createElement("button", {
+    className: "px-6 py-4 border-t border-slate-200 flex items-center justify-between gap-3 shrink-0 rounded-b-2xl bg-white"
+  }, /*#__PURE__*/React.createElement("div", { className: "flex items-center gap-3" },
+    /*#__PURE__*/React.createElement("p", {
+      className: "text-xs text-slate-400"
+    }, "💾 Salva no SharePoint (List_Pulse)"),
+    /*#__PURE__*/React.createElement("button", {
+      onClick: () => setShowCronograma(true),
+      className: "text-sm text-indigo-700 border border-indigo-200 px-3 py-1.5 rounded-lg hover:bg-indigo-50 transition"
+    }, "📅 Cronograma do Processo")),
+  /*#__PURE__*/React.createElement("div", { className: "flex gap-3" },
+  /*#__PURE__*/React.createElement("button", {
     onClick: onClose,
     className: "border border-slate-300 text-slate-600 px-4 py-2 rounded-lg text-sm hover:bg-slate-50 transition"
   }, "Cancelar"), /*#__PURE__*/React.createElement("button", {
     onClick: handleSave,
     disabled: !title.trim() || saving,
     className: "bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white px-5 py-2 rounded-lg text-sm font-semibold transition flex items-center gap-2"
-  }, saving ? '⏳ Salvando...' : '💾 Salvar'))));
+  }, saving ? '⏳ Salvando...' : '💾 Salvar'))),
+  showCronograma && React.createElement(CronogramaModal, { project, phases, onClose: () => setShowCronograma(false) })));
+}
+
+// ─── Cronograma Modal ─────────────────────────────────────────────────────────
+function CronogramaModal({ project, phases, onClose }) {
+  const [cronTab, setCronTab] = useState('edit');
+  const [etapas, setEtapas] = useState([]);
+  const [atividades, setAtividades] = useState({});
+  const [expandedEtapa, setExpandedEtapa] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [publishing, setPublishing] = useState(false);
+  const [error, setError] = useState('');
+  const [msg, setMsg] = useState('');
+  const [cronExists, setCronExists] = useState(false);
+
+  const projectId = project?.indice || project?.id || 'sem_id';
+  const excelName = `Cronograma_${String(projectId).replace(/[^a-zA-Z0-9_-]/g,'_')}.xlsx`;
+  const htmlName  = `Cronograma_${String(projectId).replace(/[^a-zA-Z0-9_-]/g,'_')}.html`;
+  const excelRel  = `${CRONOGRAMA_FOLDER_REL}/${excelName}`;
+
+  function buildEtapasFromPhases(ph) {
+    const result = [];
+    PHASES.forEach((p, i) => {
+      const d = ph?.[p.key] || {};
+      if (!d.start && !d.end) return;
+      result.push({ id: `ph_${i}`, nome: p.label, inicio: d.start || '', termino: d.end || '', cor: CRONOGRAMA_COLORS[i % CRONOGRAMA_COLORS.length], tipo: 'pulse', obs: '' });
+    });
+    return result;
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      setLoading(true); setError('');
+      try {
+        const token = await acquireTokenForResource(APP_CONFIG.clientId, APP_CONFIG.tenantId, CRONOGRAMA_SCOPE);
+        const exists = await spCronFileExists(token, CRONOGRAMA_SITE_URL, excelRel);
+        if (cancelled) return;
+        setCronExists(exists);
+        if (exists) {
+          const { etapas: e, atividades: a } = await readCronogramaExcel(token, CRONOGRAMA_SITE_URL, excelRel);
+          if (cancelled) return;
+          setEtapas(e); setAtividades(a);
+        } else {
+          setEtapas(buildEtapasFromPhases(phases)); setAtividades({});
+        }
+      } catch(e) { if (!cancelled) setError('Erro ao carregar: ' + e.message); }
+      finally { if (!cancelled) setLoading(false); }
+    }
+    load();
+    return () => { cancelled = true; };
+  }, []);
+
+  async function handleSave() {
+    setSaving(true); setError(''); setMsg('');
+    try {
+      const token = await acquireTokenForResource(APP_CONFIG.clientId, APP_CONFIG.tenantId, CRONOGRAMA_SCOPE);
+      await saveCronogramaExcel(token, CRONOGRAMA_SITE_URL, CRONOGRAMA_FOLDER_REL, excelName, etapas, atividades);
+      setCronExists(true);
+      setMsg('Salvo com sucesso! ✓');
+      setTimeout(() => setMsg(''), 3500);
+    } catch(e) { setError('Erro ao salvar: ' + e.message); }
+    finally { setSaving(false); }
+  }
+
+  async function handlePublish() {
+    setPublishing(true); setError(''); setMsg('');
+    try {
+      const token = await acquireTokenForResource(APP_CONFIG.clientId, APP_CONFIG.tenantId, CRONOGRAMA_SCOPE);
+      await saveCronogramaExcel(token, CRONOGRAMA_SITE_URL, CRONOGRAMA_FOLDER_REL, excelName, etapas, atividades);
+      const html = generateCronogramaHTML(project, etapas, atividades);
+      const enc = new TextEncoder();
+      await spUploadFile(token, CRONOGRAMA_SITE_URL, CRONOGRAMA_FOLDER_REL, htmlName, enc.encode(html).buffer);
+      setCronExists(true);
+      setMsg(`HTML gerado: ${htmlName}. Acesse a pasta Cronogramas no SharePoint para publicar.`);
+    } catch(e) { setError('Erro ao publicar: ' + e.message); }
+    finally { setPublishing(false); }
+  }
+
+  function addEtapa() {
+    const id = `e_${Date.now()}`;
+    setEtapas(prev => [...prev, { id, nome: '', inicio: '', termino: '', cor: CRONOGRAMA_COLORS[prev.length % CRONOGRAMA_COLORS.length], tipo: 'extra', obs: '' }]);
+  }
+  function updEtapa(id, field, val) { setEtapas(prev => prev.map(e => e.id === id ? { ...e, [field]: val } : e)); }
+  function remEtapa(id) { setEtapas(prev => prev.filter(e => e.id !== id)); setAtividades(prev => { const n = { ...prev }; delete n[id]; return n; }); }
+  function moveEtapa(id, dir) {
+    setEtapas(prev => {
+      const i = prev.findIndex(e => e.id === id); const j = i + dir;
+      if (i < 0 || j < 0 || j >= prev.length) return prev;
+      const n = [...prev]; [n[i], n[j]] = [n[j], n[i]]; return n;
+    });
+  }
+  function addAtv(etapaId) {
+    const id = `a_${Date.now()}`;
+    setAtividades(prev => ({ ...prev, [etapaId]: [...(prev[etapaId] || []), { id, nome: '', responsavel: '', inicio: '', termino: '', obs: '' }] }));
+  }
+  function updAtv(etapaId, aId, field, val) {
+    setAtividades(prev => ({ ...prev, [etapaId]: (prev[etapaId] || []).map(a => a.id === aId ? { ...a, [field]: val } : a) }));
+  }
+  function remAtv(etapaId, aId) {
+    setAtividades(prev => ({ ...prev, [etapaId]: (prev[etapaId] || []).filter(a => a.id !== aId) }));
+  }
+
+  const iCls = 'border border-slate-300 rounded-lg px-2 py-1.5 text-xs focus:ring-1 focus:ring-indigo-200 w-full';
+
+  // Edit tab content
+  function renderEdit() {
+    return React.createElement('div', { className: 'space-y-2' },
+      etapas.length === 0 && React.createElement('p', { className: 'text-sm text-slate-400 italic py-4 text-center' }, 'Nenhuma etapa. Clique em "+ Nova etapa" para começar.'),
+      ...etapas.map((e, idx) => {
+        const atvs = atividades[e.id] || [];
+        const expanded = expandedEtapa === e.id;
+        return React.createElement('div', { key: e.id, className: 'border border-slate-200 rounded-xl overflow-hidden' },
+          // Stage row
+          React.createElement('div', { className: 'flex items-center gap-2 px-3 py-2 bg-slate-50' },
+            React.createElement('span', { className: 'text-xs font-bold text-slate-400 w-5 shrink-0' }, idx + 1),
+            React.createElement('input', { type: 'color', value: e.cor || '#1e3a5f', onChange: ev => updEtapa(e.id, 'cor', ev.target.value), className: 'w-6 h-6 rounded border border-slate-200 cursor-pointer shrink-0', title: 'Cor da etapa' }),
+            React.createElement('input', { type: 'text', value: e.nome, onChange: ev => updEtapa(e.id, 'nome', ev.target.value), placeholder: 'Nome da etapa', className: iCls + ' flex-1' }),
+            React.createElement('input', { type: 'date', value: e.inicio, onChange: ev => updEtapa(e.id, 'inicio', ev.target.value), className: iCls + ' w-32 shrink-0' }),
+            React.createElement('span', { className: 'text-slate-300 text-xs shrink-0' }, '→'),
+            React.createElement('input', { type: 'date', value: e.termino, onChange: ev => updEtapa(e.id, 'termino', ev.target.value), className: iCls + ' w-32 shrink-0' }),
+            React.createElement('button', { onClick: () => setExpandedEtapa(expanded ? null : e.id), className: `text-xs px-2 py-1 rounded border shrink-0 transition ${expanded ? 'bg-indigo-50 border-indigo-200 text-indigo-600' : 'border-slate-200 text-slate-400 hover:border-indigo-200 hover:text-indigo-500'}`, title: 'Atividades' }, `${atvs.length ? atvs.length + ' atv' : '+ atv'}`),
+            React.createElement('button', { onClick: () => moveEtapa(e.id, -1), disabled: idx === 0, className: 'text-slate-300 hover:text-slate-600 disabled:opacity-20 text-xs px-1 shrink-0' }, '▲'),
+            React.createElement('button', { onClick: () => moveEtapa(e.id, 1), disabled: idx === etapas.length - 1, className: 'text-slate-300 hover:text-slate-600 disabled:opacity-20 text-xs px-1 shrink-0' }, '▼'),
+            React.createElement('button', { onClick: () => remEtapa(e.id), className: 'text-red-300 hover:text-red-500 text-xs px-1 shrink-0' }, '✕')
+          ),
+          // Activities panel
+          expanded && React.createElement('div', { className: 'px-4 py-3 bg-white border-t border-slate-100 space-y-2' },
+            atvs.length === 0 && React.createElement('p', { className: 'text-xs text-slate-400 italic' }, 'Nenhuma atividade ainda.'),
+            ...atvs.map(a => React.createElement('div', { key: a.id, className: 'flex items-center gap-2' },
+              React.createElement('span', { className: 'text-slate-300 text-xs shrink-0 pl-1' }, '↳'),
+              React.createElement('input', { type: 'text', value: a.nome, onChange: ev => updAtv(e.id, a.id, 'nome', ev.target.value), placeholder: 'Atividade', className: iCls + ' flex-1' }),
+              React.createElement('input', { type: 'text', value: a.responsavel, onChange: ev => updAtv(e.id, a.id, 'responsavel', ev.target.value), placeholder: 'Responsável', className: iCls + ' w-28 shrink-0' }),
+              React.createElement('input', { type: 'date', value: a.inicio, onChange: ev => updAtv(e.id, a.id, 'inicio', ev.target.value), className: iCls + ' w-28 shrink-0' }),
+              React.createElement('span', { className: 'text-slate-300 text-xs shrink-0' }, '→'),
+              React.createElement('input', { type: 'date', value: a.termino, onChange: ev => updAtv(e.id, a.id, 'termino', ev.target.value), className: iCls + ' w-28 shrink-0' }),
+              React.createElement('button', { onClick: () => remAtv(e.id, a.id), className: 'text-red-300 hover:text-red-500 text-xs shrink-0' }, '✕')
+            )),
+            React.createElement('button', { onClick: () => addAtv(e.id), className: 'text-xs text-indigo-500 hover:text-indigo-700 border border-dashed border-indigo-200 px-3 py-1 rounded-lg mt-1 hover:bg-indigo-50 transition' }, '+ Atividade')
+          )
+        );
+      }),
+      React.createElement('button', { onClick: addEtapa, className: 'w-full text-sm text-indigo-600 border border-dashed border-indigo-300 rounded-xl py-2.5 hover:bg-indigo-50 transition mt-1' }, '+ Nova etapa')
+    );
+  }
+
+  // Preview tab content — iframe with generated HTML
+  const previewHtml = useMemo(() => {
+    if (etapas.length === 0) return '<html><body style="font-family:sans-serif;padding:20px;color:#64748b"><p>Sem etapas cadastradas para visualizar.</p></body></html>';
+    return generateCronogramaHTML(project, etapas, atividades);
+  }, [etapas, atividades, project]);
+
+  return React.createElement('div', { className: 'modal-overlay', style: { zIndex: 9999 }, onClick: onClose },
+    React.createElement('div', { className: 'bg-white rounded-2xl shadow-2xl w-full max-w-5xl max-h-[95vh] flex flex-col mx-4', style: { zIndex: 10000 }, onClick: e => e.stopPropagation() },
+      // Header
+      React.createElement('div', { className: 'px-6 py-4 border-b border-slate-200 flex items-center justify-between shrink-0 rounded-t-2xl' },
+        React.createElement('div', null,
+          React.createElement('h2', { className: 'text-base font-bold text-slate-800 flex items-center gap-2' }, '📅 Cronograma do Processo'),
+          React.createElement('p', { className: 'text-xs text-slate-400 mt-0.5' }, project?.title || '', cronExists ? ' · Excel salvo no SharePoint' : ' · Novo cronograma')
+        ),
+        React.createElement('button', { onClick: onClose, className: 'text-slate-400 hover:text-red-500 text-xl w-8 h-8 flex items-center justify-center rounded-full hover:bg-slate-100' }, '✕')
+      ),
+      // Tabs
+      React.createElement('div', { className: 'px-6 pt-3 pb-0 border-b border-slate-100 flex gap-4 shrink-0' },
+        React.createElement('button', { onClick: () => setCronTab('edit'), className: `text-sm font-semibold pb-2.5 border-b-2 transition ${cronTab === 'edit' ? 'border-indigo-600 text-indigo-700' : 'border-transparent text-slate-500 hover:text-slate-700'}` }, '✏️ Editar'),
+        React.createElement('button', { onClick: () => setCronTab('preview'), className: `text-sm font-semibold pb-2.5 border-b-2 transition ${cronTab === 'preview' ? 'border-indigo-600 text-indigo-700' : 'border-transparent text-slate-500 hover:text-slate-700'}` }, '👁 Visualizar')
+      ),
+      // Content
+      React.createElement('div', { className: 'flex-1 overflow-y-auto px-6 py-4' },
+        loading && React.createElement('div', { className: 'flex items-center justify-center py-12 text-slate-400 text-sm' }, '⏳ Carregando...'),
+        !loading && error && React.createElement('div', { className: 'bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-700 mb-3 flex items-center justify-between' },
+          React.createElement('span', null, error),
+          React.createElement('button', { onClick: () => setError(''), className: 'ml-3 text-red-400 hover:text-red-600' }, '✕')
+        ),
+        !loading && msg && React.createElement('div', { className: 'bg-green-50 border border-green-200 rounded-xl px-4 py-3 text-sm text-green-700 mb-3' }, msg),
+        !loading && cronTab === 'edit' && renderEdit(),
+        !loading && cronTab === 'preview' && React.createElement('iframe', {
+          srcDoc: previewHtml,
+          className: 'w-full rounded-xl border border-slate-200',
+          style: { height: '520px' },
+          title: 'Preview Cronograma'
+        })
+      ),
+      // Footer
+      React.createElement('div', { className: 'px-6 py-4 border-t border-slate-200 flex items-center justify-between gap-3 shrink-0 rounded-b-2xl bg-white' },
+        React.createElement('p', { className: 'text-xs text-slate-400' }, cronExists ? '✓ Vinculado ao SharePoint' : '⚠ Ainda não salvo'),
+        React.createElement('div', { className: 'flex gap-3' },
+          React.createElement('button', { onClick: onClose, className: 'border border-slate-300 text-slate-600 px-4 py-2 rounded-lg text-sm hover:bg-slate-50 transition' }, 'Fechar'),
+          React.createElement('button', { onClick: handleSave, disabled: saving || publishing, className: 'bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white px-4 py-2 rounded-lg text-sm font-semibold transition' }, saving ? '⏳ Salvando...' : '💾 Salvar'),
+          React.createElement('button', { onClick: handlePublish, disabled: saving || publishing, className: 'bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-4 py-2 rounded-lg text-sm font-semibold transition' }, publishing ? '⏳ Gerando HTML...' : '🌐 Publicar HTML')
+        )
+      )
+    )
+  );
 }
 
 // ─── Calendar Components ──────────────────────────────────────────────────────
