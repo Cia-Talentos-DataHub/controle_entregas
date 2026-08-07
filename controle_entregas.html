@@ -2146,54 +2146,112 @@ function generateCronogramaHTML(project, etapas, atividades) {
   const titulo = `Cronograma — ${project?.title || 'Processo'}`;
   const cliente = project?.client || '';
   const vagas = project?.pulseData?.Qtd_Vagas || project?.vagas || '';
-  // Determina período total
-  const allDates = etapas.flatMap(e => [e.inicio, e.termino]).filter(Boolean).map(d => new Date(d));
-  if (!allDates.length) return `<html><body><h2>Sem etapas cadastradas</h2></body></html>`;
-  const dtStart = new Date(Math.min(...allDates));
-  const dtEnd   = new Date(Math.max(...allDates));
-  const totalMs = dtEnd - dtStart;
-  const totalDays = Math.round(totalMs / 86400000) || 1;
 
-  function pct(d) { return ((new Date(d) - dtStart) / totalMs * 100).toFixed(3) + '%'; }
-  function wid(s, e) { const ms = new Date(e) - new Date(s); return (Math.max(0, ms) / totalMs * 100).toFixed(3) + '%'; }
-  function fmt(d) { if (!d) return ''; const [y,m,dd] = String(d).split('-'); return `${dd}/${m}/${y}`; }
-  function diffDays(s, e) { return Math.round((new Date(e) - new Date(s)) / 86400000); }
+  // Parse YYYY-MM-DD como data local (evita problemas de fuso)
+  function pd(s) { if (!s) return null; const [y,m,d]=String(s).split('-').map(Number); return new Date(y,m-1,d); }
+  function fmt(s) { if (!s) return ''; const [y,m,d]=String(s).split('-'); return `${d}/${m}/${y}`; }
+  function dKey(d) { return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
+  function dFmt(d) { return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`; }
+  function diffDays(s,e) { return Math.round((pd(e)-pd(s))/86400000); }
 
-  // Month markers
-  const months = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
-  const monthMarks = [];
-  const cur = new Date(dtStart); cur.setDate(1);
-  while (cur <= dtEnd) {
-    const off = ((cur - dtStart) / totalMs * 100).toFixed(3);
-    monthMarks.push(`<div class="month-mark" style="left:${off}%">${months[cur.getMonth()]}/${String(cur.getFullYear()).slice(2)}</div>`);
-    cur.setMonth(cur.getMonth() + 1);
+  const allDates = etapas.flatMap(e=>[pd(e.inicio),pd(e.termino)]).filter(Boolean);
+  if (!allDates.length) return `<html><body style="font-family:sans-serif;padding:20px;color:#64748b"><h2>Sem etapas cadastradas</h2></body></html>`;
+  const dtStart=new Date(Math.min(...allDates)), dtEnd=new Date(Math.max(...allDates));
+  const totalMs=dtEnd-dtStart, totalDays=Math.round(totalMs/86400000)||1;
+
+  function pct(s){ return ((pd(s)-dtStart)/totalMs*100).toFixed(3)+'%'; }
+  function wid(s,e){ return (Math.max(0,pd(e)-pd(s))/totalMs*100).toFixed(3)+'%'; }
+
+  // ── Mapa dia → etapa ────────────────────────────────────────────────────────
+  const dayMap={};
+  etapas.forEach((e,i)=>{
+    if (!e.inicio||!e.termino) return;
+    const d=new Date(pd(e.inicio));
+    while(d<=pd(e.termino)){ dayMap[dKey(d)]={idx:i+1,nome:e.nome,cor:e.cor}; d.setDate(d.getDate()+1); }
+  });
+
+  // ── Feriados nacionais BR (fixos + móveis 2024-2029) ───────────────────────
+  const holidays={};
+  const fixH=[['01-01','Ano Novo'],['04-21','Tiradentes'],['05-01','Dia do Trabalho'],
+    ['09-07','Independência do Brasil'],['10-12','Nossa Senhora Aparecida'],
+    ['11-02','Finados'],['11-15','Proclamação da República'],['11-20','Consciência Negra'],['12-25','Natal']];
+  const movH=[
+    ['2024-02-12','Carnaval'],['2024-02-13','Carnaval'],['2024-03-29','Sexta-feira Santa'],['2024-05-30','Corpus Christi'],
+    ['2025-03-03','Carnaval'],['2025-03-04','Carnaval'],['2025-04-18','Sexta-feira Santa'],['2025-06-19','Corpus Christi'],
+    ['2026-02-16','Carnaval'],['2026-02-17','Carnaval'],['2026-04-03','Sexta-feira Santa'],['2026-06-04','Corpus Christi'],
+    ['2027-02-08','Carnaval'],['2027-02-09','Carnaval'],['2027-03-26','Sexta-feira Santa'],['2027-05-27','Corpus Christi'],
+    ['2028-02-28','Carnaval'],['2028-02-29','Carnaval'],['2028-04-14','Sexta-feira Santa'],['2028-06-15','Corpus Christi'],
+    ['2029-02-12','Carnaval'],['2029-02-13','Carnaval'],['2029-04-06','Sexta-feira Santa'],['2029-06-14','Corpus Christi'],
+  ];
+  for(let y=dtStart.getFullYear();y<=dtEnd.getFullYear();y++)
+    fixH.forEach(([mmd,n])=>{ holidays[`${y}-${mmd}`]=n; });
+  movH.forEach(([d,n])=>{ holidays[d]=n; });
+
+  // ── Marcadores de mês (Gantt) ───────────────────────────────────────────────
+  const MSHORT=['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+  const MFULL=['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
+  const monthMarks=[];
+  { const c=new Date(dtStart); c.setDate(1);
+    while(c<=dtEnd){ const off=((c-dtStart)/totalMs*100).toFixed(3); monthMarks.push(`<div class="month-mark" style="left:${off}%">${MSHORT[c.getMonth()]}/${String(c.getFullYear()).slice(2)}</div>`); c.setMonth(c.getMonth()+1); }
   }
 
-  // Gantt rows
-  const ganttRows = etapas.map((e, i) => {
-    if (!e.inicio || !e.termino) return '';
-    const left = pct(e.inicio), width = wid(e.inicio, e.termino);
-    const days = diffDays(e.inicio, e.termino);
-    const atvs = (atividades[e.id] || []).filter(a => a.nome);
-    const atvRows = atvs.map(a => {
-      if (!a.inicio || !a.termino) return `<div class="gantt-row gantt-activity"><div class="gantt-label" style="padding-left:28px;font-size:0.7rem;color:#64748b">↳ ${a.nome}${a.responsavel?' ('+a.responsavel+')':''}</div><div class="gantt-track"></div></div>`;
-      const al = pct(a.inicio), aw = wid(a.inicio, a.termino);
-      const adays = diffDays(a.inicio, a.termino);
-      return `<div class="gantt-row gantt-activity"><div class="gantt-label" style="padding-left:28px;font-size:0.7rem;color:#64748b">↳ ${a.nome}${a.responsavel?' ('+a.responsavel+')':''}</div><div class="gantt-track"><div class="gantt-bar" style="left:${al};width:${aw};background:${e.cor}aa;border:1.5px solid ${e.cor}"><span class="bar-text">${adays}d</span></div></div></div>`;
+  // ── Gantt rows ──────────────────────────────────────────────────────────────
+  const ganttRows=etapas.map((e,i)=>{
+    if(!e.inicio||!e.termino) return '';
+    const days=diffDays(e.inicio,e.termino);
+    const atvRows=(atividades[e.id]||[]).filter(a=>a.nome).map(a=>{
+      if(!a.inicio||!a.termino) return `<div class="gantt-row gantt-activity"><div class="gantt-label" style="padding-left:28px;font-size:0.7rem;color:#64748b">↳ ${a.nome}${a.responsavel?' ('+a.responsavel+')':''}</div><div class="gantt-track"></div></div>`;
+      return `<div class="gantt-row gantt-activity"><div class="gantt-label" style="padding-left:28px;font-size:0.7rem;color:#64748b">↳ ${a.nome}${a.responsavel?' ('+a.responsavel+')':''}</div><div class="gantt-track"><div class="gantt-bar" style="left:${pct(a.inicio)};width:${wid(a.inicio,a.termino)};background:${e.cor}99;border:1.5px solid ${e.cor}"><span class="bar-text">${diffDays(a.inicio,a.termino)}d</span></div></div></div>`;
     }).join('');
-    return `<div class="gantt-row"><div class="gantt-label">${i+1}. ${e.nome}</div><div class="gantt-track"><div class="gantt-bar" style="left:${left};width:${width};background:${e.cor}"><span class="bar-text">${days}d</span></div></div></div>${atvRows}`;
+    return `<div class="gantt-row"><div class="gantt-label">${i+1}. ${e.nome}</div><div class="gantt-track"><div class="gantt-bar" style="left:${pct(e.inicio)};width:${wid(e.inicio,e.termino)};background:${e.cor}"><span class="bar-text">${days}d</span></div></div></div>${atvRows}`;
   }).join('');
 
-  // Table rows
-  const tableRows = etapas.map((e, i) => {
-    const atvs = (atividades[e.id] || []).filter(a => a.nome);
-    const atvHtml = atvs.length ? `<ul style="margin:6px 0 0 0;padding-left:18px;font-size:0.78rem;color:#64748b;">${atvs.map(a=>`<li><b>${a.nome}</b>${a.responsavel?' — '+a.responsavel:''}${a.inicio&&a.termino?' ('+fmt(a.inicio)+' → '+fmt(a.termino)+')':''}</li>`).join('')}</ul>` : '';
-    const dias = (e.inicio && e.termino) ? diffDays(e.inicio, e.termino) + 'd' : '—';
+  // ── Legenda calendário ──────────────────────────────────────────────────────
+  const legend=etapas.map((e,i)=>`<div class="leg-item"><span class="leg-dot" style="background:${e.cor}"></span>${i+1}. ${e.nome}</div>`).join('')+
+    `<div class="leg-item"><span class="leg-dot" style="background:#eef0f3;outline:2px solid #d64545;outline-offset:-2px;border-radius:3px;"></span>Feriado nacional</div>`;
+
+  // ── Grades mensais ──────────────────────────────────────────────────────────
+  const calMonths=[];
+  { const c=new Date(dtStart.getFullYear(),dtStart.getMonth(),1);
+    const endM=new Date(dtEnd.getFullYear(),dtEnd.getMonth(),1);
+    while(c<=endM){
+      const y=c.getFullYear(), mo=c.getMonth();
+      const first=new Date(y,mo,1).getDay(), dim=new Date(y,mo+1,0).getDate();
+      let cells='';
+      for(let i=0;i<first;i++) cells+=`<div class="cal-day empty"></div>`;
+      for(let d=1;d<=dim;d++){
+        const key=`${y}-${String(mo+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+        const dow=new Date(y,mo,d).getDay(), isWE=dow===0||dow===6;
+        const stage=dayMap[key], hol=holidays[key];
+        const titleParts=[dFmt(new Date(y,mo,d))];
+        if(stage) titleParts.push(stage.nome);
+        if(hol) titleParts.push('Feriado: '+hol);
+        let cls='cal-day';
+        if(!stage&&isWE) cls+=' weekend-no-stage';
+        else if(!stage) cls+=' no-stage';
+        if(hol) cls+=' is-holiday';
+        cells+=`<div class="${cls}" style="${stage?'background:'+stage.cor:''}" title="${titleParts.join(' · ')}">${d}</div>`;
+      }
+      const trail=(7-((first+dim)%7))%7;
+      for(let i=0;i<trail;i++) cells+=`<div class="cal-day empty"></div>`;
+      calMonths.push(`<div class="cal-month"><h3>${MFULL[mo]} ${y}</h3><div class="cal-weekdays"><div>Dom</div><div>Seg</div><div>Ter</div><div>Qua</div><div>Qui</div><div>Sex</div><div>Sáb</div></div><div class="cal-days">${cells}</div></div>`);
+      c.setMonth(c.getMonth()+1);
+    }
+  }
+
+  // ── Tabela de etapas ────────────────────────────────────────────────────────
+  const tableRows=etapas.map((e,i)=>{
+    const atvs=(atividades[e.id]||[]).filter(a=>a.nome);
+    const atvHtml=atvs.length?`<ul style="margin:6px 0 0 0;padding-left:18px;font-size:0.78rem;color:#64748b;">${atvs.map(a=>`<li><b>${a.nome}</b>${a.responsavel?' — '+a.responsavel:''}${a.inicio&&a.termino?' ('+fmt(a.inicio)+' → '+fmt(a.termino)+')':''}</li>`).join('')}</ul>`:'';
+    const dias=(e.inicio&&e.termino)?diffDays(e.inicio,e.termino)+'d':'—';
     return `<tr><td class="num center">${i+1}</td><td><div class="stage-name"><span class="dot" style="background:${e.cor}"></span>${e.nome}</div>${atvHtml}</td><td>${fmt(e.inicio)}</td><td>${fmt(e.termino)}</td><td class="center">${dias}</td></tr>`;
   }).join('');
 
-  const now = new Date().toLocaleDateString('pt-BR');
-  const html = `<!DOCTYPE html>
+  const periodoInicio = fmt(etapas.filter(e=>e.inicio)[0]?.inicio);
+  const periodoFim    = fmt(etapas.filter(e=>e.termino).slice(-1)[0]?.termino);
+  const now=new Date().toLocaleDateString('pt-BR');
+
+  const html=`<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8">
@@ -2236,6 +2294,21 @@ function generateCronogramaHTML(project, etapas, atividades) {
   .stage-name{font-weight:600;}
   .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:8px;vertical-align:middle;}
   footer{text-align:center;color:var(--muted);font-size:0.78rem;margin-top:8px;}
+  .calendar-legend{display:flex;flex-wrap:wrap;gap:10px 18px;margin-bottom:22px;font-size:0.78rem;color:var(--muted);}
+  .leg-item{display:flex;align-items:center;gap:6px;}
+  .leg-dot{width:10px;height:10px;border-radius:3px;display:inline-block;flex:0 0 auto;}
+  .calendar-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:22px;}
+  .cal-month{border:1px solid var(--line);border-radius:10px;padding:14px;}
+  .cal-month h3{margin:0 0 10px;font-size:0.92rem;color:var(--accent);text-align:center;}
+  .cal-weekdays,.cal-days{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;}
+  .cal-weekdays div{font-size:0.62rem;text-align:center;color:var(--muted);font-weight:600;padding-bottom:4px;}
+  .cal-day{aspect-ratio:1;display:flex;align-items:center;justify-content:center;font-size:0.68rem;border-radius:5px;color:#fff;font-weight:600;position:relative;}
+  .cal-day.empty{visibility:hidden;}
+  .cal-day.no-stage{background:#eef0f3;color:var(--muted);font-weight:400;}
+  .cal-day.weekend-no-stage{background:#f6f7f9;color:#b7bcc4;font-weight:400;}
+  .cal-day.is-holiday{outline:2px solid #d64545;outline-offset:-2px;}
+  @media(max-width:900px){.calendar-grid{grid-template-columns:repeat(2,1fr);}}
+  @media(max-width:600px){.calendar-grid{grid-template-columns:1fr;}}
   @media(max-width:720px){.gantt-label{width:130px;flex:0 0 130px;font-size:.68rem;}}
 </style>
 </head>
@@ -2243,9 +2316,9 @@ function generateCronogramaHTML(project, etapas, atividades) {
 <div class="wrap">
   <header>
     <h1>${titulo}</h1>
-    <div class="subtitle">${cliente ? cliente + ' · ' : ''}Período: ${fmt(etapas.filter(e=>e.inicio)[0]?.inicio)} a ${fmt(etapas.filter(e=>e.termino).slice(-1)[0]?.termino)}</div>
+    <div class="subtitle">${cliente?cliente+' · ':''}Período: ${periodoInicio} a ${periodoFim}</div>
     <div class="badge-row">
-      ${vagas ? `<div class="badge"><b>${vagas}</b>Vagas</div>` : ''}
+      ${vagas?`<div class="badge"><b>${vagas}</b>Vagas</div>`:''}
       <div class="badge"><b>${etapas.length}</b>Etapas</div>
       <div class="badge"><b>${totalDays}</b>Dias corridos (total)</div>
     </div>
@@ -2253,7 +2326,8 @@ function generateCronogramaHTML(project, etapas, atividades) {
   <div class="card">
     <div class="view-switch">
       <button class="view-btn active" data-view="timeline">Linha do tempo</button>
-      <button class="view-btn" data-view="table">Tabela de etapas</button>
+      <button class="view-btn" data-view="calendar">Calendário</button>
+      <button class="view-btn" data-view="table">Tabela</button>
     </div>
     <div class="view-panel active" id="view-timeline">
       <h2>Linha do tempo do processo</h2>
@@ -2261,6 +2335,11 @@ function generateCronogramaHTML(project, etapas, atividades) {
         <div class="month-track">${monthMarks.join('')}</div>
         ${ganttRows}
       </div>
+    </div>
+    <div class="view-panel" id="view-calendar">
+      <h2>Calendário do processo</h2>
+      <div class="calendar-legend">${legend}</div>
+      <div class="calendar-grid">${calMonths.join('')}</div>
     </div>
     <div class="view-panel" id="view-table">
       <h2>Etapas do processo</h2>
@@ -2270,15 +2349,15 @@ function generateCronogramaHTML(project, etapas, atividades) {
       </table>
     </div>
   </div>
-  <footer>Gerado em ${now} · ${titulo}</footer>
+  <footer>Gerado em ${now} · Cia de Talentos</footer>
 </div>
 <script>
-  document.querySelectorAll('.view-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('.view-btn').forEach(b => b.classList.remove('active'));
-      document.querySelectorAll('.view-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.view-btn').forEach(btn=>{
+    btn.addEventListener('click',()=>{
+      document.querySelectorAll('.view-btn').forEach(b=>b.classList.remove('active'));
+      document.querySelectorAll('.view-panel').forEach(p=>p.classList.remove('active'));
       btn.classList.add('active');
-      document.getElementById('view-' + btn.dataset.view).classList.add('active');
+      document.getElementById('view-'+btn.dataset.view).classList.add('active');
     });
   });
 <\/script>
