@@ -21,7 +21,9 @@
 <script src="https://cdn.tailwindcss.com"></script>
 <script type="module">
   import * as hyp from 'https://esm.sh/hyparquet@1';
+  import { compressors as hyparquetCompressors } from 'https://esm.sh/hyparquet-compressors';
   window._hyparquet = hyp;
+  window._hyparquetCompressors = hyparquetCompressors;
 </script>
 <style>
   body { font-family:'Segoe UI',sans-serif; background:#f8fafc; }
@@ -3333,6 +3335,7 @@ function InscricoesView({ projects, token }) {
         let _onCompleteDiag = null; // capture first-call diagnostic
         await window._hyparquet.parquetRead({
           file: asyncBuf,
+          compressors: window._hyparquetCompressors || {},
           onComplete: data => {
             // Diagnose first batch
             if (!_onCompleteDiag) {
@@ -15293,6 +15296,7 @@ async function fetchVagasParquet(token, onProgress) {
   const rawRows = [];
   await window._hyparquet.parquetRead({
     file: asyncBuf,
+    compressors: window._hyparquetCompressors || {},
     onComplete: data => {
       for (const r of data) {
         const rIsArr = Array.isArray(r);
