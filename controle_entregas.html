@@ -2117,9 +2117,9 @@ async function readCronogramaExcel(token, siteUrl, fileRel) {
   const res = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` } });
   if (!res.ok) throw new Error(`Leitura SP ${res.status}`);
   const buf = await res.arrayBuffer();
-  const wb = XLSX.read(buf, { type: 'array' });
+  const wb = XLSX.read(new Uint8Array(buf), { type: 'array' });
   const wsE = wb.Sheets['Etapas'];
-  const etapas = wsE ? XLSX.utils.sheet_to_json(wsE, { defval: '' }) : [];
+  const etapas = wsE ? XLSX.utils.sheet_to_json(wsE, { defval: '' }).filter(e => e.id && e.nome) : [];
   const wsA = wb.Sheets['Atividades'];
   const atFlat = wsA ? XLSX.utils.sheet_to_json(wsA, { defval: '' }) : [];
   const atividades = {};
@@ -2139,7 +2139,8 @@ async function saveCronogramaExcel(token, siteUrl, folderRel, fileName, etapas, 
   const wsA = XLSX.utils.json_to_sheet(atFlat.length ? atFlat : [{ etapaId:'',id:'',nome:'',responsavel:'',inicio:'',termino:'',obs:'' }]);
   XLSX.utils.book_append_sheet(wb, wsA, 'Atividades');
   const buf = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
-  return await spUploadFile(token, siteUrl, folderRel, fileName, buf.buffer);
+  // Passa o Uint8Array diretamente; buf.buffer pode ter byteOffset incorreto
+  return await spUploadFile(token, siteUrl, folderRel, fileName, buf);
 }
 
 function generateCronogramaHTML(project, etapas, atividades) {
@@ -8776,8 +8777,10 @@ function CronogramaModal({ project, phases, onClose }) {
   const [cronExists, setCronExists] = useState(false);
 
   const projectId = project?.indice || project?.id || 'sem_id';
-  const excelName = `Cronograma_${String(projectId).replace(/[^a-zA-Z0-9_-]/g,'_')}.xlsx`;
-  const htmlName  = `Cronograma_${String(projectId).replace(/[^a-zA-Z0-9_-]/g,'_')}.html`;
+  const _rawTitle = (project?.title || '').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-zA-Z0-9\s_-]/g, '').replace(/\s+/g, '_').slice(0, 50);
+  const _baseName = (_rawTitle || String(projectId)) + `_${projectId}`;
+  const excelName = `Cronograma_${_baseName}.xlsx`;
+  const htmlName  = `Cronograma_${_baseName}.html`;
   const excelRel  = `${CRONOGRAMA_FOLDER_REL}/${excelName}`;
 
   function buildEtapasFromPhases(ph) {
@@ -8818,8 +8821,12 @@ function CronogramaModal({ project, phases, onClose }) {
     try {
       const token = await acquireTokenForResource(APP_CONFIG.clientId, APP_CONFIG.tenantId, CRONOGRAMA_SCOPE);
       await saveCronogramaExcel(token, CRONOGRAMA_SITE_URL, CRONOGRAMA_FOLDER_REL, excelName, etapas, atividades);
+      // Também regenera o HTML automaticamente a cada save
+      const html = generateCronogramaHTML(project, etapas, atividades);
+      const htmlBytes = new TextEncoder().encode(html);
+      await spUploadFile(token, CRONOGRAMA_SITE_URL, CRONOGRAMA_FOLDER_REL, htmlName, htmlBytes);
       setCronExists(true);
-      setMsg('Salvo com sucesso! ✓');
+      setMsg('Salvo e HTML atualizado! ✓');
       setTimeout(() => setMsg(''), 3500);
     } catch(e) { setError('Erro ao salvar: ' + e.message); }
     finally { setSaving(false); }
@@ -8832,7 +8839,8 @@ function CronogramaModal({ project, phases, onClose }) {
       await saveCronogramaExcel(token, CRONOGRAMA_SITE_URL, CRONOGRAMA_FOLDER_REL, excelName, etapas, atividades);
       const html = generateCronogramaHTML(project, etapas, atividades);
       const enc = new TextEncoder();
-      await spUploadFile(token, CRONOGRAMA_SITE_URL, CRONOGRAMA_FOLDER_REL, htmlName, enc.encode(html).buffer);
+      const htmlBytes = enc.encode(html);
+      await spUploadFile(token, CRONOGRAMA_SITE_URL, CRONOGRAMA_FOLDER_REL, htmlName, htmlBytes);
       setCronExists(true);
       setMsg(`HTML gerado: ${htmlName}. Acesse a pasta Cronogramas no SharePoint para publicar.`);
     } catch(e) { setError('Erro ao publicar: ' + e.message); }
