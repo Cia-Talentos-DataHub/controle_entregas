@@ -2181,7 +2181,7 @@ function generateCronogramaHTML(project, etapas, atividades) {
     ['2026-02-16','Carnaval'],['2026-02-17','Carnaval'],['2026-04-03','Sexta-feira Santa'],['2026-06-04','Corpus Christi'],
     ['2027-02-08','Carnaval'],['2027-02-09','Carnaval'],['2027-03-26','Sexta-feira Santa'],['2027-05-27','Corpus Christi'],
     ['2028-02-28','Carnaval'],['2028-02-29','Carnaval'],['2028-04-14','Sexta-feira Santa'],['2028-06-15','Corpus Christi'],
-    ['2029-02-12','Carnaval'],['2029-02-13','Carnaval'],['2029-04-06','Sexta-feira Santa'],['2029-06-14','Corpus Christi'],
+    ['2029-02-12','Carnaval'],['2029-02-13','Carnaval'],['2029-03-30','Sexta-feira Santa'],['2029-05-31','Corpus Christi'],
   ];
   for(let y=dtStart.getFullYear();y<=dtEnd.getFullYear();y++)
     fixH.forEach(([mmd,n])=>{ holidays[`${y}-${mmd}`]=n; });
@@ -2327,7 +2327,6 @@ function generateCronogramaHTML(project, etapas, atividades) {
     <div class="view-switch">
       <button class="view-btn active" data-view="timeline">Linha do tempo</button>
       <button class="view-btn" data-view="calendar">Calendário</button>
-      <button class="view-btn" data-view="table">Tabela</button>
     </div>
     <div class="view-panel active" id="view-timeline">
       <h2>Linha do tempo do processo</h2>
@@ -2335,18 +2334,16 @@ function generateCronogramaHTML(project, etapas, atividades) {
         <div class="month-track">${monthMarks.join('')}</div>
         ${ganttRows}
       </div>
+      <h2 style="margin-top:32px;">Etapas do processo</h2>
+      <table>
+        <thead><tr><th class="num">#</th><th>Etapa</th><th>Início</th><th>Término</th><th class="center">Duração</th></tr></thead>
+        <tbody>${tableRows}</tbody>
+      </table>
     </div>
     <div class="view-panel" id="view-calendar">
       <h2>Calendário do processo</h2>
       <div class="calendar-legend">${legend}</div>
       <div class="calendar-grid">${calMonths.join('')}</div>
-    </div>
-    <div class="view-panel" id="view-table">
-      <h2>Etapas do processo</h2>
-      <table>
-        <thead><tr><th class="num">#</th><th>Etapa</th><th>Início</th><th>Término</th><th class="center">Duração</th></tr></thead>
-        <tbody>${tableRows}</tbody>
-      </table>
     </div>
   </div>
   <footer>Gerado em ${now} · Cia de Talentos</footer>
