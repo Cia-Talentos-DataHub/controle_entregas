@@ -9053,7 +9053,6 @@ function CronogramaModal({ project, phases, onClose }) {
   const [expandedEtapa, setExpandedEtapa] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [publishing, setPublishing] = useState(false);
   const [error, setError] = useState('');
   const [msg, setMsg] = useState('');
   const [cronExists, setCronExists] = useState(false);
@@ -9102,27 +9101,17 @@ function CronogramaModal({ project, phases, onClose }) {
     setSaving(true); setError(''); setMsg('');
     try {
       const token = await acquireTokenForResource(APP_CONFIG.clientId, APP_CONFIG.tenantId, CRONOGRAMA_SCOPE);
+      // Salva Excel (fonte de verdade para o editor recarregar)
       await saveCronogramaExcel(token, CRONOGRAMA_SITE_URL, CRONOGRAMA_FOLDER_REL, excelName, etapas, atividades);
-      setCronExists(true);
-      setMsg('Excel salvo! ✓ Use "Publicar HTML" para atualizar a versão publicada.');
-      setTimeout(() => setMsg(''), 5000);
-    } catch(e) { setError('Erro ao salvar: ' + e.message); }
-    finally { setSaving(false); }
-  }
-
-  async function handlePublish() {
-    setPublishing(true); setError(''); setMsg('');
-    try {
-      const token = await acquireTokenForResource(APP_CONFIG.clientId, APP_CONFIG.tenantId, CRONOGRAMA_SCOPE);
-      await saveCronogramaExcel(token, CRONOGRAMA_SITE_URL, CRONOGRAMA_FOLDER_REL, excelName, etapas, atividades);
-      // HTML dinâmico — lê o Excel ao ser aberto, não precisa ser regnerado a cada alteração
-      const html = generateCronogramaHTMLDynamic(project, excelRel);
+      // Sobrescreve HTML estático no SharePoint — cliente sempre vê versão atualizada
+      const html = generateCronogramaHTML(project, etapas, atividades);
       const htmlBytes = new TextEncoder().encode(html);
       await spUploadFile(token, CRONOGRAMA_SITE_URL, CRONOGRAMA_FOLDER_REL, htmlName, htmlBytes);
       setCronExists(true);
-      setMsg(`HTML salvo na pasta Cronogramas do SharePoint. Compartilhe o link do arquivo ${htmlName} com o cliente — ao abrir, carrega os dados do Excel automaticamente. Não é necessário republicar quando os dados mudarem.`);
-    } catch(e) { setError('Erro ao publicar: ' + e.message); }
-    finally { setPublishing(false); }
+      setMsg(`Salvo e HTML atualizado! Compartilhe o link do arquivo "${htmlName}" na pasta Cronogramas do SharePoint com o cliente.`);
+      setTimeout(() => setMsg(''), 8000);
+    } catch(e) { setError('Erro ao salvar: ' + e.message); }
+    finally { setSaving(false); }
   }
 
   function addEtapa() {
@@ -9234,8 +9223,7 @@ function CronogramaModal({ project, phases, onClose }) {
         React.createElement('p', { className: 'text-xs text-slate-400' }, cronExists ? '✓ Vinculado ao SharePoint' : '⚠ Ainda não salvo'),
         React.createElement('div', { className: 'flex gap-3' },
           React.createElement('button', { onClick: onClose, className: 'border border-slate-300 text-slate-600 px-4 py-2 rounded-lg text-sm hover:bg-slate-50 transition' }, 'Fechar'),
-          React.createElement('button', { onClick: handleSave, disabled: saving || publishing, className: 'bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white px-4 py-2 rounded-lg text-sm font-semibold transition' }, saving ? '⏳ Salvando...' : '💾 Salvar'),
-          React.createElement('button', { onClick: handlePublish, disabled: saving || publishing, className: 'bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-4 py-2 rounded-lg text-sm font-semibold transition' }, publishing ? '⏳ Gerando HTML...' : '🌐 Publicar HTML')
+          React.createElement('button', { onClick: handleSave, disabled: saving, className: 'bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white px-4 py-2 rounded-lg text-sm font-semibold transition' }, saving ? '⏳ Salvando...' : '💾 Salvar')
         )
       )
     )
