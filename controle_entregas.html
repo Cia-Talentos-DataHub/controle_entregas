@@ -2370,10 +2370,11 @@ function generateCronogramaHTMLDynamic(project, excelRel) {
   const cliente = (project?.client || '').replace(/\\/g,'\\\\').replace(/'/g,"\\'");
   const vagas   = String(project?.pulseData?.Qtd_Vagas || project?.vagas || '');
 
-  // URL pública do Excel no SharePoint (sem auth — pasta configurada como pública)
-  const spHost = 'https://ciadetalentos.sharepoint.com';
-  const excelPublicUrl = spHost + excelRel.split('/').map(function(s){ return s ? encodeURIComponent(s) : ''; }).join('/');
-  const excelUrlJs = excelPublicUrl.replace(/'/g,"\\'");
+  // URL relativa — HTML e Excel ficam na mesma pasta do SharePoint.
+  // Assim o browser busca o Excel no mesmo domínio (same-origin), sem CORS.
+  // O HTML deve ser acessado via link do SharePoint, não baixado e aberto localmente.
+  const excelFilename = excelRel.split('/').pop();
+  const excelUrlJs = './' + excelFilename;
 
   const css = `*{box-sizing:border-box;margin:0;padding:0;}
 :root{--bg:#f4f6f9;--card:#fff;--ink:#1a2332;--muted:#64748b;--line:#e2e8f0;--accent:#1e3a5f;}
@@ -2627,7 +2628,7 @@ footer{text-align:center;color:var(--muted);font-size:0.78rem;margin-top:8px;}
     document.getElementById('loading').style.display='none';
     var err=document.getElementById('error-msg');
     err.innerHTML='<b>Erro ao carregar dados:</b> '+e.message+
-      '<br><small>Verifique se o arquivo Excel está acessível publicamente no SharePoint.</small>';
+      '<br><small>Este arquivo deve ser acessado pelo link do SharePoint (não aberto localmente). Certifique-se de que o Excel está na mesma pasta que este HTML.</small>';
     err.style.display='block';
   });
 
@@ -9119,7 +9120,7 @@ function CronogramaModal({ project, phases, onClose }) {
       const htmlBytes = new TextEncoder().encode(html);
       await spUploadFile(token, CRONOGRAMA_SITE_URL, CRONOGRAMA_FOLDER_REL, htmlName, htmlBytes);
       setCronExists(true);
-      setMsg(`HTML salvo no SharePoint (${htmlName}). Publique-o uma única vez — daqui em diante, "Salvar" atualiza os dados automaticamente.`);
+      setMsg(`HTML salvo na pasta Cronogramas do SharePoint. Compartilhe o link do arquivo ${htmlName} com o cliente — ao abrir, carrega os dados do Excel automaticamente. Não é necessário republicar quando os dados mudarem.`);
     } catch(e) { setError('Erro ao publicar: ' + e.message); }
     finally { setPublishing(false); }
   }
