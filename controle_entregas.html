@@ -2363,6 +2363,287 @@ function generateCronogramaHTML(project, etapas, atividades) {
 </html>`;
   return html;
 }
+
+// HTML dinâmico: lê o Excel do SharePoint público a cada carregamento — sem autenticação
+function generateCronogramaHTMLDynamic(project, excelRel) {
+  const titulo  = 'Cronograma — ' + (project?.title || 'Processo');
+  const cliente = (project?.client || '').replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+  const vagas   = String(project?.pulseData?.Qtd_Vagas || project?.vagas || '');
+
+  // URL pública do Excel no SharePoint (sem auth — pasta configurada como pública)
+  const spHost = 'https://ciadetalentos.sharepoint.com';
+  const excelPublicUrl = spHost + excelRel.split('/').map(function(s){ return s ? encodeURIComponent(s) : ''; }).join('/');
+  const excelUrlJs = excelPublicUrl.replace(/'/g,"\\'");
+
+  const css = `*{box-sizing:border-box;margin:0;padding:0;}
+:root{--bg:#f4f6f9;--card:#fff;--ink:#1a2332;--muted:#64748b;--line:#e2e8f0;--accent:#1e3a5f;}
+body{background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:28px 16px 60px;}
+.wrap{max-width:1180px;margin:0 auto;}
+.card{background:var(--card);border-radius:16px;box-shadow:0 2px 12px rgba(0,0,0,.08);padding:28px;margin-bottom:24px;}
+header{margin-bottom:24px;}
+header h1{font-size:1.45rem;font-weight:700;color:var(--accent);margin-bottom:6px;}
+.subtitle{font-size:0.88rem;color:var(--muted);}
+.badge-row{display:flex;flex-wrap:wrap;gap:10px;margin-top:14px;}
+.badge{background:#eef2f7;border-radius:10px;padding:8px 16px;font-size:0.82rem;color:var(--ink);}
+.badge b{display:block;font-size:1.15rem;color:var(--accent);}
+.view-switch{display:flex;gap:8px;margin-bottom:20px;border-bottom:1px solid var(--line);padding-bottom:14px;}
+.view-btn{background:var(--bg);border:1px solid var(--line);color:var(--muted);font-size:0.85rem;font-weight:600;padding:8px 18px;border-radius:8px;cursor:pointer;transition:all .15s;}
+.view-btn:hover{background:#eef1f4;}
+.view-btn.active{background:var(--accent);color:#fff;border-color:var(--accent);}
+.view-panel{display:none;}.view-panel.active{display:block;}
+h2{font-size:1rem;font-weight:700;color:var(--ink);margin-bottom:18px;}
+.gantt-container{position:relative;padding-top:30px;}
+.month-track{position:relative;height:22px;margin-bottom:6px;border-bottom:1px solid var(--line);}
+.month-mark{position:absolute;font-size:0.72rem;color:var(--muted);font-weight:600;transform:translateX(-50%);white-space:nowrap;}
+.gantt-row{display:flex;align-items:center;margin-bottom:6px;min-height:32px;}
+.gantt-row.gantt-activity{min-height:24px;margin-bottom:3px;}
+.gantt-label{width:220px;flex:0 0 220px;font-size:0.78rem;font-weight:600;color:var(--ink);padding-right:12px;line-height:1.3;}
+.gantt-track{flex:1;position:relative;height:28px;background:#f1f4f8;border-radius:6px;overflow:visible;}
+.gantt-row.gantt-activity .gantt-track{height:20px;}
+.gantt-bar{position:absolute;height:100%;border-radius:5px;display:flex;align-items:center;padding:0 7px;min-width:2px;overflow:hidden;}
+.bar-text{font-size:0.65rem;color:#fff;font-weight:600;white-space:nowrap;}
+table{width:100%;border-collapse:collapse;font-size:0.86rem;}
+thead th{text-align:left;font-size:0.72rem;text-transform:uppercase;letter-spacing:.03em;color:var(--muted);border-bottom:2px solid var(--line);padding:8px 10px;}
+tbody td{padding:10px;border-bottom:1px solid var(--line);vertical-align:top;}
+tbody tr:hover{background:#fafbfc;}
+.num{color:var(--muted);font-weight:600;width:28px;}
+.center{text-align:center;}
+.stage-name{font-weight:600;}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:8px;vertical-align:middle;}
+footer{text-align:center;color:var(--muted);font-size:0.78rem;margin-top:8px;}
+.calendar-legend{display:flex;flex-wrap:wrap;gap:10px 18px;margin-bottom:22px;font-size:0.78rem;color:var(--muted);}
+.leg-item{display:flex;align-items:center;gap:6px;}
+.leg-dot{width:10px;height:10px;border-radius:3px;display:inline-block;flex:0 0 auto;}
+.calendar-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:22px;}
+.cal-month{border:1px solid var(--line);border-radius:10px;padding:14px;}
+.cal-month h3{margin:0 0 10px;font-size:0.92rem;color:var(--accent);text-align:center;}
+.cal-weekdays,.cal-days{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;}
+.cal-weekdays div{font-size:0.62rem;text-align:center;color:var(--muted);font-weight:600;padding-bottom:4px;}
+.cal-day{aspect-ratio:1;display:flex;align-items:center;justify-content:center;font-size:0.68rem;border-radius:5px;color:#fff;font-weight:600;}
+.cal-day.empty{visibility:hidden;}
+.cal-day.no-stage{background:#eef0f3;color:var(--muted);font-weight:400;}
+.cal-day.weekend-no-stage{background:#f6f7f9;color:#b7bcc4;font-weight:400;}
+.cal-day.is-holiday{outline:2px solid #d64545;outline-offset:-2px;}
+@media(max-width:900px){.calendar-grid{grid-template-columns:repeat(2,1fr);}}
+@media(max-width:600px){.calendar-grid{grid-template-columns:1fr;}}
+@media(max-width:720px){.gantt-label{width:130px;flex:0 0 130px;font-size:.68rem;}}`;
+
+  return `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>${titulo}</title>
+<script src="https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js"><\/script>
+<style>${css}<\/style>
+</head>
+<body>
+<div class="wrap">
+  <div id="loading" style="text-align:center;padding:80px 20px;color:#64748b">
+    <div style="font-size:2rem;margin-bottom:12px">&#9203;</div>
+    <div style="font-size:1rem">Carregando cronograma...</div>
+  </div>
+  <div id="error-msg" style="display:none;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:16px;margin:20px 0;color:#b91c1c;font-size:0.9rem"></div>
+  <div id="app" style="display:none">
+    <header>
+      <h1>${titulo}</h1>
+      <div class="subtitle" id="subtitle"></div>
+      <div class="badge-row" id="badges"></div>
+    </header>
+    <div class="card">
+      <div class="view-switch">
+        <button class="view-btn active" data-view="timeline">Linha do tempo</button>
+        <button class="view-btn" data-view="calendar">Calend&#225;rio</button>
+      </div>
+      <div class="view-panel active" id="view-timeline">
+        <h2>Linha do tempo do processo</h2>
+        <div id="gantt"></div>
+        <h2 style="margin-top:32px">Etapas do processo</h2>
+        <table>
+          <thead><tr><th class="num">#</th><th>Etapa</th><th>In&#237;cio</th><th>T&#233;rmino</th><th class="center">Dura&#231;&#227;o</th></tr></thead>
+          <tbody id="table-body"></tbody>
+        </table>
+      </div>
+      <div class="view-panel" id="view-calendar">
+        <h2>Calend&#225;rio do processo</h2>
+        <div class="calendar-legend" id="cal-legend"></div>
+        <div class="calendar-grid" id="cal-grid"></div>
+      </div>
+    </div>
+    <footer>Atualizado em <span id="updated-at"></span> &#183; Cia de Talentos</footer>
+  </div>
+</div>
+<script>
+(function(){
+  var EXCEL_URL = '${excelUrlJs}';
+  var VAGAS = '${vagas}';
+  var CLIENTE = '${cliente}';
+
+  function pd(s){if(!s)return null;var p=String(s).split('-').map(Number);return new Date(p[0],p[1]-1,p[2]);}
+  function fmt(s){if(!s)return '';var p=String(s).split('-');return p[2]+'/'+p[1]+'/'+p[0];}
+  function dKey(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
+  function dFmt(d){return String(d.getDate()).padStart(2,'0')+'/'+String(d.getMonth()+1).padStart(2,'0')+'/'+d.getFullYear();}
+  function diffDays(s,e){return Math.round((pd(e)-pd(s))/86400000);}
+
+  function renderAll(etapas,atividades){
+    var allDates=etapas.flatMap(function(e){return[pd(e.inicio),pd(e.termino)];}).filter(Boolean);
+    if(!allDates.length){
+      document.getElementById('loading').style.display='none';
+      document.getElementById('error-msg').textContent='Sem etapas cadastradas.';
+      document.getElementById('error-msg').style.display='block';
+      return;
+    }
+    var dtStart=new Date(Math.min.apply(null,allDates)),dtEnd=new Date(Math.max.apply(null,allDates));
+    var totalMs=dtEnd-dtStart,totalDays=Math.round(totalMs/86400000)||1;
+    function pct(s){return((pd(s)-dtStart)/totalMs*100).toFixed(3)+'%';}
+    function wid(s,e){return(Math.max(0,pd(e)-pd(s))/totalMs*100).toFixed(3)+'%';}
+
+    var dayMap={};
+    etapas.forEach(function(e,i){
+      if(!e.inicio||!e.termino)return;
+      var d=new Date(pd(e.inicio));
+      while(d<=pd(e.termino)){dayMap[dKey(d)]={idx:i+1,nome:e.nome,cor:e.cor};d.setDate(d.getDate()+1);}
+    });
+
+    var holidays={};
+    var fixH=[['01-01','Ano Novo'],['04-21','Tiradentes'],['05-01','Dia do Trabalho'],
+      ['09-07','Independência do Brasil'],['10-12','Nossa Senhora Aparecida'],
+      ['11-02','Finados'],['11-15','Proclamação da República'],
+      ['11-20','Consciência Negra'],['12-25','Natal']];
+    var movH=[['2024-02-12','Carnaval'],['2024-02-13','Carnaval'],['2024-03-29','Sexta-feira Santa'],['2024-05-30','Corpus Christi'],
+      ['2025-03-03','Carnaval'],['2025-03-04','Carnaval'],['2025-04-18','Sexta-feira Santa'],['2025-06-19','Corpus Christi'],
+      ['2026-02-16','Carnaval'],['2026-02-17','Carnaval'],['2026-04-03','Sexta-feira Santa'],['2026-06-04','Corpus Christi'],
+      ['2027-02-08','Carnaval'],['2027-02-09','Carnaval'],['2027-03-26','Sexta-feira Santa'],['2027-05-27','Corpus Christi'],
+      ['2028-02-28','Carnaval'],['2028-02-29','Carnaval'],['2028-04-14','Sexta-feira Santa'],['2028-06-15','Corpus Christi'],
+      ['2029-02-12','Carnaval'],['2029-02-13','Carnaval'],['2029-03-30','Sexta-feira Santa'],['2029-05-31','Corpus Christi']];
+    for(var y=dtStart.getFullYear();y<=dtEnd.getFullYear();y++)
+      fixH.forEach(function(h){holidays[y+'-'+h[0]]=h[1];});
+    movH.forEach(function(h){holidays[h[0]]=h[1];});
+
+    var MSHORT=['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+    var MFULL=['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
+
+    // ── Gantt ──────────────────────────────────────────────────────────────────
+    var monthMarks='';
+    var c0=new Date(dtStart);c0.setDate(1);
+    while(c0<=dtEnd){
+      var off=((c0-dtStart)/totalMs*100).toFixed(3);
+      monthMarks+='<div class="month-mark" style="left:'+off+'%">'+MSHORT[c0.getMonth()]+'/'+String(c0.getFullYear()).slice(2)+'</div>';
+      c0.setMonth(c0.getMonth()+1);
+    }
+    var ganttRows=etapas.map(function(e,i){
+      if(!e.inicio||!e.termino)return '';
+      var days=diffDays(e.inicio,e.termino);
+      var atvRows=(atividades[e.id]||[]).filter(function(a){return a.nome;}).map(function(a){
+        var lbl='<div class="gantt-label" style="padding-left:28px;font-size:0.7rem;color:#64748b">↳ '+a.nome+(a.responsavel?' ('+a.responsavel+')':'')+'</div>';
+        if(!a.inicio||!a.termino)return '<div class="gantt-row gantt-activity">'+lbl+'<div class="gantt-track"></div></div>';
+        return '<div class="gantt-row gantt-activity">'+lbl+'<div class="gantt-track"><div class="gantt-bar" style="left:'+pct(a.inicio)+';width:'+wid(a.inicio,a.termino)+';background:'+e.cor+'99;border:1.5px solid '+e.cor+'"><span class="bar-text">'+diffDays(a.inicio,a.termino)+'d</span></div></div></div>';
+      }).join('');
+      return '<div class="gantt-row"><div class="gantt-label">'+(i+1)+'. '+e.nome+'</div><div class="gantt-track"><div class="gantt-bar" style="left:'+pct(e.inicio)+';width:'+wid(e.inicio,e.termino)+';background:'+e.cor+'"><span class="bar-text">'+days+'d</span></div></div></div>'+atvRows;
+    }).join('');
+    document.getElementById('gantt').innerHTML='<div class="gantt-container"><div class="month-track">'+monthMarks+'</div>'+ganttRows+'</div>';
+
+    // ── Tabela ─────────────────────────────────────────────────────────────────
+    var tableRows=etapas.map(function(e,i){
+      var atvs=(atividades[e.id]||[]).filter(function(a){return a.nome;});
+      var atvHtml='';
+      if(atvs.length){
+        atvHtml='<ul style="margin:6px 0 0 0;padding-left:18px;font-size:0.78rem;color:#64748b">'+
+          atvs.map(function(a){
+            var li='<li><b>'+a.nome+'</b>';
+            if(a.responsavel)li+=' — '+a.responsavel;
+            if(a.inicio&&a.termino)li+=' ('+fmt(a.inicio)+' → '+fmt(a.termino)+')';
+            return li+'</li>';
+          }).join('')+'</ul>';
+      }
+      var dias=(e.inicio&&e.termino)?diffDays(e.inicio,e.termino)+'d':'—';
+      return '<tr><td class="num center">'+(i+1)+'</td><td><div class="stage-name"><span class="dot" style="background:'+e.cor+'"></span>'+e.nome+'</div>'+atvHtml+'</td><td>'+fmt(e.inicio)+'</td><td>'+fmt(e.termino)+'</td><td class="center">'+dias+'</td></tr>';
+    }).join('');
+    document.getElementById('table-body').innerHTML=tableRows;
+
+    // ── Calendário ─────────────────────────────────────────────────────────────
+    var legendHtml=etapas.map(function(e,i){
+      return '<div class="leg-item"><span class="leg-dot" style="background:'+e.cor+'"></span>'+(i+1)+'. '+e.nome+'</div>';
+    }).join('')+'<div class="leg-item"><span class="leg-dot" style="background:#eef0f3;outline:2px solid #d64545;outline-offset:-2px;border-radius:3px;"></span>Feriado nacional</div>';
+    document.getElementById('cal-legend').innerHTML=legendHtml;
+
+    var calHtml='';
+    var c1=new Date(dtStart.getFullYear(),dtStart.getMonth(),1);
+    var endM=new Date(dtEnd.getFullYear(),dtEnd.getMonth(),1);
+    while(c1<=endM){
+      var ym=c1.getFullYear(),mo=c1.getMonth();
+      var first=new Date(ym,mo,1).getDay(),dim=new Date(ym,mo+1,0).getDate();
+      var cells='';
+      for(var ii=0;ii<first;ii++)cells+='<div class="cal-day empty"></div>';
+      for(var dd=1;dd<=dim;dd++){
+        var key=ym+'-'+String(mo+1).padStart(2,'0')+'-'+String(dd).padStart(2,'0');
+        var dow=new Date(ym,mo,dd).getDay(),isWE=dow===0||dow===6;
+        var stage=dayMap[key],hol=holidays[key];
+        var titleParts=[dFmt(new Date(ym,mo,dd))];
+        if(stage)titleParts.push(stage.nome);
+        if(hol)titleParts.push('Feriado: '+hol);
+        var cls='cal-day';
+        if(!stage&&isWE)cls+=' weekend-no-stage';
+        else if(!stage)cls+=' no-stage';
+        if(hol)cls+=' is-holiday';
+        cells+='<div class="'+cls+'" style="'+(stage?'background:'+stage.cor:'')+'" title="'+titleParts.join(' · ')+'">'+dd+'</div>';
+      }
+      var trail=(7-((first+dim)%7))%7;
+      for(var ii=0;ii<trail;ii++)cells+='<div class="cal-day empty"></div>';
+      calHtml+='<div class="cal-month"><h3>'+MFULL[mo]+' '+ym+'</h3><div class="cal-weekdays"><div>Dom</div><div>Seg</div><div>Ter</div><div>Qua</div><div>Qui</div><div>Sex</div><div>Sáb</div></div><div class="cal-days">'+cells+'</div></div>';
+      c1.setMonth(c1.getMonth()+1);
+    }
+    document.getElementById('cal-grid').innerHTML=calHtml;
+
+    // ── Header dinâmico ────────────────────────────────────────────────────────
+    var pi=etapas.filter(function(e){return e.inicio;})[0];
+    var pf=etapas.filter(function(e){return e.termino;}).slice(-1)[0];
+    document.getElementById('subtitle').textContent=(CLIENTE?CLIENTE+' · ':'')+
+      'Período: '+(pi?fmt(pi.inicio):'')+' a '+(pf?fmt(pf.termino):'');
+    document.getElementById('badges').innerHTML=
+      (VAGAS?'<div class="badge"><b>'+VAGAS+'</b>Vagas</div>':'')+
+      '<div class="badge"><b>'+etapas.length+'</b>Etapas</div>'+
+      '<div class="badge"><b>'+totalDays+'</b>Dias corridos (total)</div>';
+    document.getElementById('updated-at').textContent=new Date().toLocaleString('pt-BR');
+    document.getElementById('loading').style.display='none';
+    document.getElementById('app').style.display='block';
+  }
+
+  async function loadData(){
+    var res=await fetch(EXCEL_URL);
+    if(!res.ok)throw new Error('HTTP '+res.status);
+    var buf=await res.arrayBuffer();
+    var wb=XLSX.read(new Uint8Array(buf),{type:'array'});
+    var wsE=wb.Sheets['Etapas'];
+    var etapas=wsE?XLSX.utils.sheet_to_json(wsE,{defval:''}).filter(function(e){return e.id&&e.nome;}):[];
+    var wsA=wb.Sheets['Atividades'];
+    var atFlat=wsA?XLSX.utils.sheet_to_json(wsA,{defval:''}):[];
+    var atividades={};
+    atFlat.forEach(function(a){var eid=a.etapaId||'';if(eid){if(!atividades[eid])atividades[eid]=[];atividades[eid].push(a);}});
+    renderAll(etapas,atividades);
+  }
+
+  loadData().catch(function(e){
+    document.getElementById('loading').style.display='none';
+    var err=document.getElementById('error-msg');
+    err.innerHTML='<b>Erro ao carregar dados:</b> '+e.message+
+      '<br><small>Verifique se o arquivo Excel está acessível publicamente no SharePoint.</small>';
+    err.style.display='block';
+  });
+
+  document.querySelectorAll('.view-btn').forEach(function(btn){
+    btn.addEventListener('click',function(){
+      document.querySelectorAll('.view-btn').forEach(function(b){b.classList.remove('active');});
+      document.querySelectorAll('.view-panel').forEach(function(p){p.classList.remove('active');});
+      btn.classList.add('active');
+      document.getElementById('view-'+btn.dataset.view).classList.add('active');
+    });
+  });
+})();
+<\/script>
+</body>
+</html>`;
+}
 // ─── End Cronograma SP helpers ─────────────────────────────────────────────────
 // Campos extras do Clientes×Frentes — nomes resolvidos via _spFieldMap após fetchSPChoices
 const CF_EXTRA_KEYS = ['Vagas_Trabalhadas', 'Vagas_Fechadas', 'Vagas_Extras', 'Vagas_Canceladas', 'Vagas_Nao_Fechadas', 'Motivos_Celebrar', 'Devemos_Cuidar', 'Resumo_Semanal'];
@@ -8821,13 +9102,9 @@ function CronogramaModal({ project, phases, onClose }) {
     try {
       const token = await acquireTokenForResource(APP_CONFIG.clientId, APP_CONFIG.tenantId, CRONOGRAMA_SCOPE);
       await saveCronogramaExcel(token, CRONOGRAMA_SITE_URL, CRONOGRAMA_FOLDER_REL, excelName, etapas, atividades);
-      // Também regenera o HTML automaticamente a cada save
-      const html = generateCronogramaHTML(project, etapas, atividades);
-      const htmlBytes = new TextEncoder().encode(html);
-      await spUploadFile(token, CRONOGRAMA_SITE_URL, CRONOGRAMA_FOLDER_REL, htmlName, htmlBytes);
       setCronExists(true);
-      setMsg('Salvo e HTML atualizado! ✓');
-      setTimeout(() => setMsg(''), 3500);
+      setMsg('Excel salvo! ✓ Use "Publicar HTML" para atualizar a versão publicada.');
+      setTimeout(() => setMsg(''), 5000);
     } catch(e) { setError('Erro ao salvar: ' + e.message); }
     finally { setSaving(false); }
   }
@@ -8837,12 +9114,12 @@ function CronogramaModal({ project, phases, onClose }) {
     try {
       const token = await acquireTokenForResource(APP_CONFIG.clientId, APP_CONFIG.tenantId, CRONOGRAMA_SCOPE);
       await saveCronogramaExcel(token, CRONOGRAMA_SITE_URL, CRONOGRAMA_FOLDER_REL, excelName, etapas, atividades);
-      const html = generateCronogramaHTML(project, etapas, atividades);
-      const enc = new TextEncoder();
-      const htmlBytes = enc.encode(html);
+      // HTML dinâmico — lê o Excel ao ser aberto, não precisa ser regnerado a cada alteração
+      const html = generateCronogramaHTMLDynamic(project, excelRel);
+      const htmlBytes = new TextEncoder().encode(html);
       await spUploadFile(token, CRONOGRAMA_SITE_URL, CRONOGRAMA_FOLDER_REL, htmlName, htmlBytes);
       setCronExists(true);
-      setMsg(`HTML gerado: ${htmlName}. Acesse a pasta Cronogramas no SharePoint para publicar.`);
+      setMsg(`HTML salvo no SharePoint (${htmlName}). Publique-o uma única vez — daqui em diante, "Salvar" atualiza os dados automaticamente.`);
     } catch(e) { setError('Erro ao publicar: ' + e.message); }
     finally { setPublishing(false); }
   }
