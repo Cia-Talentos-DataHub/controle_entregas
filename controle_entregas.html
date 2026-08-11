@@ -2308,11 +2308,6 @@ function generateCronogramaHTML(project, etapas, atividades) {
   .stage-name{font-weight:600;}
   .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:8px;vertical-align:middle;}
   footer{text-align:center;color:var(--muted);font-size:0.78rem;margin-top:8px;}
-  .filter-bar{display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap;padding:12px 0 4px;}
-  .filter-bar label{font-size:0.8rem;color:var(--muted);font-weight:600;display:flex;align-items:center;gap:6px;}
-  .filter-bar input[type=date]{border:1px solid var(--line);border-radius:8px;padding:5px 10px;font-size:0.8rem;color:var(--ink);background:#fff;cursor:pointer;}
-  .filter-btn{background:var(--bg);border:1px solid var(--line);color:var(--muted);font-size:0.8rem;font-weight:600;padding:6px 14px;border-radius:8px;cursor:pointer;transition:all .15s;}
-  .filter-btn:hover{background:#eef1f4;}.filter-btn.active{background:var(--accent);color:#fff;border-color:var(--accent);}
   .calendar-legend{display:flex;flex-wrap:wrap;gap:10px 18px;margin-bottom:22px;font-size:0.78rem;color:var(--muted);}
   .leg-item{display:flex;align-items:center;gap:6px;}
   .leg-dot{width:10px;height:10px;border-radius:3px;display:inline-block;flex:0 0 auto;}
@@ -2362,12 +2357,6 @@ function generateCronogramaHTML(project, etapas, atividades) {
     </div>
     <div class="view-panel" id="view-calendar">
       <h2>Calendário do processo</h2>
-      <div class="filter-bar">
-        <button class="filter-btn" id="cal-btn-hoje" onclick="calFilterToday()">Hoje</button>
-        <label>De <input type="date" id="cal-from" oninput="calFilterRange()"></label>
-        <label>At&#233; <input type="date" id="cal-to" oninput="calFilterRange()"></label>
-        <button class="filter-btn active" id="cal-btn-all" onclick="calFilterClear()">Mostrar tudo</button>
-      </div>
       <div class="calendar-legend">${legend}</div>
       <div class="calendar-grid" id="cal-grid">${calMonths.join('')}</div>
     </div>
@@ -2375,39 +2364,6 @@ function generateCronogramaHTML(project, etapas, atividades) {
   <footer>Gerado em ${now} · Cia de Talentos</footer>
 </div>
 <script>
-  var dtStart=new Date(${dtStart.getFullYear()},${dtStart.getMonth()},${dtStart.getDate()});
-  var dtEnd=new Date(${dtEnd.getFullYear()},${dtEnd.getMonth()},${dtEnd.getDate()});
-  function dKey(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
-  function initCalFilter(){
-    document.getElementById('cal-from').value=dtStart?dKey(new Date(dtStart.getFullYear(),dtStart.getMonth(),1)).substring(0,7)+'-01':'';
-    document.getElementById('cal-to').value=dtEnd?dKey(new Date(dtEnd.getFullYear(),dtEnd.getMonth(),1)).substring(0,7)+'-28':'';
-  }
-  function calFilterToday(){
-    var today=new Date();var ym=today.getFullYear()+'-'+String(today.getMonth()+1).padStart(2,'0');
-    document.getElementById('cal-btn-hoje').classList.add('active');
-    document.getElementById('cal-btn-all').classList.remove('active');
-    Array.from(document.querySelectorAll('#cal-grid .cal-month')).forEach(function(m){m.style.display=m.dataset.ym===ym?'':'none';});
-  }
-  function calFilterRange(){
-    var from=document.getElementById('cal-from').value;
-    var to=document.getElementById('cal-to').value;
-    document.getElementById('cal-btn-hoje').classList.remove('active');
-    document.getElementById('cal-btn-all').classList.remove('active');
-    Array.from(document.querySelectorAll('#cal-grid .cal-month')).forEach(function(m){
-      var ym=m.dataset.ym;
-      var fromOk=!from||ym>=from.substring(0,7);
-      var toOk=!to||ym<=to.substring(0,7);
-      m.style.display=(fromOk&&toOk)?'':'none';
-    });
-  }
-  function calFilterClear(){
-    document.getElementById('cal-btn-hoje').classList.remove('active');
-    document.getElementById('cal-btn-all').classList.add('active');
-    Array.from(document.querySelectorAll('#cal-grid .cal-month')).forEach(function(m){m.style.display='';});
-    document.getElementById('cal-from').value='';
-    document.getElementById('cal-to').value='';
-  }
-  initCalFilter();
   document.querySelectorAll('.view-btn').forEach(btn=>{
     btn.addEventListener('click',()=>{
       document.querySelectorAll('.view-btn').forEach(b=>b.classList.remove('active'));
@@ -2469,11 +2425,6 @@ tbody tr:hover{background:#fafbfc;}
 .stage-name{font-weight:600;}
 .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:8px;vertical-align:middle;}
 footer{text-align:center;color:var(--muted);font-size:0.78rem;margin-top:8px;}
-.filter-bar{display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap;padding:12px 0 4px;}
-.filter-bar label{font-size:0.8rem;color:var(--muted);font-weight:600;display:flex;align-items:center;gap:6px;}
-.filter-bar input[type=date]{border:1px solid var(--line);border-radius:8px;padding:5px 10px;font-size:0.8rem;color:var(--ink);background:#fff;cursor:pointer;}
-.filter-btn{background:var(--bg);border:1px solid var(--line);color:var(--muted);font-size:0.8rem;font-weight:600;padding:6px 14px;border-radius:8px;cursor:pointer;transition:all .15s;}
-.filter-btn:hover{background:#eef1f4;}.filter-btn.active{background:var(--accent);color:#fff;border-color:var(--accent);}
 .calendar-legend{display:flex;flex-wrap:wrap;gap:10px 18px;margin-bottom:22px;font-size:0.78rem;color:var(--muted);}
 .leg-item{display:flex;align-items:center;gap:6px;}
 .leg-dot{width:10px;height:10px;border-radius:3px;display:inline-block;flex:0 0 auto;}
@@ -2528,12 +2479,6 @@ footer{text-align:center;color:var(--muted);font-size:0.78rem;margin-top:8px;}
       </div>
       <div class="view-panel" id="view-calendar">
         <h2>Calend&#225;rio do processo</h2>
-        <div class="filter-bar">
-          <button class="filter-btn" id="cal-btn-hoje" onclick="calFilterToday()">Hoje</button>
-          <label>De <input type="date" id="cal-from" oninput="calFilterRange()"></label>
-          <label>At&#233; <input type="date" id="cal-to" oninput="calFilterRange()"></label>
-          <button class="filter-btn active" id="cal-btn-all" onclick="calFilterClear()">Mostrar tudo</button>
-        </div>
         <div class="calendar-legend" id="cal-legend"></div>
         <div class="calendar-grid" id="cal-grid"></div>
       </div>
@@ -2554,7 +2499,6 @@ footer{text-align:center;color:var(--muted);font-size:0.78rem;margin-top:8px;}
   function dFmt(d){return String(d.getDate()).padStart(2,'0')+'/'+String(d.getMonth()+1).padStart(2,'0')+'/'+d.getFullYear();}
   function diffDays(s,e){return Math.round((pd(e)-pd(s))/86400000);}
 
-  var dtStart,dtEnd; // outer scope for filter access
   function renderAll(etapas,atividades){
     var allDates=etapas.flatMap(function(e){return[pd(e.inicio),pd(e.termino)];}).filter(Boolean);
     if(!allDates.length){
@@ -2688,7 +2632,6 @@ footer{text-align:center;color:var(--muted);font-size:0.78rem;margin-top:8px;}
     document.getElementById('updated-at').textContent=new Date().toLocaleString('pt-BR');
     document.getElementById('loading').style.display='none';
     document.getElementById('app').style.display='block';
-    initCalFilter();
   }
 
   async function loadData(){
@@ -2720,39 +2663,6 @@ footer{text-align:center;color:var(--muted);font-size:0.78rem;margin-top:8px;}
     err.style.display='block';
   });
 
-  function initCalFilter(){
-    var calMs=Array.from(document.querySelectorAll('#cal-grid .cal-month'));
-    var today=new Date();
-    var todayYm=today.getFullYear()+'-'+String(today.getMonth()+1).padStart(2,'0');
-    var hasTodayMonth=calMs.some(function(m){return m.dataset.ym===todayYm;});
-    document.getElementById('cal-from').value=dtStart?dKey(new Date(dtStart.getFullYear(),dtStart.getMonth(),1)).substring(0,7)+'-01':'';
-    document.getElementById('cal-to').value=dtEnd?dKey(new Date(dtEnd.getFullYear(),dtEnd.getMonth(),1)).substring(0,7)+'-28':'';
-  }
-  function calFilterToday(){
-    var today=new Date();var ym=today.getFullYear()+'-'+String(today.getMonth()+1).padStart(2,'0');
-    document.getElementById('cal-btn-hoje').classList.add('active');
-    document.getElementById('cal-btn-all').classList.remove('active');
-    Array.from(document.querySelectorAll('#cal-grid .cal-month')).forEach(function(m){m.style.display=m.dataset.ym===ym?'':'none';});
-  }
-  function calFilterRange(){
-    var from=document.getElementById('cal-from').value;
-    var to=document.getElementById('cal-to').value;
-    document.getElementById('cal-btn-hoje').classList.remove('active');
-    document.getElementById('cal-btn-all').classList.remove('active');
-    Array.from(document.querySelectorAll('#cal-grid .cal-month')).forEach(function(m){
-      var ym=m.dataset.ym;
-      var fromOk=!from||ym>=from.substring(0,7);
-      var toOk=!to||ym<=to.substring(0,7);
-      m.style.display=(fromOk&&toOk)?'':'none';
-    });
-  }
-  function calFilterClear(){
-    document.getElementById('cal-btn-hoje').classList.remove('active');
-    document.getElementById('cal-btn-all').classList.add('active');
-    Array.from(document.querySelectorAll('#cal-grid .cal-month')).forEach(function(m){m.style.display='';});
-    document.getElementById('cal-from').value='';
-    document.getElementById('cal-to').value='';
-  }
   document.querySelectorAll('.view-btn').forEach(function(btn){
     btn.addEventListener('click',function(){
       document.querySelectorAll('.view-btn').forEach(function(b){b.classList.remove('active');});
