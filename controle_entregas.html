@@ -2120,14 +2120,14 @@ async function readCronogramaExcel(token, siteUrl, fileRel) {
   const buf = await res.arrayBuffer();
   const wb = XLSX.read(new Uint8Array(buf), { type: 'array' });
   const wsE = wb.Sheets['Etapas'];
-  const etapas = wsE ? XLSX.utils.sheet_to_json(wsE, { defval: '' }).filter(e => e.id && e.nome) : [];
+  const etapas = wsE ? XLSX.utils.sheet_to_json(wsE, { defval: '' }).filter(e => e.id && e.nome).map(e => ({...e, status: e.status || 'aguardando'})) : [];
   const wsA = wb.Sheets['Atividades'];
   const atFlat = wsA ? XLSX.utils.sheet_to_json(wsA, { defval: '' }) : [];
   const atividades = {};
   atFlat.forEach(a => {
     const eid = a.etapaId || '';
     if (!atividades[eid]) atividades[eid] = [];
-    atividades[eid].push(a);
+    atividades[eid].push({...a, status: a.status || 'aguardando'});
   });
   return { etapas, atividades };
 }
@@ -2174,8 +2174,8 @@ function generateCronogramaHTML(project, etapas, atividades) {
 
   // ── Feriados nacionais BR (fixos + móveis 2024-2029) ───────────────────────
   const holidays={};
-  const fixH=[['01-01','Ano Novo'],['04-21','Tiradentes'],['05-01','Dia do Trabalho'],
-    ['09-07','Independência do Brasil'],['10-12','Nossa Senhora Aparecida'],
+  const fixH=[['01-01','Ano Novo'],['01-25','Aniversário de SP'],['04-21','Tiradentes'],['05-01','Dia do Trabalho'],
+    ['07-09','Revolução Constitucionalista'],['09-07','Independência do Brasil'],['10-12','Nossa Senhora Aparecida'],
     ['11-02','Finados'],['11-15','Proclamação da República'],['11-20','Consciência Negra'],['12-25','Natal']];
   const movH=[
     ['2024-02-12','Carnaval'],['2024-02-13','Carnaval'],['2024-03-29','Sexta-feira Santa'],['2024-05-30','Corpus Christi'],
@@ -2188,6 +2188,12 @@ function generateCronogramaHTML(project, etapas, atividades) {
   for(let y=dtStart.getFullYear();y<=dtEnd.getFullYear();y++)
     fixH.forEach(([mmd,n])=>{ holidays[`${y}-${mmd}`]=n; });
   movH.forEach(([d,n])=>{ holidays[d]=n; });
+  function workdays(s,e){
+    if(!s||!e)return null;var st=pd(s),en=pd(e);if(!st||!en)return null;
+    var n=0,d=new Date(st);
+    while(d<=en){var dow=d.getDay();if(dow!==0&&dow!==6&&!holidays[dKey(d)])n++;d.setDate(d.getDate()+1);}
+    return n;
+  }
 
   // ── Marcadores de mês (Gantt) ───────────────────────────────────────────────
   const MSHORT=['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
@@ -2236,7 +2242,7 @@ function generateCronogramaHTML(project, etapas, atividades) {
       }
       const trail=(7-((first+dim)%7))%7;
       for(let i=0;i<trail;i++) cells+=`<div class="cal-day empty"></div>`;
-      calMonths.push(`<div class="cal-month"><h3>${MFULL[mo]} ${y}</h3><div class="cal-weekdays"><div>Dom</div><div>Seg</div><div>Ter</div><div>Qua</div><div>Qui</div><div>Sex</div><div>Sáb</div></div><div class="cal-days">${cells}</div></div>`);
+      calMonths.push(`<div class="cal-month" data-ym="${y}-${String(mo+1).padStart(2,'0')}"><h3>${MFULL[mo]} ${y}</h3><div class="cal-weekdays"><div>Dom</div><div>Seg</div><div>Ter</div><div>Qua</div><div>Qui</div><div>Sex</div><div>Sáb</div></div><div class="cal-days">${cells}</div></div>`);
       c.setMonth(c.getMonth()+1);
     }
   }
@@ -2245,10 +2251,16 @@ function generateCronogramaHTML(project, etapas, atividades) {
   const tableRows=etapas.map((e,i)=>{
     const atvs=(atividades[e.id]||[]).filter(a=>a.nome);
     const atvHtml=atvs.length?`<ul style="margin:6px 0 0 0;padding-left:18px;font-size:0.78rem;color:#64748b;">${atvs.map(a=>`<li><b>${a.nome}</b>${a.responsavel?' — '+a.responsavel:''}${a.inicio&&a.termino?' ('+fmt(a.inicio)+' → '+fmt(a.termino)+')':''}</li>`).join('')}</ul>`:'';
-    const dias=(e.inicio&&e.termino)?diffDays(e.inicio,e.termino)+'d':'—';
-    return `<tr><td class="num center">${i+1}</td><td><div class="stage-name"><span class="dot" style="background:${e.cor}"></span>${e.nome}</div>${atvHtml}</td><td>${fmt(e.inicio)}</td><td>${fmt(e.termino)}</td><td class="center">${dias}</td></tr>`;
+    const corridos=(e.inicio&&e.termino)?diffDays(e.inicio,e.termino)+'d':'—';
+    const uteis=(e.inicio&&e.termino)?(workdays(e.inicio,e.termino)+'d'):'—';
+    const stMap={aguardando:'⬜ Aguardando',em_andamento:'🔵 Em andamento',concluido:'✅ Concluído',cancelado:'❌ Cancelado'};
+    const stLabel=stMap[e.status||'aguardando']||'⬜ Aguardando';
+    return `<tr><td class="num center">${i+1}</td><td><div class="stage-name"><span class="dot" style="background:${e.cor}"></span>${e.nome}</div>${atvHtml}</td><td>${fmt(e.inicio)}</td><td>${fmt(e.termino)}</td><td class="center">${corridos}</td><td class="center">${uteis}</td><td>${stLabel}</td></tr>`;
   }).join('');
 
+  const pi=etapas.filter(e=>e.inicio)[0];
+  const pf=etapas.filter(e=>e.termino).slice(-1)[0];
+  const totalUtil=(pi&&pf)?workdays(pi.inicio,pf.termino):null;
   const periodoInicio = fmt(etapas.filter(e=>e.inicio)[0]?.inicio);
   const periodoFim    = fmt(etapas.filter(e=>e.termino).slice(-1)[0]?.termino);
   const now=new Date().toLocaleDateString('pt-BR');
@@ -2296,6 +2308,11 @@ function generateCronogramaHTML(project, etapas, atividades) {
   .stage-name{font-weight:600;}
   .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:8px;vertical-align:middle;}
   footer{text-align:center;color:var(--muted);font-size:0.78rem;margin-top:8px;}
+  .filter-bar{display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap;padding:12px 0 4px;}
+  .filter-bar label{font-size:0.8rem;color:var(--muted);font-weight:600;display:flex;align-items:center;gap:6px;}
+  .filter-bar input[type=date]{border:1px solid var(--line);border-radius:8px;padding:5px 10px;font-size:0.8rem;color:var(--ink);background:#fff;cursor:pointer;}
+  .filter-btn{background:var(--bg);border:1px solid var(--line);color:var(--muted);font-size:0.8rem;font-weight:600;padding:6px 14px;border-radius:8px;cursor:pointer;transition:all .15s;}
+  .filter-btn:hover{background:#eef1f4;}.filter-btn.active{background:var(--accent);color:#fff;border-color:var(--accent);}
   .calendar-legend{display:flex;flex-wrap:wrap;gap:10px 18px;margin-bottom:22px;font-size:0.78rem;color:var(--muted);}
   .leg-item{display:flex;align-items:center;gap:6px;}
   .leg-dot{width:10px;height:10px;border-radius:3px;display:inline-block;flex:0 0 auto;}
@@ -2322,7 +2339,8 @@ function generateCronogramaHTML(project, etapas, atividades) {
     <div class="badge-row">
       ${vagas?`<div class="badge"><b>${vagas}</b>Vagas</div>`:''}
       <div class="badge"><b>${etapas.length}</b>Etapas</div>
-      <div class="badge"><b>${totalDays}</b>Dias corridos (total)</div>
+      <div class="badge"><b>${totalDays}</b>Dias corridos</div>
+      ${totalUtil!==null?`<div class="badge"><b>${totalUtil}</b>Dias úteis</div>`:''}
     </div>
   </header>
   <div class="card">
@@ -2338,19 +2356,58 @@ function generateCronogramaHTML(project, etapas, atividades) {
       </div>
       <h2 style="margin-top:32px;">Etapas do processo</h2>
       <table>
-        <thead><tr><th class="num">#</th><th>Etapa</th><th>Início</th><th>Término</th><th class="center">Duração</th></tr></thead>
+        <thead><tr><th class="num">#</th><th>Etapa</th><th>Início</th><th>Término</th><th class="center">Corridos</th><th class="center">Úteis</th><th>Status</th></tr></thead>
         <tbody>${tableRows}</tbody>
       </table>
     </div>
     <div class="view-panel" id="view-calendar">
       <h2>Calendário do processo</h2>
+      <div class="filter-bar">
+        <button class="filter-btn" id="cal-btn-hoje" onclick="calFilterToday()">Hoje</button>
+        <label>De <input type="date" id="cal-from" oninput="calFilterRange()"></label>
+        <label>At&#233; <input type="date" id="cal-to" oninput="calFilterRange()"></label>
+        <button class="filter-btn active" id="cal-btn-all" onclick="calFilterClear()">Mostrar tudo</button>
+      </div>
       <div class="calendar-legend">${legend}</div>
-      <div class="calendar-grid">${calMonths.join('')}</div>
+      <div class="calendar-grid" id="cal-grid">${calMonths.join('')}</div>
     </div>
   </div>
   <footer>Gerado em ${now} · Cia de Talentos</footer>
 </div>
 <script>
+  var dtStart=new Date(${dtStart.getFullYear()},${dtStart.getMonth()},${dtStart.getDate()});
+  var dtEnd=new Date(${dtEnd.getFullYear()},${dtEnd.getMonth()},${dtEnd.getDate()});
+  function dKey(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
+  function initCalFilter(){
+    document.getElementById('cal-from').value=dtStart?dKey(new Date(dtStart.getFullYear(),dtStart.getMonth(),1)).substring(0,7)+'-01':'';
+    document.getElementById('cal-to').value=dtEnd?dKey(new Date(dtEnd.getFullYear(),dtEnd.getMonth(),1)).substring(0,7)+'-28':'';
+  }
+  function calFilterToday(){
+    var today=new Date();var ym=today.getFullYear()+'-'+String(today.getMonth()+1).padStart(2,'0');
+    document.getElementById('cal-btn-hoje').classList.add('active');
+    document.getElementById('cal-btn-all').classList.remove('active');
+    Array.from(document.querySelectorAll('#cal-grid .cal-month')).forEach(function(m){m.style.display=m.dataset.ym===ym?'':'none';});
+  }
+  function calFilterRange(){
+    var from=document.getElementById('cal-from').value;
+    var to=document.getElementById('cal-to').value;
+    document.getElementById('cal-btn-hoje').classList.remove('active');
+    document.getElementById('cal-btn-all').classList.remove('active');
+    Array.from(document.querySelectorAll('#cal-grid .cal-month')).forEach(function(m){
+      var ym=m.dataset.ym;
+      var fromOk=!from||ym>=from.substring(0,7);
+      var toOk=!to||ym<=to.substring(0,7);
+      m.style.display=(fromOk&&toOk)?'':'none';
+    });
+  }
+  function calFilterClear(){
+    document.getElementById('cal-btn-hoje').classList.remove('active');
+    document.getElementById('cal-btn-all').classList.add('active');
+    Array.from(document.querySelectorAll('#cal-grid .cal-month')).forEach(function(m){m.style.display='';});
+    document.getElementById('cal-from').value='';
+    document.getElementById('cal-to').value='';
+  }
+  initCalFilter();
   document.querySelectorAll('.view-btn').forEach(btn=>{
     btn.addEventListener('click',()=>{
       document.querySelectorAll('.view-btn').forEach(b=>b.classList.remove('active'));
@@ -2412,6 +2469,11 @@ tbody tr:hover{background:#fafbfc;}
 .stage-name{font-weight:600;}
 .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:8px;vertical-align:middle;}
 footer{text-align:center;color:var(--muted);font-size:0.78rem;margin-top:8px;}
+.filter-bar{display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap;padding:12px 0 4px;}
+.filter-bar label{font-size:0.8rem;color:var(--muted);font-weight:600;display:flex;align-items:center;gap:6px;}
+.filter-bar input[type=date]{border:1px solid var(--line);border-radius:8px;padding:5px 10px;font-size:0.8rem;color:var(--ink);background:#fff;cursor:pointer;}
+.filter-btn{background:var(--bg);border:1px solid var(--line);color:var(--muted);font-size:0.8rem;font-weight:600;padding:6px 14px;border-radius:8px;cursor:pointer;transition:all .15s;}
+.filter-btn:hover{background:#eef1f4;}.filter-btn.active{background:var(--accent);color:#fff;border-color:var(--accent);}
 .calendar-legend{display:flex;flex-wrap:wrap;gap:10px 18px;margin-bottom:22px;font-size:0.78rem;color:var(--muted);}
 .leg-item{display:flex;align-items:center;gap:6px;}
 .leg-dot{width:10px;height:10px;border-radius:3px;display:inline-block;flex:0 0 auto;}
@@ -2460,12 +2522,18 @@ footer{text-align:center;color:var(--muted);font-size:0.78rem;margin-top:8px;}
         <div id="gantt"></div>
         <h2 style="margin-top:32px">Etapas do processo</h2>
         <table>
-          <thead><tr><th class="num">#</th><th>Etapa</th><th>In&#237;cio</th><th>T&#233;rmino</th><th class="center">Dura&#231;&#227;o</th></tr></thead>
+          <thead><tr><th class="num">#</th><th>Etapa</th><th>In&#237;cio</th><th>T&#233;rmino</th><th class="center">Corridos</th><th class="center">&#218;teis</th><th>Status</th></tr></thead>
           <tbody id="table-body"></tbody>
         </table>
       </div>
       <div class="view-panel" id="view-calendar">
         <h2>Calend&#225;rio do processo</h2>
+        <div class="filter-bar">
+          <button class="filter-btn" id="cal-btn-hoje" onclick="calFilterToday()">Hoje</button>
+          <label>De <input type="date" id="cal-from" oninput="calFilterRange()"></label>
+          <label>At&#233; <input type="date" id="cal-to" oninput="calFilterRange()"></label>
+          <button class="filter-btn active" id="cal-btn-all" onclick="calFilterClear()">Mostrar tudo</button>
+        </div>
         <div class="calendar-legend" id="cal-legend"></div>
         <div class="calendar-grid" id="cal-grid"></div>
       </div>
@@ -2486,6 +2554,7 @@ footer{text-align:center;color:var(--muted);font-size:0.78rem;margin-top:8px;}
   function dFmt(d){return String(d.getDate()).padStart(2,'0')+'/'+String(d.getMonth()+1).padStart(2,'0')+'/'+d.getFullYear();}
   function diffDays(s,e){return Math.round((pd(e)-pd(s))/86400000);}
 
+  var dtStart,dtEnd; // outer scope for filter access
   function renderAll(etapas,atividades){
     var allDates=etapas.flatMap(function(e){return[pd(e.inicio),pd(e.termino)];}).filter(Boolean);
     if(!allDates.length){
@@ -2494,7 +2563,7 @@ footer{text-align:center;color:var(--muted);font-size:0.78rem;margin-top:8px;}
       document.getElementById('error-msg').style.display='block';
       return;
     }
-    var dtStart=new Date(Math.min.apply(null,allDates)),dtEnd=new Date(Math.max.apply(null,allDates));
+    dtStart=new Date(Math.min.apply(null,allDates));dtEnd=new Date(Math.max.apply(null,allDates));
     var totalMs=dtEnd-dtStart,totalDays=Math.round(totalMs/86400000)||1;
     function pct(s){return((pd(s)-dtStart)/totalMs*100).toFixed(3)+'%';}
     function wid(s,e){return(Math.max(0,pd(e)-pd(s))/totalMs*100).toFixed(3)+'%';}
@@ -2507,8 +2576,8 @@ footer{text-align:center;color:var(--muted);font-size:0.78rem;margin-top:8px;}
     });
 
     var holidays={};
-    var fixH=[['01-01','Ano Novo'],['04-21','Tiradentes'],['05-01','Dia do Trabalho'],
-      ['09-07','Independência do Brasil'],['10-12','Nossa Senhora Aparecida'],
+    var fixH=[['01-01','Ano Novo'],['01-25','Aniversário de SP'],['04-21','Tiradentes'],['05-01','Dia do Trabalho'],
+      ['07-09','Revolução Constitucionalista'],['09-07','Independência do Brasil'],['10-12','Nossa Senhora Aparecida'],
       ['11-02','Finados'],['11-15','Proclamação da República'],
       ['11-20','Consciência Negra'],['12-25','Natal']];
     var movH=[['2024-02-12','Carnaval'],['2024-02-13','Carnaval'],['2024-03-29','Sexta-feira Santa'],['2024-05-30','Corpus Christi'],
@@ -2520,6 +2589,12 @@ footer{text-align:center;color:var(--muted);font-size:0.78rem;margin-top:8px;}
     for(var y=dtStart.getFullYear();y<=dtEnd.getFullYear();y++)
       fixH.forEach(function(h){holidays[y+'-'+h[0]]=h[1];});
     movH.forEach(function(h){holidays[h[0]]=h[1];});
+    function workdays(s,e){
+      if(!s||!e)return null;var st=pd(s),en=pd(e);if(!st||!en)return null;
+      var n=0,d=new Date(st);
+      while(d<=en){var dow=d.getDay();if(dow!==0&&dow!==6&&!holidays[dKey(d)])n++;d.setDate(d.getDate()+1);}
+      return n;
+    }
 
     var MSHORT=['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
     var MFULL=['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
@@ -2557,8 +2632,11 @@ footer{text-align:center;color:var(--muted);font-size:0.78rem;margin-top:8px;}
             return li+'</li>';
           }).join('')+'</ul>';
       }
-      var dias=(e.inicio&&e.termino)?diffDays(e.inicio,e.termino)+'d':'—';
-      return '<tr><td class="num center">'+(i+1)+'</td><td><div class="stage-name"><span class="dot" style="background:'+e.cor+'"></span>'+e.nome+'</div>'+atvHtml+'</td><td>'+fmt(e.inicio)+'</td><td>'+fmt(e.termino)+'</td><td class="center">'+dias+'</td></tr>';
+      var corridos=(e.inicio&&e.termino)?diffDays(e.inicio,e.termino)+'d':'—';
+      var uteis=(e.inicio&&e.termino)?(workdays(e.inicio,e.termino)+'d'):'—';
+      var stMap={aguardando:'⬜ Aguardando',em_andamento:'🔵 Em andamento',concluido:'✅ Concluído',cancelado:'❌ Cancelado'};
+      var stLabel=stMap[e.status||'aguardando']||'⬜ Aguardando';
+      return '<tr><td class="num center">'+(i+1)+'</td><td><div class="stage-name"><span class="dot" style="background:'+e.cor+'"></span>'+e.nome+'</div>'+atvHtml+'</td><td>'+fmt(e.inicio)+'</td><td>'+fmt(e.termino)+'</td><td class="center">'+corridos+'</td><td class="center">'+uteis+'</td><td>'+stLabel+'</td></tr>';
     }).join('');
     document.getElementById('table-body').innerHTML=tableRows;
 
@@ -2591,7 +2669,7 @@ footer{text-align:center;color:var(--muted);font-size:0.78rem;margin-top:8px;}
       }
       var trail=(7-((first+dim)%7))%7;
       for(var ii=0;ii<trail;ii++)cells+='<div class="cal-day empty"></div>';
-      calHtml+='<div class="cal-month"><h3>'+MFULL[mo]+' '+ym+'</h3><div class="cal-weekdays"><div>Dom</div><div>Seg</div><div>Ter</div><div>Qua</div><div>Qui</div><div>Sex</div><div>Sáb</div></div><div class="cal-days">'+cells+'</div></div>';
+      calHtml+='<div class="cal-month" data-ym="'+ym+'-'+String(mo+1).padStart(2,'0')+'"><h3>'+MFULL[mo]+' '+ym+'</h3><div class="cal-weekdays"><div>Dom</div><div>Seg</div><div>Ter</div><div>Qua</div><div>Qui</div><div>Sex</div><div>Sáb</div></div><div class="cal-days">'+cells+'</div></div>';
       c1.setMonth(c1.getMonth()+1);
     }
     document.getElementById('cal-grid').innerHTML=calHtml;
@@ -2601,13 +2679,16 @@ footer{text-align:center;color:var(--muted);font-size:0.78rem;margin-top:8px;}
     var pf=etapas.filter(function(e){return e.termino;}).slice(-1)[0];
     document.getElementById('subtitle').textContent=(CLIENTE?CLIENTE+' · ':'')+
       'Período: '+(pi?fmt(pi.inicio):'')+' a '+(pf?fmt(pf.termino):'');
+    var totalUtil=pi&&pf?workdays(pi.inicio,pf.termino):null;
     document.getElementById('badges').innerHTML=
       (VAGAS?'<div class="badge"><b>'+VAGAS+'</b>Vagas</div>':'')+
       '<div class="badge"><b>'+etapas.length+'</b>Etapas</div>'+
-      '<div class="badge"><b>'+totalDays+'</b>Dias corridos (total)</div>';
+      '<div class="badge"><b>'+totalDays+'</b>Dias corridos</div>'+
+      (totalUtil!==null?'<div class="badge"><b>'+totalUtil+'</b>Dias úteis</div>':'');
     document.getElementById('updated-at').textContent=new Date().toLocaleString('pt-BR');
     document.getElementById('loading').style.display='none';
     document.getElementById('app').style.display='block';
+    initCalFilter();
   }
 
   async function loadData(){
@@ -2639,6 +2720,39 @@ footer{text-align:center;color:var(--muted);font-size:0.78rem;margin-top:8px;}
     err.style.display='block';
   });
 
+  function initCalFilter(){
+    var calMs=Array.from(document.querySelectorAll('#cal-grid .cal-month'));
+    var today=new Date();
+    var todayYm=today.getFullYear()+'-'+String(today.getMonth()+1).padStart(2,'0');
+    var hasTodayMonth=calMs.some(function(m){return m.dataset.ym===todayYm;});
+    document.getElementById('cal-from').value=dtStart?dKey(new Date(dtStart.getFullYear(),dtStart.getMonth(),1)).substring(0,7)+'-01':'';
+    document.getElementById('cal-to').value=dtEnd?dKey(new Date(dtEnd.getFullYear(),dtEnd.getMonth(),1)).substring(0,7)+'-28':'';
+  }
+  function calFilterToday(){
+    var today=new Date();var ym=today.getFullYear()+'-'+String(today.getMonth()+1).padStart(2,'0');
+    document.getElementById('cal-btn-hoje').classList.add('active');
+    document.getElementById('cal-btn-all').classList.remove('active');
+    Array.from(document.querySelectorAll('#cal-grid .cal-month')).forEach(function(m){m.style.display=m.dataset.ym===ym?'':'none';});
+  }
+  function calFilterRange(){
+    var from=document.getElementById('cal-from').value;
+    var to=document.getElementById('cal-to').value;
+    document.getElementById('cal-btn-hoje').classList.remove('active');
+    document.getElementById('cal-btn-all').classList.remove('active');
+    Array.from(document.querySelectorAll('#cal-grid .cal-month')).forEach(function(m){
+      var ym=m.dataset.ym;
+      var fromOk=!from||ym>=from.substring(0,7);
+      var toOk=!to||ym<=to.substring(0,7);
+      m.style.display=(fromOk&&toOk)?'':'none';
+    });
+  }
+  function calFilterClear(){
+    document.getElementById('cal-btn-hoje').classList.remove('active');
+    document.getElementById('cal-btn-all').classList.add('active');
+    Array.from(document.querySelectorAll('#cal-grid .cal-month')).forEach(function(m){m.style.display='';});
+    document.getElementById('cal-from').value='';
+    document.getElementById('cal-to').value='';
+  }
   document.querySelectorAll('.view-btn').forEach(function(btn){
     btn.addEventListener('click',function(){
       document.querySelectorAll('.view-btn').forEach(function(b){b.classList.remove('active');});
@@ -9168,6 +9282,12 @@ function CronogramaModal({ project, phases, onClose }) {
             React.createElement('input', { type: 'date', value: e.inicio, onChange: ev => updEtapa(e.id, 'inicio', ev.target.value), className: iCls + ' w-32 shrink-0' }),
             React.createElement('span', { className: 'text-slate-300 text-xs shrink-0' }, '→'),
             React.createElement('input', { type: 'date', value: e.termino, onChange: ev => updEtapa(e.id, 'termino', ev.target.value), className: iCls + ' w-32 shrink-0' }),
+            React.createElement('select', { value: e.status || 'aguardando', onChange: ev => updEtapa(e.id, 'status', ev.target.value), className: iCls + ' w-28 shrink-0', title: 'Status' },
+              React.createElement('option', {value:'aguardando'}, '⬜ Aguardando'),
+              React.createElement('option', {value:'em_andamento'}, '🔵 Em andamento'),
+              React.createElement('option', {value:'concluido'}, '✅ Concluído'),
+              React.createElement('option', {value:'cancelado'}, '❌ Cancelado')
+            ),
             React.createElement('button', { onClick: () => setExpandedEtapa(expanded ? null : e.id), className: `text-xs px-2 py-1 rounded border shrink-0 transition ${expanded ? 'bg-indigo-50 border-indigo-200 text-indigo-600' : 'border-slate-200 text-slate-400 hover:border-indigo-200 hover:text-indigo-500'}`, title: 'Atividades' }, `${atvs.length ? atvs.length + ' atv' : '+ atv'}`),
             React.createElement('button', { onClick: () => moveEtapa(e.id, -1), disabled: idx === 0, className: 'text-slate-300 hover:text-slate-600 disabled:opacity-20 text-xs px-1 shrink-0' }, '▲'),
             React.createElement('button', { onClick: () => moveEtapa(e.id, 1), disabled: idx === etapas.length - 1, className: 'text-slate-300 hover:text-slate-600 disabled:opacity-20 text-xs px-1 shrink-0' }, '▼'),
@@ -9183,6 +9303,12 @@ function CronogramaModal({ project, phases, onClose }) {
               React.createElement('input', { type: 'date', value: a.inicio, onChange: ev => updAtv(e.id, a.id, 'inicio', ev.target.value), className: iCls + ' w-28 shrink-0' }),
               React.createElement('span', { className: 'text-slate-300 text-xs shrink-0' }, '→'),
               React.createElement('input', { type: 'date', value: a.termino, onChange: ev => updAtv(e.id, a.id, 'termino', ev.target.value), className: iCls + ' w-28 shrink-0' }),
+              React.createElement('select', { value: a.status || 'aguardando', onChange: ev => updAtv(e.id, a.id, 'status', ev.target.value), className: iCls + ' w-24 shrink-0', title: 'Status' },
+                React.createElement('option', {value:'aguardando'}, '⬜'),
+                React.createElement('option', {value:'em_andamento'}, '🔵'),
+                React.createElement('option', {value:'concluido'}, '✅'),
+                React.createElement('option', {value:'cancelado'}, '❌')
+              ),
               React.createElement('button', { onClick: () => remAtv(e.id, a.id), className: 'text-red-300 hover:text-red-500 text-xs shrink-0' }, '✕')
             )),
             React.createElement('button', { onClick: () => addAtv(e.id), className: 'text-xs text-indigo-500 hover:text-indigo-700 border border-dashed border-indigo-200 px-3 py-1 rounded-lg mt-1 hover:bg-indigo-50 transition' }, '+ Atividade')
@@ -9224,6 +9350,7 @@ function CronogramaModal({ project, phases, onClose }) {
         !loading && msg && React.createElement('div', { className: 'bg-green-50 border border-green-200 rounded-xl px-4 py-3 text-sm text-green-700 mb-3' }, msg),
         !loading && cronTab === 'edit' && renderEdit(),
         !loading && cronTab === 'preview' && React.createElement('iframe', {
+          key: etapas.map(e => `${e.id}|${e.inicio}|${e.termino}|${e.status||''}`).join('/') + Object.keys(atividades).length,
           srcDoc: previewHtml,
           className: 'w-full rounded-xl border border-slate-200',
           style: { height: '520px' },
