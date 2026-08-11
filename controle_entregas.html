@@ -1427,6 +1427,7 @@ const ALLOC_SIMPL_SHEET = 'Visão Projetos'; // aba do Excel lida para consolida
 const CRONOGRAMA_SITE_URL    = 'https://ciadetalentos.sharepoint.com/sites/Arquivos';
 const CRONOGRAMA_SCOPE       = 'https://ciadetalentos.sharepoint.com/.default';
 const CRONOGRAMA_FOLDER_REL  = '/sites/Arquivos/Documentos Compartilhados/80_20_copia/Cronogramas';
+const CRONOGRAMA_PA_FLOW_URL = 'https://defaultac8f4ef1af6046a9ab7f189ccdb79e.4c.environment.api.powerplatform.com:443/powerautomate/automations/direct/cu/27/workflows/6bb9bc31ac914f83ae9803b3d552c851/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=v1HlRCW7auV1qaFWEea0nsycnNX1NtMrGA13QPTxQ2E';
 const CRONOGRAMA_COLORS = ['#1e3a5f','#4a7fb5','#2d7a4f','#b5793a','#7b3a9f','#c05050','#3a9f7b','#3a7b9f','#9f9f3a','#c47a3a'];
 
 // ─── SurveyMonkey CSAT ────────────────────────────────────────────────────────
@@ -2365,16 +2366,15 @@ function generateCronogramaHTML(project, etapas, atividades) {
 }
 
 // HTML dinâmico: lê o Excel do SharePoint público a cada carregamento — sem autenticação
-function generateCronogramaHTMLDynamic(project, excelRel) {
+function generateCronogramaHTMLDynamic(project, jsonFileName) {
   const titulo  = 'Cronograma — ' + (project?.title || 'Processo');
   const cliente = (project?.client || '').replace(/\\/g,'\\\\').replace(/'/g,"\\'");
   const vagas   = String(project?.pulseData?.Qtd_Vagas || project?.vagas || '');
 
-  // URL relativa — HTML e Excel ficam na mesma pasta do SharePoint.
-  // Assim o browser busca o Excel no mesmo domínio (same-origin), sem CORS.
-  // O HTML deve ser acessado via link do SharePoint, não baixado e aberto localmente.
-  const excelFilename = excelRel.split('/').pop();
-  const excelUrlJs = './' + excelFilename;
+  // Power Automate flow URL — lê o JSON do SharePoint sem expor credenciais no browser
+  const flowUrl = CRONOGRAMA_PA_FLOW_URL;
+  const flowUrlJs = flowUrl.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+  const jsonFileJs = jsonFileName.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
 
   const css = `*{box-sizing:border-box;margin:0;padding:0;}
 :root{--bg:#f4f6f9;--card:#fff;--ink:#1a2332;--muted:#64748b;--line:#e2e8f0;--accent:#1e3a5f;}
@@ -2435,7 +2435,6 @@ footer{text-align:center;color:var(--muted);font-size:0.78rem;margin-top:8px;}
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>${titulo}</title>
-<script src="https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js"><\/script>
 <style>${css}<\/style>
 </head>
 <body>
@@ -2476,7 +2475,8 @@ footer{text-align:center;color:var(--muted);font-size:0.78rem;margin-top:8px;}
 </div>
 <script>
 (function(){
-  var EXCEL_URL = '${excelUrlJs}';
+  var FLOW_URL    = '${flowUrlJs}';
+  var JSON_FILE   = '${jsonFileJs}';
   var VAGAS = '${vagas}';
   var CLIENTE = '${cliente}';
 
@@ -2611,16 +2611,23 @@ footer{text-align:center;color:var(--muted);font-size:0.78rem;margin-top:8px;}
   }
 
   async function loadData(){
-    var res=await fetch(EXCEL_URL);
-    if(!res.ok)throw new Error('HTTP '+res.status);
-    var buf=await res.arrayBuffer();
-    var wb=XLSX.read(new Uint8Array(buf),{type:'array'});
-    var wsE=wb.Sheets['Etapas'];
-    var etapas=wsE?XLSX.utils.sheet_to_json(wsE,{defval:''}).filter(function(e){return e.id&&e.nome;}):[];
-    var wsA=wb.Sheets['Atividades'];
-    var atFlat=wsA?XLSX.utils.sheet_to_json(wsA,{defval:''}):[];
-    var atividades={};
-    atFlat.forEach(function(a){var eid=a.etapaId||'';if(eid){if(!atividades[eid])atividades[eid]=[];atividades[eid].push(a);}});
+    var res=await fetch(FLOW_URL,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({file:JSON_FILE})
+    });
+    if(!res.ok)throw new Error('Power Automate HTTP '+res.status);
+    var data=await res.json();
+    // Suporta tanto o JSON direto quanto encapsulado em $content (base64 SP)
+    if(typeof data==='string'){try{data=JSON.parse(data);}catch(ex){}}
+    if(data&&data['$content']){
+      var bin=atob(data['$content']);
+      var bytes=new Uint8Array(bin.length);
+      for(var i=0;i<bin.length;i++)bytes[i]=bin.charCodeAt(i);
+      data=JSON.parse(new TextDecoder().decode(bytes));
+    }
+    var etapas=data.etapas||[];
+    var atividades=data.atividades||{};
     renderAll(etapas,atividades);
   }
 
@@ -2628,7 +2635,7 @@ footer{text-align:center;color:var(--muted);font-size:0.78rem;margin-top:8px;}
     document.getElementById('loading').style.display='none';
     var err=document.getElementById('error-msg');
     err.innerHTML='<b>Erro ao carregar dados:</b> '+e.message+
-      '<br><small>Este arquivo deve ser acessado pelo link do SharePoint (não aberto localmente). Certifique-se de que o Excel está na mesma pasta que este HTML.</small>';
+      '<br><small>O serviço de dados (Power Automate) pode estar indisponível temporariamente. Tente recarregar a página.</small>';
     err.style.display='block';
   });
 
@@ -9062,6 +9069,7 @@ function CronogramaModal({ project, phases, onClose }) {
   const _baseName = (_rawTitle || String(projectId)) + `_${projectId}`;
   const excelName = `Cronograma_${_baseName}.xlsx`;
   const htmlName  = `Cronograma_${_baseName}.html`;
+  const jsonName  = `Cronograma_${_baseName}.json`;
   const excelRel  = `${CRONOGRAMA_FOLDER_REL}/${excelName}`;
 
   function buildEtapasFromPhases(ph) {
@@ -9101,14 +9109,18 @@ function CronogramaModal({ project, phases, onClose }) {
     setSaving(true); setError(''); setMsg('');
     try {
       const token = await acquireTokenForResource(APP_CONFIG.clientId, APP_CONFIG.tenantId, CRONOGRAMA_SCOPE);
-      // Salva Excel (fonte de verdade para o editor recarregar)
+      // 1. Salva Excel (fonte de verdade para o editor recarregar)
       await saveCronogramaExcel(token, CRONOGRAMA_SITE_URL, CRONOGRAMA_FOLDER_REL, excelName, etapas, atividades);
-      // Sobrescreve HTML estático no SharePoint — cliente sempre vê versão atualizada
-      const html = generateCronogramaHTML(project, etapas, atividades);
+      // 2. Salva JSON (fonte de dados para o HTML dinâmico via Power Automate)
+      const cronData = { project, etapas, atividades, savedAt: new Date().toISOString() };
+      const jsonBytes = new TextEncoder().encode(JSON.stringify(cronData));
+      await spUploadFile(token, CRONOGRAMA_SITE_URL, CRONOGRAMA_FOLDER_REL, jsonName, jsonBytes);
+      // 3. Gera HTML dinâmico — busca dados via Power Automate (sem CORS, sem token no cliente)
+      const html = generateCronogramaHTMLDynamic(project, jsonName);
       const htmlBytes = new TextEncoder().encode(html);
       await spUploadFile(token, CRONOGRAMA_SITE_URL, CRONOGRAMA_FOLDER_REL, htmlName, htmlBytes);
       setCronExists(true);
-      setMsg(`Salvo e HTML atualizado! Compartilhe o link do arquivo "${htmlName}" na pasta Cronogramas do SharePoint com o cliente.`);
+      setMsg(`Salvo! Compartilhe o link do arquivo "${htmlName}" na pasta Cronogramas do SharePoint com o cliente.`);
       setTimeout(() => setMsg(''), 8000);
     } catch(e) { setError('Erro ao salvar: ' + e.message); }
     finally { setSaving(false); }
