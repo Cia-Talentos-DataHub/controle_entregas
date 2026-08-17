@@ -19,6 +19,7 @@
 <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/recharts@2.10.3/umd/Recharts.js"></script>
 <script type="module">
   import * as hyp from 'https://esm.sh/hyparquet@1';
   import { compressors as hyparquetCompressors } from 'https://esm.sh/hyparquet-compressors';
@@ -4275,6 +4276,684 @@ function InscricoesView({ projects, token }) {
   );
 }
 
+// ─── Globe Fotografia ─────────────────────────────────────────────────────────
+const GLOBE_SP_BASE = '/sites/Public/Documentos Partilhados/CIA/GeralCT/Indicadores CT/Base Globe';
+const GLOBE_YEARS = [2015,2016,2017,2018,2019,2020,2021,2022,2023,2024,2025,2026];
+const GLOBE_COLORS = ['#6366f1','#22c55e','#f59e0b','#ef4444','#14b8a6','#8b5cf6','#f97316','#06b6d4'];
+
+async function loadGlobeParquet(token, year, file, onProg) {
+  let tries = 0;
+  while (!window._hyparquet && tries < 30) { await new Promise(r => setTimeout(r, 200)); tries++; }
+  if (!window._hyparquet) throw new Error('Módulo Parquet não disponível — recarregue a página.');
+  onProg && onProg(`Baixando ${file} (${year})...`);
+  const spPath = `${GLOBE_SP_BASE}/${year}/${file}`;
+  const url = `https://ciadetalentos.sharepoint.com/sites/Public/_api/web/GetFileByServerRelativeUrl('${spPath}')/$value`;
+  const res = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` } });
+  if (!res.ok) { const t = await res.text().catch(() => ''); throw new Error(`Erro SP ${res.status}: ${t.slice(0, 200)}`); }
+  const cl = parseInt(res.headers.get('content-length') || '0');
+  const reader = res.body.getReader();
+  const chunks = []; let received = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value); received += value.length;
+    const pct = cl > 0 ? `${Math.round(received / cl * 100)}%` : `${(received / 1048576).toFixed(1)}MB`;
+    onProg && onProg(`Baixando ${file}... ${pct}`);
+  }
+  const buf = new Uint8Array(received);
+  let p = 0; for (const c of chunks) { buf.set(c, p); p += c.length; }
+  onProg && onProg(`Lendo Parquet ${file}...`);
+  const asyncBuf = { byteLength: received, slice: (s, e) => Promise.resolve(buf.buffer.slice(s, e)) };
+  let schemaColNames = null;
+  if (!schemaColNames && window._hyparquet.parquetMetadataAsync) {
+    try {
+      const meta = await window._hyparquet.parquetMetadataAsync(asyncBuf);
+      const elems = Array.isArray(meta?.schema) ? meta.schema : [];
+      const leafCols = elems.filter(s => !s.num_children).map(s => s.name).filter(Boolean);
+      if (leafCols.length > 0) schemaColNames = leafCols;
+    } catch (e) { console.warn('[loadGlobeParquet parquetMetadataAsync]', e.message); }
+  }
+  if (!schemaColNames && window._hyparquet.parquetMetadata) {
+    try {
+      const syncBuf = { byteLength: received, slice: (s, e) => buf.buffer.slice(s, e) };
+      const meta = window._hyparquet.parquetMetadata(syncBuf);
+      const elems = Array.isArray(meta?.schema) ? meta.schema : [];
+      const leafCols = elems.filter(s => !s.num_children).map(s => s.name).filter(Boolean);
+      if (leafCols.length > 0) schemaColNames = leafCols;
+    } catch (e) { console.warn('[loadGlobeParquet parquetMetadata sync]', e.message); }
+  }
+  const rawRows = [];
+  await window._hyparquet.parquetRead({
+    file: asyncBuf,
+    compressors: window._hyparquetCompressors || {},
+    onComplete: data => {
+      for (const r of data) {
+        const rIsArr = Array.isArray(r);
+        const rIsNumObj = !rIsArr && r !== null && typeof r === 'object' && '0' in r;
+        if ((rIsArr || rIsNumObj) && schemaColNames) {
+          const obj = {};
+          for (let i = 0; i < schemaColNames.length; i++) {
+            obj[schemaColNames[i]] = rIsArr ? r[i] : r[String(i)];
+          }
+          rawRows.push(obj);
+        } else {
+          rawRows.push(r);
+        }
+      }
+      onProg && onProg(`Processando... ${rawRows.length.toLocaleString('pt-BR')} registros`);
+    }
+  });
+  return rawRows;
+}
+
+function _gCountBy(arr, key) {
+  return arr.reduce((acc, row) => {
+    const v = String(row[key] || '').trim() || '(Vazio)';
+    acc[v] = (acc[v] || 0) + 1;
+    return acc;
+  }, {});
+}
+function _gTopN(countObj, n) {
+  return Object.entries(countObj).sort((a, b) => b[1] - a[1]).slice(0, n).map(([name, value]) => ({ name, value }));
+}
+function _gKpiCard(label, value) {
+  return React.createElement('div', { className: 'bg-slate-50 rounded-xl border border-slate-100 p-4 text-center' },
+    React.createElement('div', { className: 'text-2xl font-bold text-slate-800' }, value),
+    React.createElement('div', { className: 'text-xs text-slate-500 mt-1' }, label)
+  );
+}
+function _gSectionCard(title, children) {
+  return React.createElement('div', { className: 'bg-white rounded-2xl border border-slate-200 shadow-sm p-6 mb-6' },
+    React.createElement('h3', { className: 'text-lg font-bold text-slate-800 mb-4' }, title),
+    ...children
+  );
+}
+function _gBar(data, color) {
+  var RC = window.Recharts;
+  if (!RC) return React.createElement('div', { className: 'text-xs text-slate-400 p-4 text-center' }, 'Carregando biblioteca de gráficos...');
+  return React.createElement(RC.ResponsiveContainer, { width: '100%', height: 260 },
+    React.createElement(RC.BarChart, { data: data, margin: { top: 4, right: 16, bottom: 40, left: 0 } },
+      React.createElement(RC.CartesianGrid, { strokeDasharray: '3 3', stroke: '#f1f5f9' }),
+      React.createElement(RC.XAxis, { dataKey: 'name', tick: { fontSize: 10 }, angle: -35, textAnchor: 'end', interval: 0 }),
+      React.createElement(RC.YAxis, { tick: { fontSize: 11 } }),
+      React.createElement(RC.Tooltip, null),
+      React.createElement(RC.Bar, { dataKey: 'value', fill: color || '#6366f1', radius: [4, 4, 0, 0] })
+    )
+  );
+}
+function _gPie(data) {
+  var RC = window.Recharts;
+  if (!RC) return React.createElement('div', { className: 'text-xs text-slate-400 p-4 text-center' }, 'Carregando biblioteca de gráficos...');
+  return React.createElement(RC.ResponsiveContainer, { width: '100%', height: 240 },
+    React.createElement(RC.PieChart, null,
+      React.createElement(RC.Pie, {
+        data: data, dataKey: 'value', nameKey: 'name',
+        cx: '50%', cy: '50%', outerRadius: 85,
+        label: function(o) { return String(o.name || '').slice(0, 15) + ' ' + (o.percent * 100).toFixed(0) + '%'; },
+        labelLine: false
+      },
+        ...GLOBE_COLORS.map(function(c, i) { return React.createElement(RC.Cell, { key: i, fill: c }); })
+      ),
+      React.createElement(RC.Tooltip, null)
+    )
+  );
+}
+
+const GLOBE_TABS = [
+  { k: 'base', label: 'Base de Talentos' },
+  { k: 'demografia', label: 'Demografia' },
+  { k: 'localizacao', label: 'Localização' },
+  { k: 'diversidade', label: 'Diversidade' },
+  { k: 'formacao', label: 'Formação' },
+  { k: 'idiomas', label: 'Idiomas' },
+  { k: 'experiencia', label: 'Experiência' },
+  { k: 'candidaturas', label: 'Candidaturas' },
+  { k: 'processos', label: 'Processos' },
+  { k: 'etapas', label: 'Etapas' },
+  { k: 'relacionamento', label: 'Relacionamento' },
+  { k: 'cruzamentos', label: 'Cruzamentos' },
+];
+
+function GlobeFotografiaView({ token }) {
+  const [year, setYear] = useState(2026);
+  const [allYears, setAllYears] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [prog, setProg] = useState('');
+  const [error, setError] = useState('');
+  const [pessoas, setPessoas] = useState([]);
+  const [candidaturas, setCandidaturas] = useState([]);
+  const [idiomas, setIdiomas] = useState([]);
+  const [experiencias, setExperiencias] = useState([]);
+  const [expLoaded, setExpLoaded] = useState(false);
+  const [activeSection, setActiveSection] = useState('base');
+  const [cruzDim, setCruzDim] = useState('identidade_genero');
+  const [cruzMet, setCruzMet] = useState('total_candidaturas');
+
+  useEffect(() => {
+    if (!token) return;
+    async function load() {
+      setLoading(true);
+      setError('');
+      setPessoas([]);
+      setCandidaturas([]);
+      setIdiomas([]);
+      setExpLoaded(false);
+      setExperiencias([]);
+      try {
+        const yearsToLoad = allYears ? GLOBE_YEARS : [Number(year)];
+        let allP = [], allC = [], allI = [];
+        for (const y of yearsToLoad) {
+          const [p, c, id] = await Promise.all([
+            loadGlobeParquet(token, y, 'pessoas.parquet', setProg),
+            loadGlobeParquet(token, y, 'candidaturas.parquet', setProg),
+            loadGlobeParquet(token, y, 'idiomas.parquet', setProg),
+          ]);
+          allP = allP.concat(p);
+          allC = allC.concat(c);
+          allI = allI.concat(id);
+        }
+        setPessoas(allP);
+        setCandidaturas(allC);
+        setIdiomas(allI);
+      } catch (e) {
+        setError(e.message);
+      } finally {
+        setLoading(false);
+        setProg('');
+      }
+    }
+    load();
+  }, [token, year, allYears]);
+
+  useEffect(() => {
+    if (activeSection !== 'experiencia' || expLoaded || !token) return;
+    async function loadExp() {
+      setLoading(true);
+      setError('');
+      try {
+        const yearsToLoad = allYears ? GLOBE_YEARS : [Number(year)];
+        let allE = [];
+        for (const y of yearsToLoad) {
+          const exp = await loadGlobeParquet(token, y, 'experiencias.parquet', setProg);
+          allE = allE.concat(exp);
+        }
+        setExperiencias(allE);
+        setExpLoaded(true);
+      } catch (e) {
+        setError(e.message);
+      } finally {
+        setLoading(false);
+        setProg('');
+      }
+    }
+    loadExp();
+  }, [activeSection, expLoaded, token]);
+
+  const cruzData = useMemo(() => {
+    if (!pessoas.length) return [];
+    const pessoaMap = new Map();
+    for (const p of pessoas) {
+      const id = String(p.codigo_pessoa != null ? p.codigo_pessoa : '');
+      pessoaMap.set(id, { _id: id, _dim: String(p[cruzDim] || '').trim() || '(Vazio)', _total_cand: 0, _processos: new Set() });
+    }
+    for (const c of candidaturas) {
+      const id = String(c.codigo_pessoa != null ? c.codigo_pessoa : '');
+      const entry = pessoaMap.get(id);
+      if (entry) {
+        entry._total_cand++;
+        entry._processos.add(String(c.codigo_processo != null ? c.codigo_processo : ''));
+      }
+    }
+    const groups = {};
+    for (const [, entry] of pessoaMap) {
+      const dim = entry._dim;
+      if (!groups[dim]) groups[dim] = { total_candidaturas: 0, processos_set: new Set(), pessoas_com_cand: new Set() };
+      groups[dim].total_candidaturas += entry._total_cand;
+      for (const proc of entry._processos) groups[dim].processos_set.add(proc);
+      if (entry._total_cand > 0) groups[dim].pessoas_com_cand.add(entry._id);
+    }
+    return Object.entries(groups).map(([name, g]) => {
+      const value = cruzMet === 'total_candidaturas' ? g.total_candidaturas
+                  : cruzMet === 'processos_unicos' ? g.processos_set.size
+                  : g.pessoas_com_cand.size;
+      return { name, value };
+    }).sort((a, b) => b.value - a.value).slice(0, 20);
+  }, [pessoas, candidaturas, cruzDim, cruzMet]);
+
+  function renderSection() {
+    const s = activeSection;
+
+    // ── base ──
+    if (s === 'base') {
+      const total = pessoas.length;
+      const ativos = pessoas.filter(p => String(p.status || '').toLowerCase() === 'ativo').length;
+      const comCand = pessoas.filter(p => Number(p.quantidade_processos || 0) > 0).length;
+      const diasTotal = pessoas.reduce((sum, p) => sum + Number(p.dias_cadastro_ate_primeira_candidatura || 0), 0);
+      const diasMedio = total > 0 ? (diasTotal / total).toFixed(1) : '—';
+      const anoCounts = {};
+      for (const p of pessoas) {
+        const ts = p.data_cadastro;
+        if (ts == null) continue;
+        const yr = new Date(Number(ts)).getFullYear();
+        if (yr >= 2000 && yr <= 2100) anoCounts[yr] = (anoCounts[yr] || 0) + 1;
+      }
+      const anoData = Object.entries(anoCounts).sort((a, b) => Number(a[0]) - Number(b[0])).map(([name, value]) => ({ name, value }));
+      const statusData = _gTopN(_gCountBy(pessoas, 'status'), 8);
+      return React.createElement('div', null,
+        React.createElement('div', { className: 'grid grid-cols-2 sm:grid-cols-5 gap-3 mb-6' },
+          _gKpiCard('Total Cadastros', total.toLocaleString('pt-BR')),
+          _gKpiCard('Ativos', ativos.toLocaleString('pt-BR')),
+          _gKpiCard('Inativos', (total - ativos).toLocaleString('pt-BR')),
+          _gKpiCard('Com Candidatura', comCand.toLocaleString('pt-BR')),
+          _gKpiCard('Média Dias até 1ª Cand.', String(diasMedio))
+        ),
+        _gSectionCard('Cadastros por Ano', [_gBar(anoData, '#6366f1')]),
+        _gSectionCard('Distribuição por Status', [_gPie(statusData)])
+      );
+    }
+
+    // ── demografia ──
+    if (s === 'demografia') {
+      const idades = pessoas.map(p => Number(p.idade || 0)).filter(n => n > 0 && n < 120);
+      const mediaIdade = idades.length > 0 ? (idades.reduce((a, b) => a + b, 0) / idades.length).toFixed(1) : '—';
+      const minIdade = idades.length > 0 ? idades.reduce((m, n) => n < m ? n : m, Infinity) : '—';
+      const maxIdade = idades.length > 0 ? idades.reduce((m, n) => n > m ? n : m, -Infinity) : '—';
+      const faixas = [
+        { name: '< 18', value: idades.filter(n => n < 18).length },
+        { name: '18–24', value: idades.filter(n => n >= 18 && n <= 24).length },
+        { name: '25–34', value: idades.filter(n => n >= 25 && n <= 34).length },
+        { name: '35–44', value: idades.filter(n => n >= 35 && n <= 44).length },
+        { name: '45–54', value: idades.filter(n => n >= 45 && n <= 54).length },
+        { name: '55+', value: idades.filter(n => n >= 55).length },
+      ];
+      const generoData = _gTopN(_gCountBy(pessoas, 'identidade_genero'), 10);
+      return React.createElement('div', null,
+        React.createElement('div', { className: 'grid grid-cols-3 gap-3 mb-6' },
+          _gKpiCard('Média de Idade', String(mediaIdade)),
+          _gKpiCard('Idade Mínima', String(minIdade)),
+          _gKpiCard('Idade Máxima', String(maxIdade))
+        ),
+        _gSectionCard('Faixas Etárias', [_gBar(faixas, '#22c55e')]),
+        _gSectionCard('Identidade de Gênero', [_gBar(generoData, '#8b5cf6')])
+      );
+    }
+
+    // ── localizacao ──
+    if (s === 'localizacao') {
+      const paises = new Set(pessoas.map(p => String(p.pais || '').trim()).filter(Boolean));
+      const estados = new Set(pessoas.map(p => String(p.estado || '').trim()).filter(Boolean));
+      const cidades = new Set(pessoas.map(p => String(p.cidade || '').trim()).filter(Boolean));
+      const estadoData = _gTopN(_gCountBy(pessoas, 'estado'), 10);
+      const cidadeData = _gTopN(_gCountBy(pessoas, 'cidade'), 10);
+      const regiaoData = _gTopN(_gCountBy(pessoas, 'regiao'), 10);
+      return React.createElement('div', null,
+        React.createElement('div', { className: 'grid grid-cols-3 gap-3 mb-6' },
+          _gKpiCard('Países Únicos', paises.size.toLocaleString('pt-BR')),
+          _gKpiCard('Estados Únicos', estados.size.toLocaleString('pt-BR')),
+          _gKpiCard('Cidades Únicas', cidades.size.toLocaleString('pt-BR'))
+        ),
+        _gSectionCard('Top 10 Estados', [_gBar(estadoData, '#6366f1')]),
+        _gSectionCard('Top 10 Cidades', [_gBar(cidadeData, '#14b8a6')]),
+        _gSectionCard('Regiões', [_gBar(regiaoData, '#f59e0b')])
+      );
+    }
+
+    // ── diversidade ──
+    if (s === 'diversidade') {
+      const total = pessoas.length || 1;
+      const comRaca = pessoas.filter(p => String(p.raca_cor || '').trim()).length;
+      const comPcd = pessoas.filter(p => String(p.pcd_cadastro || '').trim()).length;
+      const diversoGen = pessoas.filter(p => {
+        const g = String(p.identidade_genero || '').trim();
+        return g && g !== 'Masculino' && g !== 'Feminino';
+      }).length;
+      return React.createElement('div', null,
+        React.createElement('div', { className: 'grid grid-cols-3 gap-3 mb-6' },
+          _gKpiCard('% Raça/Cor Preenchida', ((comRaca / total) * 100).toFixed(1) + '%'),
+          _gKpiCard('% PCD', ((comPcd / total) * 100).toFixed(1) + '%'),
+          _gKpiCard('% Gênero Diverso', ((diversoGen / total) * 100).toFixed(1) + '%')
+        ),
+        _gSectionCard('Raça/Cor', [_gBar(_gTopN(_gCountBy(pessoas, 'raca_cor'), 10), '#ef4444')]),
+        _gSectionCard('Identidade de Gênero', [_gBar(_gTopN(_gCountBy(pessoas, 'identidade_genero'), 10), '#8b5cf6')]),
+        _gSectionCard('Orientação Afetivo-Sexual', [_gBar(_gTopN(_gCountBy(pessoas, 'orientacao_afetivo_sexual'), 10), '#f97316')]),
+        _gSectionCard('Renda Familiar', [_gBar(_gTopN(_gCountBy(pessoas, 'renda_familiar'), 10), '#06b6d4')]),
+        _gSectionCard('PCD (Cadastro)', [_gBar(_gTopN(_gCountBy(pessoas, 'pcd_cadastro'), 8), '#22c55e')])
+      );
+    }
+
+    // ── formacao ──
+    if (s === 'formacao') {
+      const total = pessoas.length || 1;
+      const comGrad = pessoas.filter(p => String(p.graduacao_1_curso || '').trim()).length;
+      const comPos = pessoas.filter(p => String(p.pos_1_curso || '').trim()).length;
+      const comTec = pessoas.filter(p => String(p.tecnico_1_curso || '').trim()).length;
+      const cursoMap = {};
+      for (const p of pessoas) {
+        for (const k of ['graduacao_1_curso', 'graduacao_2_curso', 'graduacao_3_curso']) {
+          const c = String(p[k] || '').trim();
+          if (c) cursoMap[c] = (cursoMap[c] || 0) + 1;
+        }
+      }
+      const cursoData = _gTopN(cursoMap, 15);
+      return React.createElement('div', null,
+        React.createElement('div', { className: 'grid grid-cols-3 gap-3 mb-6' },
+          _gKpiCard('% Com Graduação', ((comGrad / total) * 100).toFixed(1) + '%'),
+          _gKpiCard('% Com Pós-Graduação', ((comPos / total) * 100).toFixed(1) + '%'),
+          _gKpiCard('% Com Técnico', ((comTec / total) * 100).toFixed(1) + '%')
+        ),
+        _gSectionCard('Top 15 Cursos de Graduação', [_gBar(cursoData, '#6366f1')]),
+        _gSectionCard('Top 10 Instituições', [_gBar(_gTopN(_gCountBy(pessoas, 'graduacao_1_instituicao'), 10), '#22c55e')]),
+        _gSectionCard('Tipo de Graduação', [_gBar(_gTopN(_gCountBy(pessoas, 'graduacao_1_tipo'), 10), '#f59e0b')]),
+        _gSectionCard('Modalidade', [_gBar(_gTopN(_gCountBy(pessoas, 'graduacao_1_modalidade'), 8), '#14b8a6')])
+      );
+    }
+
+    // ── idiomas ──
+    if (s === 'idiomas') {
+      const pessoasComIdioma = new Set(idiomas.map(i => String(i.codigo_pessoa != null ? i.codigo_pessoa : ''))).size;
+      const idiomasUnicos = new Set(idiomas.map(i => String(i.idioma || ''))).size;
+      const idiomaData = _gTopN(_gCountBy(idiomas, 'idioma'), 10);
+      const nivelData = _gTopN(_gCountBy(idiomas, 'nivel'), 10);
+      return React.createElement('div', null,
+        React.createElement('div', { className: 'grid grid-cols-3 gap-3 mb-6' },
+          _gKpiCard('Pessoas com Idioma', pessoasComIdioma.toLocaleString('pt-BR')),
+          _gKpiCard('Total Declarações', idiomas.length.toLocaleString('pt-BR')),
+          _gKpiCard('Idiomas Únicos', idiomasUnicos.toLocaleString('pt-BR'))
+        ),
+        _gSectionCard('Top 10 Idiomas', [_gBar(idiomaData, '#6366f1')]),
+        _gSectionCard('Distribuição por Nível', [_gBar(nivelData, '#22c55e')])
+      );
+    }
+
+    // ── experiencia ──
+    if (s === 'experiencia') {
+      if (!expLoaded) {
+        return React.createElement('div', { className: 'bg-white rounded-2xl border border-slate-200 shadow-sm p-10 mb-6 flex flex-col items-center gap-4' },
+          React.createElement('div', { className: 'text-5xl' }, '📦'),
+          React.createElement('h3', { className: 'text-lg font-bold text-slate-800' }, 'Dados de Experiência Profissional'),
+          React.createElement('p', { className: 'text-sm text-slate-500 text-center max-w-md' }, 'Este arquivo tem aproximadamente 33 MB por ano. O download pode levar alguns segundos dependendo da sua conexão.'),
+          loading
+            ? React.createElement('div', { className: 'text-sm text-indigo-600 font-medium' }, prog || 'Carregando...')
+            : React.createElement('button', {
+                onClick: function() {
+                  async function doLoad() {
+                    setLoading(true);
+                    setError('');
+                    try {
+                      const yearsToLoad = allYears ? GLOBE_YEARS : [Number(year)];
+                      let allE = [];
+                      for (const y of yearsToLoad) {
+                        const exp = await loadGlobeParquet(token, y, 'experiencias.parquet', setProg);
+                        allE = allE.concat(exp);
+                      }
+                      setExperiencias(allE);
+                      setExpLoaded(true);
+                    } catch (e) {
+                      setError(e.message);
+                    } finally {
+                      setLoading(false);
+                      setProg('');
+                    }
+                  }
+                  doLoad();
+                },
+                className: 'bg-indigo-600 text-white px-6 py-2.5 rounded-xl text-sm font-semibold hover:bg-indigo-700 transition'
+              }, 'Carregar dados de experiência')
+        );
+      }
+      const pessoasExp = new Set(experiencias.map(e => String(e.codigo_pessoa != null ? e.codigo_pessoa : ''))).size;
+      const areasUnicas = new Set(experiencias.map(e => String(e.area_profissional || '').trim()).filter(Boolean)).size;
+      return React.createElement('div', null,
+        React.createElement('div', { className: 'grid grid-cols-2 gap-3 mb-6' },
+          _gKpiCard('Pessoas com Experiência', pessoasExp.toLocaleString('pt-BR')),
+          _gKpiCard('Áreas Únicas', areasUnicas.toLocaleString('pt-BR'))
+        ),
+        _gSectionCard('Top 10 Áreas Profissionais', [_gBar(_gTopN(_gCountBy(experiencias, 'area_profissional'), 10), '#6366f1')]),
+        _gSectionCard('Nível do Cargo', [_gBar(_gTopN(_gCountBy(experiencias, 'nivel_cargo'), 10), '#22c55e')]),
+        _gSectionCard('Setor da Empresa', [_gBar(_gTopN(_gCountBy(experiencias, 'setor_empresa'), 10), '#f59e0b')]),
+        _gSectionCard('Porte da Empresa', [_gBar(_gTopN(_gCountBy(experiencias, 'porte_empresa'), 8), '#14b8a6')])
+      );
+    }
+
+    // ── candidaturas ──
+    if (s === 'candidaturas') {
+      const totalCand = candidaturas.length;
+      const pessoasComCand = new Set(candidaturas.map(c => String(c.codigo_pessoa != null ? c.codigo_pessoa : ''))).size;
+      const mediaCand = pessoasComCand > 0 ? (totalCand / pessoasComCand).toFixed(1) : '—';
+      const contPorPessoaCand = {};
+      for (const c of candidaturas) {
+        const id = String(c.codigo_pessoa != null ? c.codigo_pessoa : '');
+        contPorPessoaCand[id] = (contPorPessoaCand[id] || 0) + 1;
+      }
+      const contValsCand = Object.values(contPorPessoaCand);
+      const maxCand = contValsCand.length > 0 ? contValsCand.reduce((m, n) => n > m ? n : m, 0) : 0;
+      const anoCandCount = {};
+      for (const c of candidaturas) {
+        const ts = c.data_candidatura;
+        if (ts == null) continue;
+        const yr = new Date(Number(ts)).getFullYear();
+        if (yr >= 2000 && yr <= 2100) anoCandCount[yr] = (anoCandCount[yr] || 0) + 1;
+      }
+      const anoData = Object.entries(anoCandCount).sort((a, b) => Number(a[0]) - Number(b[0])).map(([name, value]) => ({ name, value }));
+      const procData = _gTopN(_gCountBy(candidaturas, 'nome_processo'), 10);
+      return React.createElement('div', null,
+        React.createElement('div', { className: 'grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6' },
+          _gKpiCard('Total Candidaturas', totalCand.toLocaleString('pt-BR')),
+          _gKpiCard('Pessoas Únicas', pessoasComCand.toLocaleString('pt-BR')),
+          _gKpiCard('Média por Pessoa', String(mediaCand)),
+          _gKpiCard('Máx por Pessoa', String(maxCand))
+        ),
+        _gSectionCard('Candidaturas por Ano', [_gBar(anoData, '#6366f1')]),
+        _gSectionCard('Top 10 Processos por Volume', [_gBar(procData, '#f59e0b')])
+      );
+    }
+
+    // ── processos ──
+    if (s === 'processos') {
+      const procMap = {};
+      for (const c of candidaturas) {
+        const nome = String(c.nome_processo || '').trim() || '(sem nome)';
+        const pid = String(c.codigo_pessoa != null ? c.codigo_pessoa : '');
+        if (!procMap[nome]) procMap[nome] = { pessoas: new Set(), total: 0 };
+        procMap[nome].pessoas.add(pid);
+        procMap[nome].total++;
+      }
+      const processos = new Set(candidaturas.map(c => String(c.codigo_processo != null ? c.codigo_processo : ''))).size;
+      const procList = Object.entries(procMap)
+        .map(([nome, d]) => ({ nome, candidatos: d.pessoas.size, total: d.total }))
+        .sort((a, b) => b.candidatos - a.candidatos);
+      const barData = procList.slice(0, 15).map(d => ({ name: d.nome, value: d.candidatos }));
+      return React.createElement('div', null,
+        React.createElement('div', { className: 'grid grid-cols-1 gap-3 mb-6' },
+          _gKpiCard('Processos Únicos', processos.toLocaleString('pt-BR'))
+        ),
+        _gSectionCard('Top 15 Processos por Candidatos Únicos', [_gBar(barData, '#6366f1')]),
+        React.createElement('div', { className: 'bg-white rounded-2xl border border-slate-200 shadow-sm p-6 mb-6' },
+          React.createElement('h3', { className: 'text-lg font-bold text-slate-800 mb-4' }, 'Tabela de Processos'),
+          React.createElement('div', { style: { maxHeight: '420px', overflowY: 'auto' } },
+            React.createElement('table', { className: 'w-full text-sm' },
+              React.createElement('thead', null,
+                React.createElement('tr', { className: 'bg-slate-50 text-left' },
+                  React.createElement('th', { className: 'px-3 py-2 text-xs font-semibold text-slate-500' }, 'Nome do Processo'),
+                  React.createElement('th', { className: 'px-3 py-2 text-xs font-semibold text-slate-500 text-right' }, 'Candidatos Únicos'),
+                  React.createElement('th', { className: 'px-3 py-2 text-xs font-semibold text-slate-500 text-right' }, 'Total Candidaturas')
+                )
+              ),
+              React.createElement('tbody', null,
+                ...procList.slice(0, 20).map(function(d, i) {
+                  return React.createElement('tr', { key: i, className: 'border-b border-slate-50' },
+                    React.createElement('td', { className: 'px-3 py-2 text-slate-700' }, d.nome),
+                    React.createElement('td', { className: 'px-3 py-2 text-right text-slate-800 font-medium' }, d.candidatos.toLocaleString('pt-BR')),
+                    React.createElement('td', { className: 'px-3 py-2 text-right text-slate-600' }, d.total.toLocaleString('pt-BR'))
+                  );
+                })
+              )
+            )
+          )
+        )
+      );
+    }
+
+    // ── etapas ──
+    if (s === 'etapas') {
+      const etapaOrdMap = {};
+      for (const c of candidaturas) {
+        const etapa = String(c.etapa_atual || '').trim() || '(Vazio)';
+        const ord = Number(c.ordem_etapa || 0);
+        if (!etapaOrdMap[etapa]) etapaOrdMap[etapa] = { count: 0, ordSum: 0 };
+        etapaOrdMap[etapa].count++;
+        etapaOrdMap[etapa].ordSum += ord;
+      }
+      const etapaEntries = Object.entries(etapaOrdMap).map(([name, d]) => ({
+        name, value: d.count, avgOrd: d.count > 0 ? d.ordSum / d.count : 0
+      }));
+      const etapaBarData = [...etapaEntries].sort((a, b) => a.avgOrd - b.avgOrd).map(d => ({ name: d.name, value: d.value }));
+      const topEtapa = [...etapaEntries].sort((a, b) => b.value - a.value)[0];
+      return React.createElement('div', null,
+        React.createElement('div', { className: 'grid grid-cols-2 gap-3 mb-6' },
+          _gKpiCard('Etapas Únicas', String(etapaEntries.length)),
+          _gKpiCard('Etapa com mais candidatos', topEtapa ? String(topEtapa.name).slice(0, 30) : '—')
+        ),
+        _gSectionCard('Distribuição por Etapa Atual', [_gBar(etapaBarData, '#6366f1')])
+      );
+    }
+
+    // ── relacionamento ──
+    if (s === 'relacionamento') {
+      const contPorPessoa = {};
+      for (const c of candidaturas) {
+        const id = String(c.codigo_pessoa != null ? c.codigo_pessoa : '');
+        contPorPessoa[id] = (contPorPessoa[id] || 0) + 1;
+      }
+      const vals = Object.values(contPorPessoa);
+      const p1 = vals.filter(n => n === 1).length;
+      const p2 = vals.filter(n => n === 2).length;
+      const p3p = vals.filter(n => n >= 3).length;
+      const histData = [1, 2, 3, 4, 5].map(n => ({ name: String(n), value: vals.filter(v => v === n).length }))
+        .concat([{ name: '6+', value: vals.filter(v => v >= 6).length }]);
+      const top10 = Object.entries(contPorPessoa).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([id, count]) => ({ id, count }));
+      return React.createElement('div', null,
+        React.createElement('div', { className: 'grid grid-cols-3 gap-3 mb-6' },
+          _gKpiCard('Pessoas com 1 candidatura', p1.toLocaleString('pt-BR')),
+          _gKpiCard('Pessoas com 2 candidaturas', p2.toLocaleString('pt-BR')),
+          _gKpiCard('Pessoas com 3+ candidaturas', p3p.toLocaleString('pt-BR'))
+        ),
+        _gSectionCard('Candidaturas por Pessoa (histograma)', [_gBar(histData, '#6366f1')]),
+        React.createElement('div', { className: 'bg-white rounded-2xl border border-slate-200 shadow-sm p-6 mb-6' },
+          React.createElement('h3', { className: 'text-lg font-bold text-slate-800 mb-4' }, 'Top 10 — Mais Candidaturas'),
+          React.createElement('table', { className: 'w-full text-sm' },
+            React.createElement('thead', null,
+              React.createElement('tr', { className: 'bg-slate-50' },
+                React.createElement('th', { className: 'px-3 py-2 text-xs font-semibold text-slate-500 text-left' }, 'ID Pessoa'),
+                React.createElement('th', { className: 'px-3 py-2 text-xs font-semibold text-slate-500 text-right' }, 'Candidaturas')
+              )
+            ),
+            React.createElement('tbody', null,
+              ...top10.map(function(r, i) {
+                return React.createElement('tr', { key: i, className: 'border-b border-slate-50' },
+                  React.createElement('td', { className: 'px-3 py-2 text-slate-700' }, r.id),
+                  React.createElement('td', { className: 'px-3 py-2 text-right font-medium text-slate-800' }, String(r.count))
+                );
+              })
+            )
+          )
+        )
+      );
+    }
+
+    // ── cruzamentos ──
+    if (s === 'cruzamentos') {
+      const dimOpts = [
+        { v: 'identidade_genero', label: 'Identidade de Gênero' },
+        { v: 'raca_cor', label: 'Raça/Cor' },
+        { v: 'regiao', label: 'Região' },
+        { v: 'estado', label: 'Estado' },
+        { v: 'renda_familiar', label: 'Renda Familiar' },
+        { v: 'pcd_cadastro', label: 'PCD Cadastro' },
+      ];
+      const metOpts = [
+        { v: 'total_candidaturas', label: 'Total de Candidaturas' },
+        { v: 'processos_unicos', label: 'Processos Únicos' },
+        { v: 'pessoas_unicas_com_candidatura', label: 'Pessoas Únicas com Candidatura' },
+      ];
+      return React.createElement('div', null,
+        React.createElement('div', { className: 'bg-white rounded-2xl border border-slate-200 shadow-sm p-6 mb-6' },
+          React.createElement('div', { className: 'flex flex-wrap gap-4 mb-6' },
+            React.createElement('div', null,
+              React.createElement('label', { className: 'text-xs font-semibold text-slate-500 mb-1 block' }, 'Dimensão'),
+              React.createElement('select', {
+                value: cruzDim,
+                onChange: function(e) { setCruzDim(e.target.value); },
+                className: 'border border-slate-200 rounded-lg px-3 py-2 text-sm'
+              },
+                ...dimOpts.map(function(o) { return React.createElement('option', { key: o.v, value: o.v }, o.label); })
+              )
+            ),
+            React.createElement('div', null,
+              React.createElement('label', { className: 'text-xs font-semibold text-slate-500 mb-1 block' }, 'Métrica'),
+              React.createElement('select', {
+                value: cruzMet,
+                onChange: function(e) { setCruzMet(e.target.value); },
+                className: 'border border-slate-200 rounded-lg px-3 py-2 text-sm'
+              },
+                ...metOpts.map(function(o) { return React.createElement('option', { key: o.v, value: o.v }, o.label); })
+              )
+            )
+          ),
+          React.createElement('h3', { className: 'text-lg font-bold text-slate-800 mb-4' }, 'Resultado do Cruzamento'),
+          _gBar(cruzData, '#6366f1')
+        )
+      );
+    }
+
+    return React.createElement('div', { className: 'text-slate-400 text-sm p-6' }, 'Selecione uma seção.');
+  }
+
+  return React.createElement('div', { className: 'max-w-screen-xl mx-auto px-6 py-6' },
+    React.createElement('div', { className: 'flex flex-wrap items-center gap-4 mb-6' },
+      React.createElement('div', null,
+        React.createElement('h1', { className: 'text-2xl font-bold text-slate-800' }, '🌍 Globe · Fotografia'),
+        React.createElement('p', { className: 'text-sm text-slate-500 mt-0.5' }, 'Dashboard de pessoas cadastradas no ATS Globe')
+      ),
+      React.createElement('div', { className: 'flex items-center gap-2 ml-auto' },
+        React.createElement('label', { className: 'text-xs font-semibold text-slate-500' }, 'Ano:'),
+        React.createElement('select', {
+          value: allYears ? 'todos' : String(year),
+          onChange: function(e) {
+            if (e.target.value === 'todos') { setAllYears(true); }
+            else { setAllYears(false); setYear(Number(e.target.value)); }
+          },
+          className: 'border border-slate-200 rounded-lg px-3 py-1.5 text-sm'
+        },
+          ...GLOBE_YEARS.map(function(y) { return React.createElement('option', { key: y, value: String(y) }, String(y)); }),
+          React.createElement('option', { value: 'todos' }, 'Todos (2015–2026)')
+        )
+      )
+    ),
+    error ? React.createElement('div', { className: 'bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl mb-4 text-sm' }, error) : null,
+    loading ? React.createElement('div', { className: 'bg-indigo-50 border border-indigo-200 text-indigo-700 px-4 py-3 rounded-xl mb-4 text-sm flex items-center gap-2' },
+      React.createElement('span', null, '⏳'),
+      React.createElement('span', null, prog || 'Carregando...')
+    ) : null,
+    React.createElement('div', { className: 'overflow-x-auto mb-6' },
+      React.createElement('div', { className: 'flex gap-1 min-w-max' },
+        ...GLOBE_TABS.map(function(tab) {
+          return React.createElement('button', {
+            key: tab.k,
+            onClick: function() { setActiveSection(tab.k); },
+            className: activeSection === tab.k
+              ? 'bg-indigo-600 text-white px-4 py-2 text-sm font-medium rounded-lg'
+              : 'text-slate-600 hover:bg-slate-100 px-4 py-2 text-sm font-medium rounded-lg'
+          }, tab.label);
+        })
+      )
+    ),
+    pessoas.length === 0 && !loading
+      ? React.createElement('div', { className: 'text-slate-400 text-sm text-center py-12' }, 'Nenhum dado carregado. Aguarde o carregamento ou verifique a conexão.')
+      : renderSection()
+  );
+}
+
 // ─── App ──────────────────────────────────────────────────────────────────────
 function App() {
   const local = loadLocal();
@@ -5466,6 +6145,21 @@ function App() {
     );
   }
 
+  // ── Globe Fotografia module ──
+  if (module === 'globe_fotografia') {
+    return React.createElement("div", { className: "min-h-screen bg-slate-50" },
+      React.createElement(AppHeader, {
+        view: view, setView: setView, authState: authState, onSignOut: signOut,
+        projectCount: projects.length, loading: loading,
+        onRefresh: () => loadAll(authState.token),
+        module: module, onHome: () => setModule(null),
+        onBackupDownload: handleBackupDownload, onBackupUpload: handleBackupUpload
+      }),
+      saveMsgBanner, errorBanner,
+      React.createElement(GlobeFotografiaView, { token: authState.token })
+    );
+  }
+
   // ── Gestão module ──
   // Entity-aware data: switch between Analistas and Heads
   const isHeadView = entityView === 'head';
@@ -5632,7 +6326,7 @@ function AppHeader({
     key: e,
     onClick: () => setEntityView(e),
     className: `px-3 py-1 rounded-md text-xs font-semibold transition ${entityView === e ? 'bg-white shadow text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`
-  }, e === 'analyst' ? '👤 Analistas' : '🎯 Heads')))), (module === 'pulse' || module === 'calendar' || module === 'analytics' || module === 'nps' || module === 'clientes' || module === 'cx' || module === 'cx_atend') && /*#__PURE__*/React.createElement("div", {
+  }, e === 'analyst' ? '👤 Analistas' : '🎯 Heads')))), (module === 'pulse' || module === 'calendar' || module === 'analytics' || module === 'nps' || module === 'clientes' || module === 'cx' || module === 'cx_atend' || module === 'globe_fotografia') && /*#__PURE__*/React.createElement("div", {
     className: "flex-1"
   }), /*#__PURE__*/React.createElement("div", {
     className: "flex items-center gap-2 ml-auto shrink-0"
@@ -5935,6 +6629,18 @@ function HomeScreen({
   }, "Indicadores de candidatos inscritos nos processos: perfil, diversidade, formação, status e mais."), /*#__PURE__*/React.createElement("div", {
     className: "mt-6 flex items-center text-sm font-semibold text-pink-600 group-hover:text-pink-700"
   }, "Abrir Relatório ", /*#__PURE__*/React.createElement("span", { className: "ml-1.5" }, "→"))),
+  /*#__PURE__*/React.createElement("button", {
+    onClick: () => onSelect('globe_fotografia'),
+    className: "group bg-white rounded-2xl border-2 border-slate-200 hover:border-violet-400 hover:shadow-xl transition-all p-8 text-left"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "w-14 h-14 bg-violet-100 rounded-2xl flex items-center justify-center mb-5 group-hover:bg-violet-200 transition-colors text-3xl"
+  }, "🌍"), /*#__PURE__*/React.createElement("h2", {
+    className: "text-xl font-bold text-slate-900 mb-2"
+  }, "Globe · Fotografia"), /*#__PURE__*/React.createElement("p", {
+    className: "text-sm text-slate-500 leading-relaxed"
+  }, "Dashboard de pessoas cadastradas no ATS Globe: perfil demográfico, diversidade, formação, candidaturas e processos seletivos."), /*#__PURE__*/React.createElement("div", {
+    className: "mt-6 flex items-center text-sm font-semibold text-violet-600 group-hover:text-violet-700"
+  }, "Abrir ", /*#__PURE__*/React.createElement("span", { className: "ml-1.5" }, "→"))),
   Object.values(MODULE_CONFIGS).filter(cfg => fullAccess || cfg.key === 'cd' && isCandD || cfg.key === 'fi' && isLatam || cfg.key === 'eb' && isEB).map(cfg => {
     const colors = {
       blue: {
