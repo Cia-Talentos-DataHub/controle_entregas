@@ -4451,28 +4451,44 @@ function GlobeFotografiaView({ token }) {
       setIdiomas([]);
       setExpLoaded(false);
       setExperiencias([]);
+      const erros = [];
+
+      // Estratégia de carga:
+      // - pessoas: apenas o ano selecionado (ou 2026 em modo "Todos") — snapshot demográfico sem duplicatas
+      // - candidaturas + idiomas: todos os anos quando "Todos" — dados históricos corretos
+      const pessoasYear = allYears ? Math.max.apply(null, GLOBE_YEARS) : Number(year);
+      const transfYears = allYears ? GLOBE_YEARS : [Number(year)];
+
+      // 1. Pessoas (snapshot do ano mais recente)
       try {
-        const yearsToLoad = allYears ? GLOBE_YEARS : [Number(year)];
-        let allP = [], allC = [], allI = [];
-        for (const y of yearsToLoad) {
-          const [p, c, id] = await Promise.all([
-            loadGlobeParquet(token, y, 'pessoas.parquet', setProg),
-            loadGlobeParquet(token, y, 'candidaturas.parquet', setProg),
-            loadGlobeParquet(token, y, 'idiomas.parquet', setProg),
-          ]);
-          allP = allP.concat(p);
+        setProg('Baixando pessoas...');
+        const p = await loadGlobeParquet(token, pessoasYear, 'pessoas.parquet', setProg);
+        setPessoas(p);
+      } catch (e) { erros.push('pessoas ' + pessoasYear + ': ' + e.message); }
+
+      // 2. Candidaturas — todos os anos (para contagem correta de processos históricos)
+      let allC = [];
+      for (const y of transfYears) {
+        try {
+          const c = await loadGlobeParquet(token, y, 'candidaturas.parquet', setProg);
           allC = allC.concat(c);
-          allI = allI.concat(id);
-        }
-        setPessoas(allP);
-        setCandidaturas(allC);
-        setIdiomas(allI);
-      } catch (e) {
-        setError(e.message);
-      } finally {
-        setLoading(false);
-        setProg('');
+        } catch (e) { erros.push('candidaturas ' + y + ': ' + e.message); }
       }
+      setCandidaturas(allC);
+
+      // 3. Idiomas — todos os anos
+      let allI = [];
+      for (const y of transfYears) {
+        try {
+          const id = await loadGlobeParquet(token, y, 'idiomas.parquet', setProg);
+          allI = allI.concat(id);
+        } catch (e) { erros.push('idiomas ' + y + ': ' + e.message); }
+      }
+      setIdiomas(allI);
+
+      if (erros.length) setError('Aviso: alguns arquivos não carregaram — ' + erros.join(' | '));
+      setLoading(false);
+      setProg('');
     }
     load();
   }, [token, year, allYears]);
@@ -4482,21 +4498,20 @@ function GlobeFotografiaView({ token }) {
     async function loadExp() {
       setLoading(true);
       setError('');
-      try {
-        const yearsToLoad = allYears ? GLOBE_YEARS : [Number(year)];
-        let allE = [];
-        for (const y of yearsToLoad) {
+      const errosExp = [];
+      const transfYears = allYears ? GLOBE_YEARS : [Number(year)];
+      let allE = [];
+      for (const y of transfYears) {
+        try {
           const exp = await loadGlobeParquet(token, y, 'experiencias.parquet', setProg);
           allE = allE.concat(exp);
-        }
-        setExperiencias(allE);
-        setExpLoaded(true);
-      } catch (e) {
-        setError(e.message);
-      } finally {
-        setLoading(false);
-        setProg('');
+        } catch (e) { errosExp.push(y + ': ' + e.message); }
       }
+      setExperiencias(allE);
+      setExpLoaded(true);
+      if (errosExp.length) setError('Aviso experiências: ' + errosExp.join(' | '));
+      setLoading(false);
+      setProg('');
     }
     loadExp();
   }, [activeSection, expLoaded, token]);
@@ -4776,6 +4791,9 @@ function GlobeFotografiaView({ token }) {
         .sort((a, b) => b.candidatos - a.candidatos);
       const barData = procList.slice(0, 15).map(d => ({ name: d.nome, value: d.candidatos }));
       return React.createElement('div', null,
+        !allYears && React.createElement('div', { className: 'mb-4 px-4 py-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800' },
+          '⚠️ Exibindo apenas candidaturas de ', year, '. Processos que ocorreram em múltiplos anos (ex: Estágio Vale) terão contagens parciais. Selecione "Todos os anos" para ver o histórico completo.'
+        ),
         React.createElement('div', { className: 'grid grid-cols-1 gap-3 mb-6' },
           _gKpiCard('Processos Únicos', processos.toLocaleString('pt-BR'))
         ),
