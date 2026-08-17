@@ -19,7 +19,7 @@
 <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdn.tailwindcss.com"></script>
-<script src="https://unpkg.com/recharts@2.10.3/umd/Recharts.js"></script>
+
 <script type="module">
   import * as hyp from 'https://esm.sh/hyparquet@1';
   import { compressors as hyparquetCompressors } from 'https://esm.sh/hyparquet-compressors';
@@ -4369,33 +4369,45 @@ function _gSectionCard(title, children) {
   );
 }
 function _gBar(data, color) {
-  var RC = window.Recharts;
-  if (!RC) return React.createElement('div', { className: 'text-xs text-slate-400 p-4 text-center' }, 'Carregando biblioteca de gráficos...');
-  return React.createElement(RC.ResponsiveContainer, { width: '100%', height: 260 },
-    React.createElement(RC.BarChart, { data: data, margin: { top: 4, right: 16, bottom: 40, left: 0 } },
-      React.createElement(RC.CartesianGrid, { strokeDasharray: '3 3', stroke: '#f1f5f9' }),
-      React.createElement(RC.XAxis, { dataKey: 'name', tick: { fontSize: 10 }, angle: -35, textAnchor: 'end', interval: 0 }),
-      React.createElement(RC.YAxis, { tick: { fontSize: 11 } }),
-      React.createElement(RC.Tooltip, null),
-      React.createElement(RC.Bar, { dataKey: 'value', fill: color || '#6366f1', radius: [4, 4, 0, 0] })
-    )
+  if (!data || !data.length) return React.createElement('div', { className: 'text-xs text-slate-400 py-4 text-center' }, 'Sem dados');
+  var max = Math.max.apply(null, data.map(function(d) { return d.value; })) || 1;
+  var fill = color || '#6366f1';
+  return React.createElement('div', { className: 'space-y-1.5' },
+    ...data.map(function(d, i) {
+      var pct = (d.value / max * 100).toFixed(1);
+      return React.createElement('div', { key: i, className: 'flex items-center gap-2' },
+        React.createElement('div', {
+          className: 'text-xs text-slate-500 text-right flex-shrink-0 truncate',
+          style: { width: '140px' },
+          title: String(d.name)
+        }, String(d.name)),
+        React.createElement('div', { className: 'flex-1 flex items-center gap-1.5' },
+          React.createElement('div', {
+            style: { width: pct + '%', background: fill, height: '16px', borderRadius: '3px', minWidth: '2px', transition: 'width .4s' }
+          }),
+          React.createElement('span', { className: 'text-xs text-slate-500 whitespace-nowrap' },
+            d.value.toLocaleString('pt-BR')
+          )
+        )
+      );
+    })
   );
 }
 function _gPie(data) {
-  var RC = window.Recharts;
-  if (!RC) return React.createElement('div', { className: 'text-xs text-slate-400 p-4 text-center' }, 'Carregando biblioteca de gráficos...');
-  return React.createElement(RC.ResponsiveContainer, { width: '100%', height: 240 },
-    React.createElement(RC.PieChart, null,
-      React.createElement(RC.Pie, {
-        data: data, dataKey: 'value', nameKey: 'name',
-        cx: '50%', cy: '50%', outerRadius: 85,
-        label: function(o) { return String(o.name || '').slice(0, 15) + ' ' + (o.percent * 100).toFixed(0) + '%'; },
-        labelLine: false
-      },
-        ...GLOBE_COLORS.map(function(c, i) { return React.createElement(RC.Cell, { key: i, fill: c }); })
-      ),
-      React.createElement(RC.Tooltip, null)
-    )
+  if (!data || !data.length) return React.createElement('div', { className: 'text-xs text-slate-400 py-4 text-center' }, 'Sem dados');
+  var total = data.reduce(function(s, d) { return s + d.value; }, 0) || 1;
+  return React.createElement('div', { className: 'space-y-1.5' },
+    ...data.map(function(d, i) {
+      var pct = (d.value / total * 100).toFixed(1);
+      return React.createElement('div', { key: i, className: 'flex items-center gap-2' },
+        React.createElement('div', {
+          style: { width: '10px', height: '10px', borderRadius: '50%', background: GLOBE_COLORS[i % GLOBE_COLORS.length], flexShrink: 0 }
+        }),
+        React.createElement('div', { className: 'text-xs text-slate-600 flex-1 truncate', title: String(d.name) }, String(d.name)),
+        React.createElement('div', { className: 'text-xs font-semibold text-slate-700 w-10 text-right' }, pct + '%'),
+        React.createElement('div', { className: 'text-xs text-slate-400 w-16 text-right' }, d.value.toLocaleString('pt-BR'))
+      );
+    })
   );
 }
 
