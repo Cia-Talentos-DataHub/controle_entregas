@@ -4557,24 +4557,28 @@ function GlobeFotografiaView({ token }) {
         var ts    = meta.ts   || {};
         var years = (meta.meta && meta.meta.years) || GLOBE_YEARS;
 
-        // 2. Arquivos de ano em paralelo
-        setLoadMsg('Carregando ' + years.length + ' arquivos de ano…'); setLoadPct(10);
-        var yearResults = await Promise.all(
-          years.map(function(yr) { return fetchSPJson('globe_' + yr + '.json'); })
-        );
-        if (cancelled) return;
-
-        // 3. Processar todos os anos
-        setLoadMsg('Processando dados…'); setLoadPct(70);
+        // 2. Arquivos de ano — sequencial com progresso por ano
         var pIdx       = new Map();
         var perPessoa  = new Map();
         var byProcesso = {};
         var totalCandRef = [0];
         var iPessoaMap = new Map();
-        for (var yi = 0; yi < yearResults.length; yi++) {
-          processYearData(yearResults[yi], cats, pIdx, perPessoa, byProcesso, totalCandRef, iPessoaMap);
+        var erros = [];
+        for (var yi = 0; yi < years.length; yi++) {
+          if (cancelled) return;
+          var yr  = years[yi];
+          var pct = 10 + Math.round((yi / years.length) * 80);
+          setLoadMsg('Carregando ' + yr + '… (' + (yi+1) + '/' + years.length + ')');
+          setLoadPct(pct);
+          try {
+            var yrData = await fetchSPJson('globe_' + yr + '.json');
+            processYearData(yrData, cats, pIdx, perPessoa, byProcesso, totalCandRef, iPessoaMap);
+          } catch(e) {
+            erros.push(yr + ': ' + String(e.message||e).slice(0,60));
+          }
         }
         if (cancelled) return;
+        if (erros.length) setError('Aviso — anos com erro: ' + erros.join(' | '));
 
         setPessoaIdx(pIdx);
         setCandAggr({ perPessoa: perPessoa, byProcesso: byProcesso, totalCand: totalCandRef[0],
