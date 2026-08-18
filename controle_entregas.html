@@ -4281,7 +4281,24 @@ const GLOBE_SP_BASE = '/sites/Public/Documentos Partilhados/CIA/GeralCT/Indicado
 const GLOBE_YEARS = [2015,2016,2017,2018,2019,2020,2021,2022,2023,2024,2025,2026];
 const GLOBE_COLORS = ['#6366f1','#22c55e','#f59e0b','#ef4444','#14b8a6','#8b5cf6','#f97316','#06b6d4'];
 
-async function loadGlobeParquet(token, year, file, onProg) {
+// Column projection allowlists — only load the fields the dashboard actually uses.
+// Each parquet may have 60-100+ columns; restricting to these saves ~70% memory.
+const GLOBE_PESSOAS_COLS = [
+  'codigo_pessoa','status','identidade_genero','raca_cor','estado','cidade','regiao','pais',
+  'idade','data_cadastro','renda_familiar','pcd_cadastro','orientacao_afetivo_sexual',
+  'graduacao_1_curso','graduacao_2_curso','graduacao_3_curso',
+  'graduacao_1_instituicao','graduacao_1_tipo','graduacao_1_modalidade',
+  'pos_1_curso','tecnico_1_curso','dias_cadastro_ate_primeira_candidatura','quantidade_processos'
+];
+const GLOBE_CAND_COLS = [
+  'codigo_pessoa','codigo_processo','nome_processo','data_candidatura','etapa_atual','ordem_etapa'
+];
+const GLOBE_IDIOMAS_COLS = ['codigo_pessoa','idioma','nivel'];
+
+// loadGlobeParquet — fetches one year/file parquet and returns only the requested columns.
+// columns param (optional): string[]. When provided, only those columns are decoded,
+// dramatically reducing memory. Columns absent from the actual schema are silently ignored.
+async function loadGlobeParquet(token, year, file, onProg, columns) {
   let tries = 0;
   while (!window._hyparquet && tries < 30) { await new Promise(r => setTimeout(r, 200)); tries++; }
   if (!window._hyparquet) throw new Error('Módulo Parquet não disponível — recarregue a página.');
@@ -4322,27 +4339,50 @@ async function loadGlobeParquet(token, year, file, onProg) {
       if (leafCols.length > 0) schemaColNames = leafCols;
     } catch (e) { console.warn('[loadGlobeParquet parquetMetadata sync]', e.message); }
   }
-  const rawRows = [];
-  await window._hyparquet.parquetRead({
-    file: asyncBuf,
-    compressors: window._hyparquetCompressors || {},
-    onComplete: data => {
-      for (const r of data) {
-        const rIsArr = Array.isArray(r);
-        const rIsNumObj = !rIsArr && r !== null && typeof r === 'object' && '0' in r;
-        if ((rIsArr || rIsNumObj) && schemaColNames) {
-          const obj = {};
-          for (let i = 0; i < schemaColNames.length; i++) {
-            obj[schemaColNames[i]] = rIsArr ? r[i] : r[String(i)];
-          }
-          rawRows.push(obj);
-        } else {
-          rawRows.push(r);
-        }
-      }
-      onProg && onProg(`Processando... ${rawRows.length.toLocaleString('pt-BR')} registros`);
+  // Determine which columns to actually load. If caller specified a list,
+  // intersect with actual schema (preserving schema order) to avoid errors.
+  var effectiveCols = null;
+  if (columns && columns.length > 0) {
+    if (schemaColNames && schemaColNames.length > 0) {
+      // Keep schema order so array-indexed rows align correctly
+      var colSet = {};
+      for (var ci2 = 0; ci2 < columns.length; ci2++) colSet[columns[ci2]] = true;
+      effectiveCols = schemaColNames.filter(function(c) { return colSet[c]; });
+    } else {
+      effectiveCols = columns; // schema unknown, try as-is
     }
-  });
+    // Update normalization schema to match projected columns only
+    if (effectiveCols.length > 0) schemaColNames = effectiveCols;
+  }
+
+  var readOpts = {
+    file: asyncBuf,
+    compressors: window._hyparquetCompressors || {}
+  };
+  if (effectiveCols && effectiveCols.length > 0) {
+    readOpts.columns = effectiveCols;
+  }
+
+  const rawRows = [];
+  readOpts.onComplete = function(data) {
+    for (var ri = 0; ri < data.length; ri++) {
+      var r = data[ri];
+      var rIsArr = Array.isArray(r);
+      var rIsNumObj = !rIsArr && r !== null && typeof r === 'object' && '0' in r;
+      if ((rIsArr || rIsNumObj) && schemaColNames) {
+        var obj = {};
+        for (var i = 0; i < schemaColNames.length; i++) {
+          obj[schemaColNames[i]] = rIsArr ? r[i] : r[String(i)];
+        }
+        rawRows.push(obj);
+      } else {
+        rawRows.push(r);
+      }
+    }
+    onProg && onProg('Processando... ' + rawRows.length.toLocaleString('pt-BR') + ' registros');
+  };
+
+  await window._hyparquet.parquetRead(readOpts);
   return rawRows;
 }
 
@@ -4431,7 +4471,7 @@ function GlobeFotografiaView({ token }) {
         var py = years[pi];
         try {
           prog('pessoas ' + py);
-          var pRows = await loadGlobeParquet(token, py, 'pessoas.parquet', function() {});
+          var pRows = await loadGlobeParquet(token, py, 'pessoas.parquet', function() {}, GLOBE_PESSOAS_COLS);
           for (var j = 0; j < pRows.length; j++) {
             var row = pRows[j];
             var pid = String(row.codigo_pessoa != null ? row.codigo_pessoa : '');
@@ -4450,7 +4490,7 @@ function GlobeFotografiaView({ token }) {
         var cy = years[ci];
         try {
           prog('candidaturas ' + cy);
-          var cRows = await loadGlobeParquet(token, cy, 'candidaturas.parquet', function() {});
+          var cRows = await loadGlobeParquet(token, cy, 'candidaturas.parquet', function() {}, GLOBE_CAND_COLS);
           for (var k = 0; k < cRows.length; k++) allC.push(cRows[k]);
           cRows = null;
         } catch (e) { erros.push('cand ' + cy + ': ' + String(e.message || e).slice(0, 40)); }
@@ -4464,7 +4504,7 @@ function GlobeFotografiaView({ token }) {
         var iy = years[ii];
         try {
           prog('idiomas ' + iy);
-          var iRows = await loadGlobeParquet(token, iy, 'idiomas.parquet', function() {});
+          var iRows = await loadGlobeParquet(token, iy, 'idiomas.parquet', function() {}, GLOBE_IDIOMAS_COLS);
           for (var l = 0; l < iRows.length; l++) allI.push(iRows[l]);
           iRows = null;
         } catch (e) { erros.push('idiomas ' + iy + ': ' + String(e.message || e).slice(0, 40)); }
