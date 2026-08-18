@@ -4444,16 +4444,16 @@ function _gBar(data, color, opts) {
 
 function GlobeFotografiaView({ token }) {
   var CE = React.createElement;
-  const [selectedYears, setSelectedYears] = useState(function() { return GLOBE_YEARS.slice(); });
-  const [showYearPicker, setShowYearPicker] = useState(false);
   const [loading, setLoading] = useState(false);
   const [loadPct, setLoadPct] = useState(0);
   const [loadMsg, setLoadMsg] = useState('');
   const [error, setError] = useState('');
-  const [pessoaIdx, setPessoaIdx] = useState(function() { return new Map(); });     // id -> minimal filter obj
-  const [pessoaContact, setPessoaContact] = useState(function() { return new Map(); }); // id -> {nome,email,tel,comm,st}
-  const [candAggr, setCandAggr] = useState(null);   // {perPessoa:Map, byProcesso:{}, totalCand:n}
-  const [idiomaAggr, setIdiomaAggr] = useState(null); // {pessoaIdiomaMap:Map, uniquePessoas:n}
+  const [pessoaIdx, setPessoaIdx] = useState(function() { return new Map(); });
+  const [pessoaContact, setPessoaContact] = useState(function() { return new Map(); });
+  const [contactLoaded, setContactLoaded] = useState(false);
+  const [contactLoading, setContactLoading] = useState(false);
+  const [candAggr, setCandAggr] = useState(null);
+  const [idiomaAggr, setIdiomaAggr] = useState(null);
   const [filters, setFilters] = useState({});
   const [showFilterPanel, setShowFilterPanel] = useState(false);
   const [cadPeriodo, setCadPeriodo] = useState('ano');
@@ -4461,143 +4461,136 @@ function GlobeFotografiaView({ token }) {
   const [expandedIdioma, setExpandedIdioma] = useState(null);
   const [pessoasSearch, setPessoasSearch] = useState('');
 
+  // ── Helpers SharePoint ────────────────────────────────────────────────────
+  var GLOBE_SP_HOST = 'https://ciadetalentos.sharepoint.com';
+  var GLOBE_JSON_BASE = GLOBE_SP_BASE; // mesma pasta base dos parquets
+  async function fetchSPJson(filename) {
+    var path = GLOBE_JSON_BASE + '/' + filename;
+    var url  = GLOBE_SP_HOST + "/sites/Public/_api/web/GetFileByServerRelativeUrl('" + path + "')/$value";
+    var resp = await fetch(url, { headers: { 'Authorization': 'Bearer ' + token } });
+    if (!resp.ok) throw new Error('Erro ao baixar ' + filename + ': HTTP ' + resp.status);
+    return resp.json();
+  }
+
+  // ── Carrega globe_meta.json + globe_YYYY.json do SharePoint ───────────────
   useEffect(function() {
-    if (!token || !selectedYears.length) return;
-    var years = selectedYears.slice().sort(function(a,b){return a-b;});
+    if (!token) return;
     var cancelled = false;
+    var EPOCH_MS = new Date('2010-01-01').getTime();
+    var DAY_MS   = 86400000;
+
+    // Processa linhas de um arquivo de ano e acumula nos mapas globais
+    function processYearData(yrData, cats, pIdx, perPessoa, byProcesso, totalCandRef, iPessoaMap) {
+      var rows     = yrData.p || [];
+      var ppObj    = yrData.pp || {};
+      var idObj    = yrData.id || {};
+      var procCats = cats.proc    || [];
+      var idiomaCats = cats.idioma || [];
+      var nivelCats  = cats.nivel  || [];
+      for (var i = 0; i < rows.length; i++) {
+        var row  = rows[i];
+        var pid  = String(row[0]);
+        var dcad = row[23], dmod = row[24];
+        pIdx.set(pid, {
+          st:   (cats.st   || [])[row[1]]  || '',
+          g:    (cats.g    || [])[row[2]]  || '',
+          r:    (cats.r    || [])[row[3]]  || '',
+          e:    (cats.e    || [])[row[4]]  || '',
+          c:    (cats.c    || [])[row[5]]  || '',
+          re:   (cats.re   || [])[row[6]]  || '',
+          pa:   (cats.pa   || [])[row[7]]  || '',
+          pc:   (cats.pc   || [])[row[8]]  || '',
+          td:   (cats.td   || [])[row[9]]  || '',
+          rend: (cats.rend || [])[row[10]] || '',
+          oas:  (cats.oas  || [])[row[11]] || '',
+          ins:  (cats.ins  || [])[row[12]] || '',
+          tip:  (cats.tip  || [])[row[13]] || '',
+          mod:  (cats.mod  || [])[row[14]] || '',
+          tec:  (cats.tec  || [])[row[15]] || '',
+          tic:  (cats.tic  || [])[row[16]] || '',
+          pos:  (cats.pos  || [])[row[17]] || '',
+          cur1: (cats.c1   || [])[row[18]] || '',
+          cur2: (cats.c2   || [])[row[19]] || '',
+          cur3: (cats.c3   || [])[row[20]] || '',
+          comm: (cats.comm || [])[row[21]] || '',
+          idade: row[22],
+          dCad: dcad ? EPOCH_MS + dcad * DAY_MS : 0,
+          dMod: dmod ? EPOCH_MS + dmod * DAY_MS : 0,
+          dias: row[25],
+        });
+        // Candidaturas
+        var cc    = row[26];
+        var cmaxD = row[27];
+        if (cc > 0) {
+          var procIdxList = ppObj[pid] || [];
+          var procObj = {};
+          for (var j = 0; j < procIdxList.length; j++) {
+            var pname = procCats[procIdxList[j]] || '';
+            if (pname) { procObj[pname] = (procObj[pname]||0)+1; byProcesso[pname] = (byProcesso[pname]||0)+1; }
+          }
+          perPessoa.set(pid, { cnt: cc, maxDate: cmaxD ? EPOCH_MS + cmaxD * DAY_MS : 0, procs: procObj, dates: [] });
+          totalCandRef[0] += cc;
+        }
+        // Idiomas
+        var iList = idObj[pid];
+        if (iList) {
+          var out = [];
+          for (var m = 0; m < iList.length; m++) {
+            out.push({ i: idiomaCats[iList[m][0]] || '(Vazio)', n: nivelCats[iList[m][1]] || '(Vazio)' });
+          }
+          iPessoaMap.set(pid, out);
+        }
+      }
+    }
+
     async function load() {
       setLoading(true); setError('');
       setPessoaIdx(new Map()); setPessoaContact(new Map());
       setCandAggr(null); setIdiomaAggr(null);
-      setFilters({});
-      var totalSteps = years.length * 3;
-      var doneSteps = 0;
-      var erros = [];
-      function step(msg) {
-        if (!cancelled) {
-          doneSteps++;
-          setLoadPct(Math.round(doneSteps / totalSteps * 100));
-          setLoadMsg(msg);
+      setContactLoaded(false); setFilters({});
+      try {
+        // 1. Meta (pequeno, rápido)
+        setLoadMsg('Carregando globe_meta.json…'); setLoadPct(5);
+        var meta = await fetchSPJson('globe_meta.json');
+        if (cancelled) return;
+        var cats  = meta.cats || {};
+        var ts    = meta.ts   || {};
+        var years = (meta.meta && meta.meta.years) || GLOBE_YEARS;
+
+        // 2. Arquivos de ano em paralelo
+        setLoadMsg('Carregando ' + years.length + ' arquivos de ano…'); setLoadPct(10);
+        var yearResults = await Promise.all(
+          years.map(function(yr) { return fetchSPJson('globe_' + yr + '.json'); })
+        );
+        if (cancelled) return;
+
+        // 3. Processar todos os anos
+        setLoadMsg('Processando dados…'); setLoadPct(70);
+        var pIdx       = new Map();
+        var perPessoa  = new Map();
+        var byProcesso = {};
+        var totalCandRef = [0];
+        var iPessoaMap = new Map();
+        for (var yi = 0; yi < yearResults.length; yi++) {
+          processYearData(yearResults[yi], cats, pIdx, perPessoa, byProcesso, totalCandRef, iPessoaMap);
         }
-      }
-      // 1. Pessoas — extract minimal objects to cut memory ~60%
-      function _extractComm(row) {
-        var cc = ['aceita_mensagem','aceita_mensagens','aceita_comunicacao','aceita_email','aceita_sms','aceita_whatsapp','opt_in_email','opt_in_sms'];
-        for (var i = 0; i < cc.length; i++) { var v = row[cc[i]]; if (v != null && String(v) !== '') return String(v); }
-        return '';
-      }
-      var pIdx = new Map();    // id -> minimal filter object
-      var pContact = new Map(); // id -> contact fields only
-      for (var pi = 0; pi < years.length; pi++) {
-        if (cancelled) break;
-        var py = years[pi];
-        try {
-          var pRows = await loadGlobeParquet(token, py, 'pessoas.parquet', function(){}, GLOBE_PESSOAS_COLS);
-          for (var j = 0; j < pRows.length; j++) {
-            var row = pRows[j];
-            var pid = String(row.codigo_pessoa != null ? row.codigo_pessoa : '');
-            if (!pid) continue;
-            var comm = _extractComm(row);
-            pIdx.set(pid, {
-              st:   String(row.status||'').trim(),
-              g:    String(row.identidade_genero||'').trim(),
-              r:    String(row.raca_cor||'').trim(),
-              e:    String(row.estado||'').trim(),
-              c:    String(row.cidade||'').trim(),
-              re:   String(row.regiao||'').trim(),
-              pa:   String(row.pais||'').trim(),
-              pc:   String(row.pcd_cadastro||'').trim(),
-              td:   String(row.tipo_deficiencia||row.pcd_tipo||'').trim(),
-              rend: String(row.renda_familiar||'').trim(),
-              oas:  String(row.orientacao_afetivo_sexual||'').trim(),
-              idade:Number(row.idade||0),
-              dCad: Number(row.data_cadastro||0),
-              dMod: Number(row.data_modificacao||row.data_atualizacao||0),
-              dias: Number(row.dias_cadastro_ate_primeira_candidatura||0),
-              cur1: String(row.graduacao_1_curso||'').trim(),
-              cur2: String(row.graduacao_2_curso||'').trim(),
-              cur3: String(row.graduacao_3_curso||'').trim(),
-              ins:  String(row.graduacao_1_instituicao||'').trim(),
-              tip:  String(row.graduacao_1_tipo||'').trim(),
-              mod:  String(row.graduacao_1_modalidade||'').trim(),
-              tec:  String(row.tecnico_1_curso||'').trim(),
-              tic:  String(row.tecnico_1_instituicao||'').trim(),
-              pos:  String(row.pos_1_curso||'').trim(),
-              comm: comm
-            });
-            pContact.set(pid, {
-              nome:  String(row.nome||row.nome_completo||row.nome_pessoa||'').trim(),
-              email: String(row.email||row.email_pessoal||'').trim(),
-              tel:   String(row.telefone||row.telefone_celular||row.celular||'').trim(),
-              comm:  comm,
-              st:    String(row.status||'').trim()
-            });
-          }
-          pRows = null;
-        } catch(e) { erros.push('pessoas ' + py + ': ' + String(e.message||e).slice(0,40)); }
-        step('Pessoas ' + py);
-      }
-      if (!cancelled) { setPessoaIdx(pIdx); setPessoaContact(pContact); }
-      pIdx = null; pContact = null;
-      // 2. Candidaturas — aggregate per-pessoa instead of storing raw rows
-      var cPerPessoa = new Map(); // pid -> {cnt, maxDate, procs:{nome:n}, dates:[]}
-      var cByProcesso = {};       // nome_processo -> total count (global)
-      var cTotalCand = 0;
-      for (var ci = 0; ci < years.length; ci++) {
-        if (cancelled) break;
-        var cy = years[ci];
-        try {
-          var cRows = await loadGlobeParquet(token, cy, 'candidaturas.parquet', function(){}, GLOBE_CAND_COLS);
-          for (var k = 0; k < cRows.length; k++) {
-            var cr = cRows[k];
-            var cid = String(cr.codigo_pessoa != null ? cr.codigo_pessoa : '');
-            if (!cid) continue;
-            var proc = String(cr.nome_processo||'').trim();
-            var cts = Number(cr.data_candidatura || 0);
-            var cp = cPerPessoa.get(cid);
-            if (!cp) { cp = {cnt:0, maxDate:0, procs:{}, dates:[]}; cPerPessoa.set(cid, cp); }
-            cp.cnt++;
-            if (cts > cp.maxDate) cp.maxDate = cts;
-            if (proc) cp.procs[proc] = (cp.procs[proc]||0) + 1;
-            if (cts) cp.dates.push(cts);
-            if (proc) cByProcesso[proc] = (cByProcesso[proc]||0) + 1;
-            cTotalCand++;
-          }
-          cRows = null;
-        } catch(e) { erros.push('cand ' + cy + ': ' + String(e.message||e).slice(0,40)); }
-        step('Candidaturas ' + cy);
-      }
-      if (!cancelled) setCandAggr({perPessoa:cPerPessoa, byProcesso:cByProcesso, totalCand:cTotalCand});
-      cPerPessoa = null;
-      // 3. Idiomas — aggregate per-pessoa instead of storing raw rows
-      var iPessoaMap = new Map(); // pid -> [{i:idioma, n:nivel}]
-      for (var ii = 0; ii < years.length; ii++) {
-        if (cancelled) break;
-        var iy = years[ii];
-        try {
-          var iRows = await loadGlobeParquet(token, iy, 'idiomas.parquet', function(){}, GLOBE_IDIOMAS_COLS);
-          for (var l = 0; l < iRows.length; l++) {
-            var ir = iRows[l];
-            var iid = String(ir.codigo_pessoa != null ? ir.codigo_pessoa : '');
-            if (!iid) continue;
-            var iEntry = iPessoaMap.get(iid);
-            if (!iEntry) { iEntry = []; iPessoaMap.set(iid, iEntry); }
-            iEntry.push({i: String(ir.idioma||'').trim()||'(Vazio)', n: String(ir.nivel||'').trim()||'(Vazio)'});
-          }
-          iRows = null;
-        } catch(e) { erros.push('idiomas ' + iy + ': ' + String(e.message||e).slice(0,40)); }
-        step('Idiomas ' + iy);
-      }
-      if (!cancelled) setIdiomaAggr({pessoaIdiomaMap: iPessoaMap, uniquePessoas: iPessoaMap.size});
-      iPessoaMap = null;
-      if (!cancelled) {
-        if (erros.length) setError('Aviso: ' + erros.join(' | '));
-        setLoading(false); setLoadMsg(''); setLoadPct(0);
+        if (cancelled) return;
+
+        setPessoaIdx(pIdx);
+        setCandAggr({ perPessoa: perPessoa, byProcesso: byProcesso, totalCand: totalCandRef[0],
+                      byYear: ts.cand_y || {}, byMonth: ts.cand_m || {},
+                      cadByYear: ts.cad_y || {}, cadByMonth: ts.cad_m || {} });
+        setIdiomaAggr({ pessoaIdiomaMap: iPessoaMap, uniquePessoas: iPessoaMap.size });
+        // Guarda anos para uso no loadContacts
+        window._globeYears = years;
+        if (!cancelled) { setLoadPct(100); setLoadMsg(''); setLoading(false); }
+      } catch(err) {
+        if (!cancelled) { setError(String(err && err.message ? err.message : err)); setLoading(false); }
       }
     }
     load();
     return function() { cancelled = true; };
-  }, [token, selectedYears.join(',')]);
+  }, [token]); // Recarrega se o token mudar (renovação)
 
   function setFilter(key, val) {
     setFilters(function(f) { var n = Object.assign({}, f); if (n[key] === val) delete n[key]; else n[key] = val; return n; });
@@ -4622,7 +4615,6 @@ function GlobeFotografiaView({ token }) {
     var pp = candAggr ? candAggr.perPessoa : null;
     var comCand = 0, totalCandFiltered = 0;
     var byProcessoFiltered = {}, histCounts = {};
-    var candByYear = {}, candByMonth = {};
     // Idioma aggregation vars
     var filteredIdiomaGroups = {}, idiomaUniquePessoas = 0, idiomaTotal = 0;
 
@@ -4731,16 +4723,6 @@ function GlobeFotografiaView({ token }) {
         for (var pk = 0; pk < procKeys.length; pk++) {
           byProcessoFiltered[procKeys[pk]] = (byProcessoFiltered[procKeys[pk]]||0) + cp.procs[procKeys[pk]];
         }
-        for (var di = 0; di < cp.dates.length; di++) {
-          var dts = cp.dates[di];
-          if (!dts) continue;
-          var dd = new Date(dts);
-          if (isNaN(dd.getTime())) continue;
-          var dyr = String(dd.getFullYear());
-          candByYear[dyr] = (candByYear[dyr]||0) + 1;
-          var dym = dyr + '-' + String(dd.getMonth()+1).padStart(2,'0');
-          candByMonth[dym] = (candByMonth[dym]||0) + 1;
-        }
       }
 
       // Accumulate idioma stats from per-pessoa aggregate
@@ -4779,7 +4761,8 @@ function GlobeFotografiaView({ token }) {
               idadeMed:idadeMed, idadeMin:idadeMin, idadeMax:idadeMax, diasMed:diasMed },
       cand: { comCand:comCand, totalCandFiltered:totalCandFiltered,
               byProcessoFiltered:byProcessoFiltered, histCounts:histCounts,
-              byYear:candByYear, byMonth:candByMonth },
+              byYear:  candAggr ? candAggr.byYear  : {},
+              byMonth: candAggr ? candAggr.byMonth : {} },
       idiomaGroups: filteredIdiomaGroups,
       idiomaStats: { uniquePessoas:idiomaUniquePessoas, totalDecl:idiomaTotal }
     };
@@ -4884,7 +4867,6 @@ function GlobeFotografiaView({ token }) {
     var statusData = _gAllSorted(computedData.counts.status);
     var procData = _gAllSorted(cand.byProcessoFiltered||{});
     return CE('div', null,
-      selectedYears.length > 1 ? CE('div',{style:{marginBottom:14,padding:'8px 14px',background:'#f0f9ff',border:'1px solid #bae6fd',borderRadius:8,fontSize:12,color:'#0369a1'}},'ℹ️ Exibindo '+selectedYears.length+' anos ('+Math.min.apply(null,selectedYears)+'–'+Math.max.apply(null,selectedYears)+'). Duplicatas deduplicadas pelo registro mais recente.') : null,
       kpiRow([
         ['Total no Banco',total.toLocaleString('pt-BR'),'#6366f1'],
         ['Com Candidatura',comCand.toLocaleString('pt-BR'),'#22c55e'],
@@ -5024,18 +5006,70 @@ function GlobeFotografiaView({ token }) {
     );
   }
 
+  async function loadContacts() {
+    setContactLoading(true);
+    try {
+      var years = window._globeYears || GLOBE_YEARS;
+      // Busca todos os arquivos de contato em paralelo
+      var results = await Promise.all(
+        years.map(function(yr) {
+          return fetchSPJson('globe_contatos_' + yr + '.json').catch(function() { return {c:{}}; });
+        })
+      );
+      var m = new Map();
+      for (var ri = 0; ri < results.length; ri++) {
+        var cmap = results[ri].c || {};
+        var pids = Object.keys(cmap);
+        for (var i = 0; i < pids.length; i++) {
+          var pid = pids[i], arr = cmap[pid];
+          m.set(pid, { nome: arr[0]||'', email: arr[1]||'', tel: arr[2]||'' });
+        }
+      }
+      setPessoaContact(m);
+      setContactLoaded(true);
+    } catch(e) {
+      alert('Erro ao carregar contatos: ' + String(e.message||e));
+    }
+    setContactLoading(false);
+  }
+
   function renderPessoas() {
-    // Collect matching contact records from the lightweight pessoaContact Map
     var fids = computedData.filteredIds;
     var sq = pessoasSearch.toLowerCase();
+    var total = computedData.total;
+
+    // ── Tela de prompt para carregar contatos (lazy) ─────────────────────────
+    if (!contactLoaded) {
+      return CE('div',{style:{textAlign:'center',padding:'60px 20px'}},
+        CE('div',{style:{fontSize:40,marginBottom:16}},'📋'),
+        CE('div',{style:{fontSize:15,fontWeight:700,color:'#1e293b',marginBottom:8}},
+           fids.size.toLocaleString('pt-BR') + ' pessoas no filtro atual'),
+        CE('div',{style:{fontSize:13,color:'#64748b',marginBottom:24,maxWidth:400,margin:'0 auto 24px'}},
+           'Os contatos (nome, e-mail, telefone) ficam num arquivo separado para economizar memória. Clique para carregá-los.'),
+        CE('button',{
+          disabled: contactLoading,
+          onClick: loadContacts,
+          style:{fontSize:14,fontWeight:700,background:'#6366f1',color:'#fff',border:'none',
+                 borderRadius:10,padding:'12px 28px',cursor:contactLoading?'default':'pointer',
+                 opacity:contactLoading?0.7:1}},
+          contactLoading ? '⏳ Carregando…' : '📥 Carregar contatos')
+      );
+    }
+
     var visible = []; // [{pid, nome, email, tel, comm, st}]
     fids.forEach(function(pid) {
       var p = pessoaContact.get(pid);
-      if (!p) return;
+      var pf = pessoaIdx.get(pid);
+      if (!p && !pf) return;
+      var nome  = p ? p.nome  : '';
+      var email = p ? p.email : '';
+      var tel   = p ? p.tel   : '';
+      var comm  = pf ? pf.comm : '';
+      var st    = pf ? pf.st  : '';
       if (sq) {
-        if (p.nome.toLowerCase().indexOf(sq) < 0 && p.email.toLowerCase().indexOf(sq) < 0 && pid.indexOf(sq) < 0) return;
+        if (nome.toLowerCase().indexOf(sq) < 0 && email.toLowerCase().indexOf(sq) < 0 && pid.indexOf(sq) < 0) return;
       }
-      visible.push({pid:pid, nome:p.nome||'—', email:p.email||'—', tel:p.tel||'—', comm:p.comm||'—', st:p.st||'—'});
+      visible.push({pid:pid, nome:nome||'—', email:email||'—', tel:tel||'—', comm:comm||'—', st:st||'—'});
     });
     var shown = visible.slice(0, 500);
     var total = computedData.total;
@@ -5182,21 +5216,7 @@ function GlobeFotografiaView({ token }) {
           CE('div',{style:{fontSize:11,color:'#94a3b8',marginTop:1}},computedData.total.toLocaleString('pt-BR')+' pessoas \xb7 '+(computedData.cand?computedData.cand.totalCandFiltered:0).toLocaleString('pt-BR')+' candidaturas'+(activeFilters.length>0?' (filtrado)':''))
         ),
         CE('button',{onClick:function(){setShowFilterPanel(!showFilterPanel);},style:{display:'flex',alignItems:'center',gap:6,background:activeFilters.length>0?'#eef2ff':'#f8fafc',border:activeFilters.length>0?'1px solid #c7d2fe':'1px solid #e2e8f0',borderRadius:8,padding:'7px 14px',fontSize:13,cursor:'pointer',color:activeFilters.length>0?'#6366f1':'#334155',fontWeight:500}},'🔍 Filtros'+(activeFilters.length>0?' ('+activeFilters.length+')':'')),
-        CE('div',{style:{position:'relative'}},
-          CE('button',{onClick:function(){setShowYearPicker(!showYearPicker);},style:{display:'flex',alignItems:'center',gap:6,background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8,padding:'7px 14px',fontSize:13,cursor:'pointer',color:'#334155',fontWeight:500}},'📅 '+(selectedYears.length===GLOBE_YEARS.length?'Todos os anos':selectedYears.length===1?String(selectedYears[0]):selectedYears.length+' anos')+' ▾'),
-          showYearPicker?CE('div',{style:{position:'absolute',top:'100%',right:0,marginTop:6,background:'#fff',border:'1px solid #e2e8f0',borderRadius:12,padding:16,boxShadow:'0 8px 24px rgba(0,0,0,0.12)',zIndex:200,minWidth:300}},
-            CE('div',{style:{display:'flex',gap:8,marginBottom:12}},
-              CE('button',{onClick:function(){setSelectedYears(GLOBE_YEARS.slice());setShowYearPicker(false);},style:{fontSize:12,background:'#6366f1',color:'#fff',border:'none',borderRadius:6,padding:'5px 12px',cursor:'pointer'}},'Todos'),
-              CE('button',{onClick:function(){setShowYearPicker(false);},style:{fontSize:12,background:'#f1f5f9',color:'#64748b',border:'none',borderRadius:6,padding:'5px 12px',cursor:'pointer',marginLeft:'auto'}},'✕ Fechar')
-            ),
-            CE('div',{style:{display:'flex',flexWrap:'wrap',gap:6}},
-              ...GLOBE_YEARS.map(function(y){
-                var sel=selectedYears.indexOf(y)>=0;
-                return CE('button',{key:y,onClick:function(){var yy=y;setSelectedYears(function(prev){if(prev.indexOf(yy)>=0){if(prev.length===1)return prev;return prev.filter(function(x){return x!==yy;});}return prev.concat([yy]).sort(function(a,b){return a-b;});});},style:{fontSize:13,fontWeight:sel?700:400,background:sel?'#6366f1':'#f8fafc',color:sel?'#fff':'#475569',border:sel?'1px solid #6366f1':'1px solid #e2e8f0',borderRadius:7,padding:'5px 14px',cursor:'pointer'}},String(y));
-              })
-            )
-          ):null
-        ),
+        CE('div',{style:{fontSize:12,color:'#94a3b8',padding:'7px 10px',background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}, '📅 '+Math.min.apply(null,GLOBE_YEARS)+'–'+Math.max.apply(null,GLOBE_YEARS)),
         activeFilters.length>0?CE('button',{onClick:function(){setFilters({});},style:{fontSize:12,background:'#fee2e2',color:'#dc2626',border:'none',borderRadius:8,padding:'7px 14px',cursor:'pointer',fontWeight:600}},'\xd7 Limpar '+activeFilters.length):null
       ),
       activeFilters.length>0?CE('div',{style:{display:'flex',flexWrap:'wrap',gap:6,padding:'8px 20px',background:'#fff',borderBottom:'1px solid #e2e8f0'}},
@@ -5213,7 +5233,7 @@ function GlobeFotografiaView({ token }) {
       ):null,
       error?CE('div',{style:{margin:'12px 20px 0',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:10,padding:'10px 16px',fontSize:12,color:'#92400e'}},'⚠️ '+error):null,
       CE('div',{style:{padding:'20px'}},
-        computedData.total===0&&!loading?CE('div',{style:{textAlign:'center',color:'#94a3b8',padding:'80px 0',fontSize:14}},'📅 Selecione um ou mais anos para carregar os dados. Carregando automaticamente…'):
+        computedData.total===0&&!loading?CE('div',{style:{textAlign:'center',color:'#94a3b8',padding:'80px 0',fontSize:14}},'📂 Nenhum dado encontrado. Verifique se o arquivo globe_index.json está na mesma pasta do index.html.'):
         !loading?(function(){
           try {
             return CE('div',null,
