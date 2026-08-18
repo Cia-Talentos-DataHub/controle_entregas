@@ -4448,12 +4448,10 @@ function GlobeFotografiaView({ token }) {
   const [loadPct, setLoadPct] = useState(0);
   const [loadMsg, setLoadMsg] = useState('');
   const [error, setError] = useState('');
-  const [pessoaIdx, setPessoaIdx] = useState(function() { return new Map(); });
+  const [globeData, setGlobeData] = useState(null);
   const [pessoaContact, setPessoaContact] = useState(function() { return new Map(); });
   const [contactLoaded, setContactLoaded] = useState(false);
   const [contactLoading, setContactLoading] = useState(false);
-  const [candAggr, setCandAggr] = useState(null);
-  const [idiomaAggr, setIdiomaAggr] = useState(null);
   const [filters, setFilters] = useState({});
   const [showFilterPanel, setShowFilterPanel] = useState(false);
   const [cadPeriodo, setCadPeriodo] = useState('ano');
@@ -4479,74 +4477,39 @@ function GlobeFotografiaView({ token }) {
     var EPOCH_MS = new Date('2010-01-01').getTime();
     var DAY_MS   = 86400000;
 
-    // Processa linhas de um arquivo de ano e acumula nos mapas globais
-    function processYearData(yrData, cats, pIdx, perPessoa, byProcesso, totalCandRef, iPessoaMap) {
-      var rows     = yrData.p || [];
-      var ppObj    = yrData.pp || {};
-      var idObj    = yrData.id || {};
-      var procCats = cats.proc    || [];
-      var idiomaCats = cats.idioma || [];
-      var nivelCats  = cats.nivel  || [];
-      for (var i = 0; i < rows.length; i++) {
-        var row  = rows[i];
-        var pid  = String(row[0]);
-        var dcad = row[23], dmod = row[24];
-        pIdx.set(pid, {
-          st:   (cats.st   || [])[row[1]]  || '',
-          g:    (cats.g    || [])[row[2]]  || '',
-          r:    (cats.r    || [])[row[3]]  || '',
-          e:    (cats.e    || [])[row[4]]  || '',
-          c:    (cats.c    || [])[row[5]]  || '',
-          re:   (cats.re   || [])[row[6]]  || '',
-          pa:   (cats.pa   || [])[row[7]]  || '',
-          pc:   (cats.pc   || [])[row[8]]  || '',
-          td:   (cats.td   || [])[row[9]]  || '',
-          rend: (cats.rend || [])[row[10]] || '',
-          oas:  (cats.oas  || [])[row[11]] || '',
-          ins:  (cats.ins  || [])[row[12]] || '',
-          tip:  (cats.tip  || [])[row[13]] || '',
-          mod:  (cats.mod  || [])[row[14]] || '',
-          tec:  (cats.tec  || [])[row[15]] || '',
-          tic:  (cats.tic  || [])[row[16]] || '',
-          pos:  (cats.pos  || [])[row[17]] || '',
-          cur1: (cats.c1   || [])[row[18]] || '',
-          cur2: (cats.c2   || [])[row[19]] || '',
-          cur3: (cats.c3   || [])[row[20]] || '',
-          comm: (cats.comm || [])[row[21]] || '',
-          idade: row[22],
-          dCad: dcad ? EPOCH_MS + dcad * DAY_MS : 0,
-          dMod: dmod ? EPOCH_MS + dmod * DAY_MS : 0,
-          dias: row[25],
-        });
-        // Candidaturas
-        var cc    = row[26];
-        var cmaxD = row[27];
-        if (cc > 0) {
-          var procIdxList = ppObj[pid] || [];
-          var procObj = {};
-          for (var j = 0; j < procIdxList.length; j++) {
-            var pname = procCats[procIdxList[j]] || '';
-            if (pname) { procObj[pname] = (procObj[pname]||0)+1; byProcesso[pname] = (byProcesso[pname]||0)+1; }
-          }
-          perPessoa.set(pid, { cnt: cc, maxDate: cmaxD ? EPOCH_MS + cmaxD * DAY_MS : 0, procs: procObj, dates: [] });
-          totalCandRef[0] += cc;
-        }
-        // Idiomas
-        var iList = idObj[pid];
-        if (iList) {
-          var out = [];
-          for (var m = 0; m < iList.length; m++) {
-            out.push({ i: idiomaCats[iList[m][0]] || '(Vazio)', n: nivelCats[iList[m][1]] || '(Vazio)' });
-          }
-          iPessoaMap.set(pid, out);
-        }
+    // Processa linhas de um arquivo de ano e acumula nos TypedArrays do builder
+    function processYearData(yrData, cats, b) {
+      var rows=yrData.p||[], ppObj=yrData.pp||{}, idObj=yrData.id||{};
+      var procCats=cats.proc||[], idiomaCats=cats.idioma||[], nivelCats=cats.nivel||[];
+      for (var i=0;i<rows.length;i++) {
+        var row=rows[i]; var idx=b.n++; b.pids[idx]=String(row[0]); b.pidToIdx.set(b.pids[idx],idx);
+        b.st[idx]=row[1]; b.g[idx]=row[2]; b.r[idx]=row[3]; b.e[idx]=row[4]; b.c[idx]=row[5];
+        b.re[idx]=row[6]; b.pa[idx]=row[7]; b.pc[idx]=row[8]; b.td[idx]=row[9]; b.rend[idx]=row[10];
+        b.oas[idx]=row[11]; b.ins[idx]=row[12]; b.tip[idx]=row[13]; b.mod[idx]=row[14];
+        b.tec[idx]=row[15]; b.tic[idx]=row[16]; b.pos[idx]=row[17]; b.c1[idx]=row[18];
+        b.c2[idx]=row[19]; b.c3[idx]=row[20]; b.comm[idx]=row[21];
+        b.idade[idx]=Math.min(row[22]||0,127); b.dcad[idx]=row[23]||0; b.dmod[idx]=row[24]||0;
+        b.dias[idx]=Math.min(row[25]||0,65535); b.cc[idx]=Math.min(row[26]||0,65535); b.cmax[idx]=row[27]||0;
+      }
+      var ppids=Object.keys(ppObj);
+      for (var k=0;k<ppids.length;k++) {
+        var pid=ppids[k]; var idx=b.pidToIdx.get(pid); if(idx===undefined) continue;
+        var list=ppObj[pid]; var obj={};
+        for (var j=0;j<list.length;j++) { var pn=procCats[list[j]]||''; if(pn){obj[pn]=(obj[pn]||0)+1;b.byProcesso[pn]=(b.byProcesso[pn]||0)+1;} }
+        b.candProcs[idx]=obj;
+      }
+      var ipids=Object.keys(idObj);
+      for (var k=0;k<ipids.length;k++) {
+        var pid=ipids[k]; var idx=b.pidToIdx.get(pid); if(idx===undefined) continue;
+        var iList=idObj[pid]; var out=[];
+        for (var m=0;m<iList.length;m++) out.push({i:idiomaCats[iList[m][0]]||'(Vazio)',n:nivelCats[iList[m][1]]||'(Vazio)'});
+        b.idiomaData[idx]=out;
       }
     }
 
     async function load() {
       setLoading(true); setError('');
-      setPessoaIdx(new Map()); setPessoaContact(new Map());
-      setCandAggr(null); setIdiomaAggr(null);
+      setGlobeData(null); setPessoaContact(new Map());
       setContactLoaded(false); setFilters({});
       try {
         // 1. Meta (pequeno, rápido)
@@ -4558,12 +4521,19 @@ function GlobeFotografiaView({ token }) {
         var years = (meta.meta && meta.meta.years) || GLOBE_YEARS;
 
         // 2. Arquivos de ano — sequencial com progresso por ano
-        var pIdx       = new Map();
-        var perPessoa  = new Map();
-        var byProcesso = {};
-        var totalCandRef = [0];
-        var iPessoaMap = new Map();
-        var erros = [];
+        var n_total=(meta.meta&&meta.meta.n)||4000000;
+        var b={n:0,pids:new Array(n_total),pidToIdx:new Map(),
+          st:new Uint8Array(n_total),g:new Uint8Array(n_total),r:new Uint8Array(n_total),
+          e:new Uint8Array(n_total),c:new Uint16Array(n_total),re:new Uint8Array(n_total),
+          pa:new Uint8Array(n_total),pc:new Uint8Array(n_total),td:new Uint8Array(n_total),
+          rend:new Uint8Array(n_total),oas:new Uint8Array(n_total),ins:new Uint16Array(n_total),
+          tip:new Uint8Array(n_total),mod:new Uint8Array(n_total),tec:new Uint16Array(n_total),
+          tic:new Uint16Array(n_total),pos:new Uint16Array(n_total),c1:new Uint16Array(n_total),
+          c2:new Uint16Array(n_total),c3:new Uint16Array(n_total),comm:new Uint8Array(n_total),
+          idade:new Uint8Array(n_total),dcad:new Uint16Array(n_total),dmod:new Uint16Array(n_total),
+          dias:new Uint16Array(n_total),cc:new Uint16Array(n_total),cmax:new Uint16Array(n_total),
+          candProcs:new Array(n_total),idiomaData:new Array(n_total),byProcesso:{}};
+        var erros=[];
         for (var yi = 0; yi < years.length; yi++) {
           if (cancelled) return;
           var yr  = years[yi];
@@ -4572,22 +4542,16 @@ function GlobeFotografiaView({ token }) {
           setLoadPct(pct);
           try {
             var yrData = await fetchSPJson('globe_' + yr + '.json');
-            processYearData(yrData, cats, pIdx, perPessoa, byProcesso, totalCandRef, iPessoaMap);
+            processYearData(yrData, cats, b);
           } catch(e) {
             erros.push(yr + ': ' + String(e.message||e).slice(0,60));
           }
         }
         if (cancelled) return;
         if (erros.length) setError('Aviso — anos com erro: ' + erros.join(' | '));
-
-        setPessoaIdx(pIdx);
-        setCandAggr({ perPessoa: perPessoa, byProcesso: byProcesso, totalCand: totalCandRef[0],
-                      byYear: ts.cand_y || {}, byMonth: ts.cand_m || {},
-                      cadByYear: ts.cad_y || {}, cadByMonth: ts.cad_m || {} });
-        setIdiomaAggr({ pessoaIdiomaMap: iPessoaMap, uniquePessoas: iPessoaMap.size });
-        // Guarda anos para uso no loadContacts
-        window._globeYears = years;
-        if (!cancelled) { setLoadPct(100); setLoadMsg(''); setLoading(false); }
+        b.pidToIdx=null; b.cats=cats; b.ts=ts;
+        window._globeYears=years;
+        if (!cancelled) { setGlobeData(b); setLoadPct(100); setLoadMsg(''); setLoading(false); }
       } catch(err) {
         if (!cancelled) { setError(String(err && err.message ? err.message : err)); setLoading(false); }
       }
@@ -4603,174 +4567,101 @@ function GlobeFotografiaView({ token }) {
     setFilters(function(f) { var n = Object.assign({}, f); if (val == null || val === '') delete n[key]; else n[key] = val; return n; });
   }
 
-  // Single O(N) pass: filter + compute all counts in one go — no raw arrays
+  // Single O(N) pass com TypedArrays — sem objetos por pessoa
   var computedData = useMemo(function() {
-    var filteredIds = new Set();
-    var total = 0;
-    var counts = { genero:{}, raca:{}, pcd:{}, tdTipo:{}, status:{},
-                   pais:{}, estado:{}, regiao:{}, cidade:{},
-                   renda:{}, oas:{}, ins:{}, tip:{}, mod:{}, tec:{}, tic:{} };
-    var cursoMap = {};
-    var diasSum = 0, ativos = 0, comRaca = 0, comPcd = 0, comGrad = 0, comPos = 0, comTec = 0;
-    var idadeArr = [], idadeSum = 0;
-    var paisSet = new Set(), estadoSet = new Set(), cidadeSet = new Set();
-    var cadCounts = {}; // year -> count (for default period)
-    // Candidatura aggregation vars
-    var pp = candAggr ? candAggr.perPessoa : null;
-    var comCand = 0, totalCandFiltered = 0;
-    var byProcessoFiltered = {}, histCounts = {};
-    // Idioma aggregation vars
-    var filteredIdiomaGroups = {}, idiomaUniquePessoas = 0, idiomaTotal = 0;
-
-    // Parse date filters once
-    var cadDe  = filters.cad_de  ? new Date(filters.cad_de).getTime()             : 0;
-    var cadAte = filters.cad_ate ? new Date(filters.cad_ate  + 'T23:59:59').getTime() : Infinity;
-    var modDe  = filters.mod_de  ? new Date(filters.mod_de).getTime()             : 0;
-    var modAte = filters.mod_ate ? new Date(filters.mod_ate  + 'T23:59:59').getTime() : Infinity;
-    var ucDe   = filters.ult_cand_de  ? new Date(filters.ult_cand_de).getTime()   : 0;
-    var ucAte  = filters.ult_cand_ate ? new Date(filters.ult_cand_ate + 'T23:59:59').getTime() : Infinity;
-    var hasUltCand = !!(filters.ult_cand_de || filters.ult_cand_ate);
-
-    pessoaIdx.forEach(function(p, pid) {
-      // Apply filters using short keys
-      if (filters.status && p.st !== filters.status) return;
-      if (filters.genero && p.g !== filters.genero) return;
-      if (filters.raca && p.r !== filters.raca) return;
-      if (filters.pcd && p.pc !== filters.pcd) return;
-      if (filters.renda && p.rend !== filters.renda) return;
-      if (filters.pais && p.pa !== filters.pais) return;
-      if (filters.estado && p.e !== filters.estado) return;
-      if (filters.regiao && p.re !== filters.regiao) return;
-      if (filters.cidade && p.c !== filters.cidade) return;
-      if (filters.curso && p.cur1 !== filters.curso && p.cur2 !== filters.curso && p.cur3 !== filters.curso) return;
-      if (filters.instituicao && p.ins !== filters.instituicao) return;
-      if (filters.nivel_ensino && p.tip !== filters.nivel_ensino) return;
-      if (filters.faixa) {
-        var a = p.idade, fv = filters.faixa;
-        if (fv === '< 18'  && !(a > 0 && a < 18)) return;
-        if (fv === '18–24' && !(a >= 18 && a <= 24)) return;
-        if (fv === '25–34' && !(a >= 25 && a <= 34)) return;
-        if (fv === '35–44' && !(a >= 35 && a <= 44)) return;
-        if (fv === '45–54' && !(a >= 45 && a <= 54)) return;
-        if (fv === '55+'   && !(a >= 55)) return;
-      }
-      if (filters.aceita_comunicacao) {
-        var cl = p.comm.toLowerCase();
-        var isYes = cl === 'sim' || cl === 'true' || cl === '1';
-        if (filters.aceita_comunicacao === 'Sim' && !isYes) return;
-        if (filters.aceita_comunicacao !== 'Sim' && isYes) return;
-      }
-      if (cadDe  && p.dCad < cadDe)  return;
-      if (cadAte < Infinity && p.dCad > cadAte) return;
-      if (modDe  && p.dMod < modDe)  return;
-      if (modAte < Infinity && p.dMod > modAte) return;
-      // Candidatura-based filters (uses aggregated data)
-      var cp = pp ? pp.get(pid) : null;
-      if (filters.processo) {
-        if (!cp || !cp.procs[filters.processo]) return;
-      }
-      if (hasUltCand) {
-        var uts = cp ? cp.maxDate : 0;
-        if (uts < ucDe || uts > ucAte) return;
-      }
-
-      // Passed — accumulate
-      filteredIds.add(pid);
-      total++;
-
-      if (p.g)  counts.genero[p.g]   = (counts.genero[p.g]  ||0)+1;
-      if (p.r)  { counts.raca[p.r]   = (counts.raca[p.r]    ||0)+1; comRaca++; }
-      if (p.pc) counts.pcd[p.pc]     = (counts.pcd[p.pc]    ||0)+1;
-      if (p.td) counts.tdTipo[p.td]  = (counts.tdTipo[p.td] ||0)+1;
-      if (p.st) counts.status[p.st]  = (counts.status[p.st] ||0)+1;
-      if (p.pa) { counts.pais[p.pa]  = (counts.pais[p.pa]   ||0)+1; paisSet.add(p.pa); }
-      if (p.e)  { counts.estado[p.e] = (counts.estado[p.e]  ||0)+1; estadoSet.add(p.e); }
-      if (p.re) counts.regiao[p.re]  = (counts.regiao[p.re] ||0)+1;
-      if (p.c)  { counts.cidade[p.c] = (counts.cidade[p.c]  ||0)+1; cidadeSet.add(p.c); }
-      if (p.rend) counts.renda[p.rend] = (counts.renda[p.rend]||0)+1;
-      if (p.oas)  counts.oas[p.oas]  = (counts.oas[p.oas]   ||0)+1;
-      if (p.ins)  counts.ins[p.ins]  = (counts.ins[p.ins]   ||0)+1;
-      if (p.tip)  counts.tip[p.tip]  = (counts.tip[p.tip]   ||0)+1;
-      if (p.mod)  counts.mod[p.mod]  = (counts.mod[p.mod]   ||0)+1;
-      if (p.tec)  counts.tec[p.tec]  = (counts.tec[p.tec]   ||0)+1;
-      if (p.tic)  counts.tic[p.tic]  = (counts.tic[p.tic]   ||0)+1;
-      if (p.cur1) { cursoMap[p.cur1] = (cursoMap[p.cur1]||0)+1; }
-      if (p.cur2) { cursoMap[p.cur2] = (cursoMap[p.cur2]||0)+1; }
-      if (p.cur3) { cursoMap[p.cur3] = (cursoMap[p.cur3]||0)+1; }
-
-      var stl = p.st.toLowerCase();
-      if (stl === 'ativo') ativos++;
-      var pcl = p.pc.toLowerCase();
-      if (p.pc && pcl !== 'não' && pcl !== 'nao') comPcd++;
-      if (p.cur1) comGrad++;
-      if (p.pos)  comPos++;
-      if (p.tec)  comTec++;
-      diasSum += p.dias;
-
-      if (p.idade > 0 && p.idade < 120) { idadeArr.push(p.idade); idadeSum += p.idade; }
-
-      if (p.dCad) {
-        var d = new Date(p.dCad);
-        if (!isNaN(d.getTime())) {
-          var yr = String(d.getFullYear());
-          cadCounts[yr] = (cadCounts[yr]||0)+1;
-        }
-      }
-
-      // Accumulate candidatura stats from per-pessoa aggregate
-      if (cp) {
-        comCand++;
-        totalCandFiltered += filters.processo ? (cp.procs[filters.processo]||0) : cp.cnt;
-        var hk = cp.cnt <= 5 ? String(cp.cnt) : '6+';
-        histCounts[hk] = (histCounts[hk]||0) + 1;
-        var procKeys = Object.keys(cp.procs);
-        for (var pk = 0; pk < procKeys.length; pk++) {
-          byProcessoFiltered[procKeys[pk]] = (byProcessoFiltered[procKeys[pk]]||0) + cp.procs[procKeys[pk]];
-        }
-      }
-
-      // Accumulate idioma stats from per-pessoa aggregate
-      var iList = idiomaAggr ? idiomaAggr.pessoaIdiomaMap.get(pid) : null;
-      if (iList) {
-        idiomaUniquePessoas++;
-        idiomaTotal += iList.length;
-        for (var il = 0; il < iList.length; il++) {
-          var ig = filteredIdiomaGroups[iList[il].i] || (filteredIdiomaGroups[iList[il].i] = {count:0, niveis:{}});
-          ig.count++;
-          ig.niveis[iList[il].n] = (ig.niveis[iList[il].n]||0) + 1;
-        }
-      }
-    });
-
-    var idadeMed = idadeArr.length > 0 ? (idadeSum / idadeArr.length).toFixed(1) : '—';
-    var idadeMin = idadeArr.length > 0 ? Math.min.apply(null, idadeArr) : '—';
-    var idadeMax = idadeArr.length > 0 ? Math.max.apply(null, idadeArr) : '—';
-    var diasMed  = total > 0 ? (diasSum / total).toFixed(1) : '—';
-    var faixasArr = [
-      {name:'< 18',  value:idadeArr.filter(function(n){return n<18;}).length},
-      {name:'18–24',value:idadeArr.filter(function(n){return n>=18&&n<=24;}).length},
-      {name:'25–34',value:idadeArr.filter(function(n){return n>=25&&n<=34;}).length},
-      {name:'35–44',value:idadeArr.filter(function(n){return n>=35&&n<=44;}).length},
-      {name:'45–54',value:idadeArr.filter(function(n){return n>=45&&n<=54;}).length},
-      {name:'55+',   value:idadeArr.filter(function(n){return n>=55;}).length},
-    ];
-
-    return {
-      filteredIds: filteredIds, total: total, counts: counts,
-      cursoMap: cursoMap, faixasArr: faixasArr,
-      paisSet: paisSet, estadoSet: estadoSet, cidadeSet: cidadeSet,
-      cadCounts: cadCounts,
-      kpis: { ativos:ativos, comRaca:comRaca, comPcd:comPcd,
-              comGrad:comGrad, comPos:comPos, comTec:comTec,
-              idadeMed:idadeMed, idadeMin:idadeMin, idadeMax:idadeMax, diasMed:diasMed },
-      cand: { comCand:comCand, totalCandFiltered:totalCandFiltered,
-              byProcessoFiltered:byProcessoFiltered, histCounts:histCounts,
-              byYear:  candAggr ? candAggr.byYear  : {},
-              byMonth: candAggr ? candAggr.byMonth : {} },
-      idiomaGroups: filteredIdiomaGroups,
-      idiomaStats: { uniquePessoas:idiomaUniquePessoas, totalDecl:idiomaTotal }
-    };
-  }, [pessoaIdx, filters, candAggr, idiomaAggr]);
+    var EMPTY={filteredIdx:[],total:0,counts:{genero:{},raca:{},pcd:{},tdTipo:{},status:{},pais:{},estado:{},regiao:{},cidade:{},renda:{},oas:{},ins:{},tip:{},mod:{},tec:{},tic:{}},cursoMap:{},faixasArr:[{name:'< 18',value:0},{name:'18–24',value:0},{name:'25–34',value:0},{name:'35–44',value:0},{name:'45–54',value:0},{name:'55+',value:0}],paisSet:new Set(),estadoSet:new Set(),cidadeSet:new Set(),cadCounts:{},kpis:{ativos:0,comRaca:0,comPcd:0,comGrad:0,comPos:0,comTec:0,idadeMed:'—',idadeMin:'—',idadeMax:'—',diasMed:'—'},cand:{comCand:0,totalCandFiltered:0,byProcessoFiltered:{},histCounts:{},byYear:{},byMonth:{}},idiomaGroups:{},idiomaStats:{uniquePessoas:0,totalDecl:0}};
+    if (!globeData) return EMPTY;
+    var gd=globeData; var cats=gd.cats||{}; var n=gd.n;
+    var filteredIdx=[]; var total=0;
+    var counts={genero:{},raca:{},pcd:{},tdTipo:{},status:{},pais:{},estado:{},regiao:{},cidade:{},renda:{},oas:{},ins:{},tip:{},mod:{},tec:{},tic:{}};
+    var cursoMap={},diasSum=0,ativos=0,comRaca=0,comPcd=0,comGrad=0,comPos=0,comTec=0;
+    var idadeSum=0,idadeCount=0,idadeMinV=999,idadeMaxV=0,faixas=[0,0,0,0,0,0];
+    var paisSet=new Set(),estadoSet=new Set(),cidadeSet=new Set(),cadCounts={};
+    var comCand=0,totalCandFiltered=0,byProcessoFiltered={},histCounts={};
+    var filteredIdiomaGroups={},idiomaUniquePessoas=0,idiomaTotal=0;
+    function fi(arr,v){return v?(arr||[]).indexOf(v):-1;}
+    var stFI=fi(cats.st,filters.status),gFI=fi(cats.g,filters.genero),rFI=fi(cats.r,filters.raca);
+    var pcFI=fi(cats.pc,filters.pcd),rendFI=fi(cats.rend,filters.renda),paFI=fi(cats.pa,filters.pais);
+    var eFI=fi(cats.e,filters.estado),reFI=fi(cats.re,filters.regiao),cFI=fi(cats.c,filters.cidade);
+    var insFI=fi(cats.ins,filters.instituicao),tipFI=fi(cats.tip,filters.nivel_ensino);
+    var c1FI=fi(cats.c1,filters.curso),c2FI=fi(cats.c2,filters.curso),c3FI=fi(cats.c3,filters.curso);
+    var commSimSet=new Set(); (cats.comm||[]).forEach(function(v,i){var l=(v||'').toLowerCase();if(l==='sim'||l==='true'||l==='1')commSimSet.add(i);});
+    var EPOCH_MS=new Date('2010-01-01').getTime(),DAY_MS=86400000;
+    function toDays(s,eod){return s?Math.max(0,Math.floor((new Date(s+(eod?'T23:59:59':'')).getTime()-EPOCH_MS)/DAY_MS)):(eod?65535:0);}
+    var cadDe=toDays(filters.cad_de,false),cadAte=toDays(filters.cad_ate,true);
+    var modDe=toDays(filters.mod_de,false),modAte=toDays(filters.mod_ate,true);
+    var ucDe=toDays(filters.ult_cand_de,false),ucAte=toDays(filters.ult_cand_ate,true);
+    var hasCad=!!(filters.cad_de||filters.cad_ate),hasMod=!!(filters.mod_de||filters.mod_ate);
+    var hasUC=!!(filters.ult_cand_de||filters.ult_cand_ate);
+    for (var i=0;i<n;i++) {
+      if (stFI>=0&&gd.st[i]!==stFI) continue;
+      if (gFI>=0&&gd.g[i]!==gFI)   continue;
+      if (rFI>=0&&gd.r[i]!==rFI)   continue;
+      if (pcFI>=0&&gd.pc[i]!==pcFI) continue;
+      if (rendFI>=0&&gd.rend[i]!==rendFI) continue;
+      if (paFI>=0&&gd.pa[i]!==paFI) continue;
+      if (eFI>=0&&gd.e[i]!==eFI)   continue;
+      if (reFI>=0&&gd.re[i]!==reFI) continue;
+      if (cFI>=0&&gd.c[i]!==cFI)   continue;
+      if (insFI>=0&&gd.ins[i]!==insFI) continue;
+      if (tipFI>=0&&gd.tip[i]!==tipFI) continue;
+      if (filters.curso&&gd.c1[i]!==c1FI&&gd.c2[i]!==c2FI&&gd.c3[i]!==c3FI) continue;
+      if (filters.aceita_comunicacao){var sim=commSimSet.has(gd.comm[i]);if(filters.aceita_comunicacao==='Sim'&&!sim)continue;if(filters.aceita_comunicacao!=='Sim'&&sim)continue;}
+      if (filters.faixa){var a=gd.idade[i],fv=filters.faixa;if(fv==='< 18'&&!(a>0&&a<18))continue;if(fv==='18–24'&&!(a>=18&&a<=24))continue;if(fv==='25–34'&&!(a>=25&&a<=34))continue;if(fv==='35–44'&&!(a>=35&&a<=44))continue;if(fv==='45–54'&&!(a>=45&&a<=54))continue;if(fv==='55+'&&!(a>=55))continue;}
+      if (hasCad&&(gd.dcad[i]<cadDe||gd.dcad[i]>cadAte)) continue;
+      if (hasMod&&(gd.dmod[i]<modDe||gd.dmod[i]>modAte)) continue;
+      var candP=gd.candProcs[i];
+      if (filters.processo&&(!candP||!candP[filters.processo])) continue;
+      if (hasUC&&(gd.cmax[i]<ucDe||gd.cmax[i]>ucAte)) continue;
+      filteredIdx.push(i); total++;
+      var _st=cats.st[gd.st[i]]||'',_g=cats.g[gd.g[i]]||'',_r=cats.r[gd.r[i]]||'';
+      var _pc=cats.pc[gd.pc[i]]||'',_td=cats.td[gd.td[i]]||'';
+      var _pa=cats.pa[gd.pa[i]]||'',_e=cats.e[gd.e[i]]||'',_re=cats.re[gd.re[i]]||'',_c=cats.c[gd.c[i]]||'';
+      var _rend=cats.rend[gd.rend[i]]||'',_oas=cats.oas[gd.oas[i]]||'';
+      var _ins=cats.ins[gd.ins[i]]||'',_tip=cats.tip[gd.tip[i]]||'',_mod=cats.mod[gd.mod[i]]||'';
+      var _tec=cats.tec[gd.tec[i]]||'',_tic=cats.tic[gd.tic[i]]||'';
+      var _c1=cats.c1[gd.c1[i]]||'',_c2=cats.c2[gd.c2[i]]||'',_c3=cats.c3[gd.c3[i]]||'';
+      var _pos=(cats.pos||[])[gd.pos[i]]||'';
+      if(_g)counts.genero[_g]=(counts.genero[_g]||0)+1;
+      if(_r){counts.raca[_r]=(counts.raca[_r]||0)+1;comRaca++;}
+      if(_pc)counts.pcd[_pc]=(counts.pcd[_pc]||0)+1;
+      if(_td)counts.tdTipo[_td]=(counts.tdTipo[_td]||0)+1;
+      if(_st)counts.status[_st]=(counts.status[_st]||0)+1;
+      if(_pa){counts.pais[_pa]=(counts.pais[_pa]||0)+1;paisSet.add(_pa);}
+      if(_e){counts.estado[_e]=(counts.estado[_e]||0)+1;estadoSet.add(_e);}
+      if(_re)counts.regiao[_re]=(counts.regiao[_re]||0)+1;
+      if(_c){counts.cidade[_c]=(counts.cidade[_c]||0)+1;cidadeSet.add(_c);}
+      if(_rend)counts.renda[_rend]=(counts.renda[_rend]||0)+1;
+      if(_oas)counts.oas[_oas]=(counts.oas[_oas]||0)+1;
+      if(_ins)counts.ins[_ins]=(counts.ins[_ins]||0)+1;
+      if(_tip)counts.tip[_tip]=(counts.tip[_tip]||0)+1;
+      if(_mod)counts.mod[_mod]=(counts.mod[_mod]||0)+1;
+      if(_tec)counts.tec[_tec]=(counts.tec[_tec]||0)+1;
+      if(_tic)counts.tic[_tic]=(counts.tic[_tic]||0)+1;
+      if(_c1)cursoMap[_c1]=(cursoMap[_c1]||0)+1;
+      if(_c2)cursoMap[_c2]=(cursoMap[_c2]||0)+1;
+      if(_c3)cursoMap[_c3]=(cursoMap[_c3]||0)+1;
+      var stl=_st.toLowerCase();if(stl==='ativo')ativos++;
+      var pcl=_pc.toLowerCase();if(_pc&&pcl!=='não'&&pcl!=='nao')comPcd++;
+      if(_c1)comGrad++;if(_pos)comPos++;if(_tec)comTec++;
+      diasSum+=gd.dias[i];
+      var idade_i=gd.idade[i];
+      if(idade_i>0&&idade_i<120){idadeSum+=idade_i;idadeCount++;if(idade_i<idadeMinV)idadeMinV=idade_i;if(idade_i>idadeMaxV)idadeMaxV=idade_i;if(idade_i<18)faixas[0]++;else if(idade_i<=24)faixas[1]++;else if(idade_i<=34)faixas[2]++;else if(idade_i<=44)faixas[3]++;else if(idade_i<=54)faixas[4]++;else faixas[5]++;}
+      var dcad_i=gd.dcad[i];if(dcad_i){var dyr=String(new Date(EPOCH_MS+dcad_i*DAY_MS).getFullYear());cadCounts[dyr]=(cadCounts[dyr]||0)+1;}
+      if(candP){comCand++;var ccnt=gd.cc[i];totalCandFiltered+=filters.processo?(candP[filters.processo]||0):ccnt;var hk=ccnt<=5?String(ccnt):'6+';histCounts[hk]=(histCounts[hk]||0)+1;var pks=Object.keys(candP);for(var pk=0;pk<pks.length;pk++)byProcessoFiltered[pks[pk]]=(byProcessoFiltered[pks[pk]]||0)+candP[pks[pk]];}
+      var iList=gd.idiomaData[i];if(iList){idiomaUniquePessoas++;idiomaTotal+=iList.length;for(var il=0;il<iList.length;il++){var ig=filteredIdiomaGroups[iList[il].i]||(filteredIdiomaGroups[iList[il].i]={count:0,niveis:{}});ig.count++;ig.niveis[iList[il].n]=(ig.niveis[iList[il].n]||0)+1;}}
+    }
+    var ts=gd.ts||{};
+    return {filteredIdx:filteredIdx,total:total,counts:counts,cursoMap:cursoMap,
+      faixasArr:[{name:'< 18',value:faixas[0]},{name:'18–24',value:faixas[1]},{name:'25–34',value:faixas[2]},{name:'35–44',value:faixas[3]},{name:'45–54',value:faixas[4]},{name:'55+',value:faixas[5]}],
+      paisSet:paisSet,estadoSet:estadoSet,cidadeSet:cidadeSet,cadCounts:cadCounts,
+      kpis:{ativos:ativos,comRaca:comRaca,comPcd:comPcd,comGrad:comGrad,comPos:comPos,comTec:comTec,
+            idadeMed:idadeCount>0?(idadeSum/idadeCount).toFixed(1):'—',
+            idadeMin:idadeCount>0?idadeMinV:'—',idadeMax:idadeCount>0?idadeMaxV:'—',
+            diasMed:total>0?(diasSum/total).toFixed(1):'—'},
+      cand:{comCand:comCand,totalCandFiltered:totalCandFiltered,byProcessoFiltered:byProcessoFiltered,histCounts:histCounts,byYear:ts.cand_y||{},byMonth:ts.cand_m||{}},
+      idiomaGroups:filteredIdiomaGroups,idiomaStats:{uniquePessoas:idiomaUniquePessoas,totalDecl:idiomaTotal}};
+  }, [globeData, filters]);
 
   var activeFilters = Object.entries(filters);
 
@@ -4778,20 +4669,25 @@ function GlobeFotografiaView({ token }) {
     return _gBar(data, color, { activeVal: filterKey ? filters[filterKey] : undefined, onFilter: filterKey ? function(v) { setFilter(filterKey, v); } : null });
   }
 
-  // Build time-series for pessoas using pessoaIdx (no full array needed)
+  // Build time-series for pessoas usando TypedArrays
   function buildTimePessoas(periodo) {
     var counts = {};
-    computedData.filteredIds.forEach(function(pid) {
-      var p = pessoaIdx.get(pid);
-      if (!p || !p.dCad) return;
-      var d = new Date(p.dCad);
-      if (isNaN(d.getTime())) return;
+    var fidx = computedData.filteredIdx || [];
+    var gd = globeData;
+    if (!gd) return [];
+    var EPOCH_MS = new Date('2010-01-01').getTime(); var DAY_MS = 86400000;
+    for (var ji = 0; ji < fidx.length; ji++) {
+      var i = fidx[ji];
+      var dcad_i = gd.dcad[i];
+      if (!dcad_i) continue;
+      var d = new Date(EPOCH_MS + dcad_i * DAY_MS);
+      if (isNaN(d.getTime())) continue;
       var k;
       if (periodo === 'mes') k = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0');
       else if (periodo === 'dia') k = d.toISOString().slice(0,10);
       else k = String(d.getFullYear());
       counts[k] = (counts[k]||0) + 1;
-    });
+    }
     return Object.entries(counts).sort(function(a,b){return a[0]<b[0]?-1:1;}).map(function(e){return {name:e[0],value:e[1]};});
   }
 
@@ -5038,16 +4934,17 @@ function GlobeFotografiaView({ token }) {
   }
 
   function renderPessoas() {
-    var fids = computedData.filteredIds;
+    var fidx = computedData.filteredIdx || [];
     var sq = pessoasSearch.toLowerCase();
     var total = computedData.total;
+    var gd = globeData;
 
     // ── Tela de prompt para carregar contatos (lazy) ─────────────────────────
     if (!contactLoaded) {
       return CE('div',{style:{textAlign:'center',padding:'60px 20px'}},
         CE('div',{style:{fontSize:40,marginBottom:16}},'📋'),
         CE('div',{style:{fontSize:15,fontWeight:700,color:'#1e293b',marginBottom:8}},
-           fids.size.toLocaleString('pt-BR') + ' pessoas no filtro atual'),
+           fidx.length.toLocaleString('pt-BR') + ' pessoas no filtro atual'),
         CE('div',{style:{fontSize:13,color:'#64748b',marginBottom:24,maxWidth:400,margin:'0 auto 24px'}},
            'Os contatos (nome, e-mail, telefone) ficam num arquivo separado para economizar memória. Clique para carregá-los.'),
         CE('button',{
@@ -5060,21 +4957,23 @@ function GlobeFotografiaView({ token }) {
       );
     }
 
-    var visible = []; // [{pid, nome, email, tel, comm, st}]
-    fids.forEach(function(pid) {
+    var visible = [];
+    var cats = gd ? gd.cats || {} : {};
+    for (var ji = 0; ji < fidx.length; ji++) {
+      var i = fidx[ji];
+      var pid = gd ? gd.pids[i] : '';
+      if (!pid) continue;
       var p = pessoaContact.get(pid);
-      var pf = pessoaIdx.get(pid);
-      if (!p && !pf) return;
       var nome  = p ? p.nome  : '';
       var email = p ? p.email : '';
       var tel   = p ? p.tel   : '';
-      var comm  = pf ? pf.comm : '';
-      var st    = pf ? pf.st  : '';
+      var comm  = gd ? (cats.comm||[])[gd.comm[i]]||'' : '';
+      var st    = gd ? (cats.st||[])[gd.st[i]]||''   : '';
       if (sq) {
-        if (nome.toLowerCase().indexOf(sq) < 0 && email.toLowerCase().indexOf(sq) < 0 && pid.indexOf(sq) < 0) return;
+        if (nome.toLowerCase().indexOf(sq)<0 && email.toLowerCase().indexOf(sq)<0 && pid.indexOf(sq)<0) continue;
       }
       visible.push({pid:pid, nome:nome||'—', email:email||'—', tel:tel||'—', comm:comm||'—', st:st||'—'});
-    });
+    }
     var shown = visible.slice(0, 500);
     var total = computedData.total;
     function exportCsv() {
@@ -5165,8 +5064,8 @@ function GlobeFotografiaView({ token }) {
       );
     }
     var _skMap = {identidade_genero:'g',raca_cor:'r',estado:'e',cidade:'c',regiao:'re',pais:'pa',pcd_cadastro:'pc',status:'st',renda_familiar:'rend',graduacao_1_instituicao:'ins',graduacao_1_tipo:'tip'};
-    function uniq(origKey) { var sk=_skMap[origKey]; var s=new Set(); pessoaIdx.forEach(function(p){var v=sk?p[sk]:p[origKey];if(v)s.add(v);}); return [...s].sort(); }
-    function uniqCurso() { var s=new Set(); pessoaIdx.forEach(function(p){if(p.cur1)s.add(p.cur1);if(p.cur2)s.add(p.cur2);if(p.cur3)s.add(p.cur3);}); return [...s].sort(); }
+    function uniq(origKey) { var sk=_skMap[origKey]||origKey; if(!globeData)return []; var arr=(globeData.cats||{})[sk]||[]; return arr.filter(function(v){return v&&v.trim();}).slice().sort(); }
+    function uniqCurso() { if(!globeData)return []; var cats=globeData.cats||{}; var s=new Set(); (cats.c1||[]).forEach(function(v){if(v)s.add(v);}); (cats.c2||[]).forEach(function(v){if(v)s.add(v);}); (cats.c3||[]).forEach(function(v){if(v)s.add(v);}); return [...s].sort(); }
     return CE('div',{style:{position:'fixed',top:0,right:0,bottom:0,width:280,background:'#fff',boxShadow:'-4px 0 20px rgba(0,0,0,0.12)',zIndex:500,overflowY:'auto',display:'flex',flexDirection:'column'}},
       CE('div',{style:{padding:'16px 18px',borderBottom:'1px solid #e2e8f0',display:'flex',alignItems:'center',gap:8,flexShrink:0}},
         CE('span',{style:{fontSize:14,fontWeight:700,color:'#1e293b',flex:1}},'🔍 Filtros'),
