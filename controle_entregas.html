@@ -4288,7 +4288,16 @@ const GLOBE_PESSOAS_COLS = [
   'idade','data_cadastro','renda_familiar','pcd_cadastro','orientacao_afetivo_sexual',
   'graduacao_1_curso','graduacao_2_curso','graduacao_3_curso',
   'graduacao_1_instituicao','graduacao_1_tipo','graduacao_1_modalidade',
-  'pos_1_curso','tecnico_1_curso','dias_cadastro_ate_primeira_candidatura','quantidade_processos'
+  'pos_1_curso','tecnico_1_curso','dias_cadastro_ate_primeira_candidatura','quantidade_processos',
+  'nome','nome_completo','nome_pessoa',
+  'email','email_pessoal',
+  'telefone','telefone_celular','celular',
+  'aceita_mensagem','aceita_mensagens','aceita_comunicacao',
+  'aceita_email','aceita_sms','aceita_whatsapp','opt_in_email','opt_in_sms',
+  'data_modificacao','data_atualizacao',
+  'tipo_deficiencia','pcd_tipo',
+  'tecnico_1_instituicao',
+  'graduacao_1_inicio','graduacao_1_termino',
 ];
 const GLOBE_CAND_COLS = [
   'codigo_pessoa','codigo_processo','nome_processo','data_candidatura','etapa_atual','ordem_etapa'
@@ -4438,114 +4447,122 @@ function GlobeFotografiaView({ token }) {
   const [selectedYears, setSelectedYears] = useState([2026]);
   const [showYearPicker, setShowYearPicker] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [loadProg, setLoadProg] = useState('');
+  const [loadPct, setLoadPct] = useState(0);
+  const [loadMsg, setLoadMsg] = useState('');
   const [error, setError] = useState('');
   const [pessoas, setPessoas] = useState([]);
   const [candidaturas, setCandidaturas] = useState([]);
   const [idiomas, setIdiomas] = useState([]);
+  const [ultimaCand, setUltimaCand] = useState({});
   const [filters, setFilters] = useState({});
-  const [cruzDim, setCruzDim] = useState('identidade_genero');
-  const [cruzMet, setCruzMet] = useState('total_candidaturas');
+  const [showFilterPanel, setShowFilterPanel] = useState(false);
+  const [cadPeriodo, setCadPeriodo] = useState('ano');
+  const [candPeriodo, setCandPeriodo] = useState('ano');
+  const [expandedIdioma, setExpandedIdioma] = useState(null);
+  const [pessoasSearch, setPessoasSearch] = useState('');
 
-  // ── Carregamento sequencial com GC entre anos (evita OOM) ──
-  // Todos os tipos carregados ano a ano; raw array nullado após merge para liberar heap.
   useEffect(function() {
     if (!token || !selectedYears.length) return;
-    var years = selectedYears.slice().sort(function(a, b) { return a - b; });
+    var years = selectedYears.slice().sort(function(a,b){return a-b;});
     var cancelled = false;
-
     async function load() {
       setLoading(true); setError('');
-      setPessoas([]); setCandidaturas([]); setIdiomas([]);
+      setPessoas([]); setCandidaturas([]); setIdiomas([]); setUltimaCand({});
       setFilters({});
-
-      var erros = [];
       var totalSteps = years.length * 3;
-      var done = 0;
-      function prog(msg) { if (!cancelled) setLoadProg(msg + ' (' + (++done) + '/' + totalSteps + ')'); }
-
-      // 1. Pessoas — todos os anos sequencial; deduplica por codigo_pessoa (ano mais antigo prevalece)
+      var doneSteps = 0;
+      var erros = [];
+      function step(msg) {
+        if (!cancelled) {
+          doneSteps++;
+          setLoadPct(Math.round(doneSteps / totalSteps * 100));
+          setLoadMsg(msg);
+        }
+      }
+      // 1. Pessoas
       var pessoaMap = new Map();
       for (var pi = 0; pi < years.length; pi++) {
         if (cancelled) break;
         var py = years[pi];
         try {
-          prog('pessoas ' + py);
-          var pRows = await loadGlobeParquet(token, py, 'pessoas.parquet', function() {}, GLOBE_PESSOAS_COLS);
+          var pRows = await loadGlobeParquet(token, py, 'pessoas.parquet', function(){}, GLOBE_PESSOAS_COLS);
           for (var j = 0; j < pRows.length; j++) {
             var row = pRows[j];
             var pid = String(row.codigo_pessoa != null ? row.codigo_pessoa : '');
-            if (pid) pessoaMap.set(pid, row); // sobrescreve — anos em ordem crescente, o mais recente prevalece
+            if (pid) pessoaMap.set(pid, row);
           }
-          pRows = null; // libera memória antes do próximo ano
-        } catch (e) { erros.push('pessoas ' + py + ': ' + String(e.message || e).slice(0, 40)); }
+          pRows = null;
+        } catch(e) { erros.push('pessoas ' + py + ': ' + String(e.message||e).slice(0,40)); }
+        step('Pessoas ' + py);
       }
       if (!cancelled) setPessoas(Array.from(pessoaMap.values()));
       pessoaMap = null;
-
-      // 2. Candidaturas — todos os anos, sequencial
+      // 2. Candidaturas
       var allC = [];
+      var ultMap = {};
       for (var ci = 0; ci < years.length; ci++) {
         if (cancelled) break;
         var cy = years[ci];
         try {
-          prog('candidaturas ' + cy);
-          var cRows = await loadGlobeParquet(token, cy, 'candidaturas.parquet', function() {}, GLOBE_CAND_COLS);
-          for (var k = 0; k < cRows.length; k++) allC.push(cRows[k]);
+          var cRows = await loadGlobeParquet(token, cy, 'candidaturas.parquet', function(){}, GLOBE_CAND_COLS);
+          for (var k = 0; k < cRows.length; k++) {
+            allC.push(cRows[k]);
+            var cid = String(cRows[k].codigo_pessoa != null ? cRows[k].codigo_pessoa : '');
+            var ts = Number(cRows[k].data_candidatura || 0);
+            if (cid && ts && (!ultMap[cid] || ts > ultMap[cid])) ultMap[cid] = ts;
+          }
           cRows = null;
-        } catch (e) { erros.push('cand ' + cy + ': ' + String(e.message || e).slice(0, 40)); }
+        } catch(e) { erros.push('cand ' + cy + ': ' + String(e.message||e).slice(0,40)); }
+        step('Candidaturas ' + cy);
       }
-      if (!cancelled) setCandidaturas(allC);
-
-      // 3. Idiomas — todos os anos, sequencial
+      if (!cancelled) { setCandidaturas(allC); setUltimaCand(ultMap); }
+      // 3. Idiomas
       var allI = [];
       for (var ii = 0; ii < years.length; ii++) {
         if (cancelled) break;
         var iy = years[ii];
         try {
-          prog('idiomas ' + iy);
-          var iRows = await loadGlobeParquet(token, iy, 'idiomas.parquet', function() {}, GLOBE_IDIOMAS_COLS);
+          var iRows = await loadGlobeParquet(token, iy, 'idiomas.parquet', function(){}, GLOBE_IDIOMAS_COLS);
           for (var l = 0; l < iRows.length; l++) allI.push(iRows[l]);
           iRows = null;
-        } catch (e) { erros.push('idiomas ' + iy + ': ' + String(e.message || e).slice(0, 40)); }
+        } catch(e) { erros.push('idiomas ' + iy + ': ' + String(e.message||e).slice(0,40)); }
+        step('Idiomas ' + iy);
       }
       if (!cancelled) setIdiomas(allI);
-
       if (!cancelled) {
         if (erros.length) setError('Aviso: ' + erros.join(' | '));
-        setLoading(false); setLoadProg('');
+        setLoading(false); setLoadMsg(''); setLoadPct(0);
       }
     }
-
     load();
     return function() { cancelled = true; };
   }, [token, selectedYears.join(',')]);
 
-  // ── Filter helpers ──
   function setFilter(key, val) {
-    setFilters(function(f) {
-      var n = Object.assign({}, f);
-      if (n[key] === val) delete n[key]; else n[key] = val;
-      return n;
-    });
+    setFilters(function(f) { var n = Object.assign({}, f); if (n[key] === val) delete n[key]; else n[key] = val; return n; });
+  }
+  function setFilterRange(key, val) {
+    setFilters(function(f) { var n = Object.assign({}, f); if (val == null || val === '') delete n[key]; else n[key] = val; return n; });
   }
 
-  // ── Filtered data ──
   var filteredPessoas = useMemo(function() {
     var fp = pessoas;
-    if (filters.status) fp = fp.filter(function(p) { return String(p.status || '').trim() === filters.status; });
-    if (filters.genero) fp = fp.filter(function(p) { return String(p.identidade_genero || '').trim() === filters.genero; });
-    if (filters.raca) fp = fp.filter(function(p) { return String(p.raca_cor || '').trim() === filters.raca; });
-    if (filters.estado) fp = fp.filter(function(p) { return String(p.estado || '').trim() === filters.estado; });
-    if (filters.regiao) fp = fp.filter(function(p) { return String(p.regiao || '').trim() === filters.regiao; });
-    if (filters.pcd) fp = fp.filter(function(p) { return String(p.pcd_cadastro || '').trim() === filters.pcd; });
-    if (filters.renda) fp = fp.filter(function(p) { return String(p.renda_familiar || '').trim() === filters.renda; });
+    if (filters.status) fp = fp.filter(function(p) { return String(p.status||'').trim() === filters.status; });
+    if (filters.genero) fp = fp.filter(function(p) { return String(p.identidade_genero||'').trim() === filters.genero; });
+    if (filters.raca) fp = fp.filter(function(p) { return String(p.raca_cor||'').trim() === filters.raca; });
+    if (filters.pcd) fp = fp.filter(function(p) { return String(p.pcd_cadastro||'').trim() === filters.pcd; });
+    if (filters.renda) fp = fp.filter(function(p) { return String(p.renda_familiar||'').trim() === filters.renda; });
+    if (filters.pais) fp = fp.filter(function(p) { return String(p.pais||'').trim() === filters.pais; });
+    if (filters.estado) fp = fp.filter(function(p) { return String(p.estado||'').trim() === filters.estado; });
+    if (filters.regiao) fp = fp.filter(function(p) { return String(p.regiao||'').trim() === filters.regiao; });
+    if (filters.cidade) fp = fp.filter(function(p) { return String(p.cidade||'').trim() === filters.cidade; });
     if (filters.curso) fp = fp.filter(function(p) { return ['graduacao_1_curso','graduacao_2_curso','graduacao_3_curso'].some(function(k) { return String(p[k]||'').trim() === filters.curso; }); });
-    if (filters.nivel_ensino) fp = fp.filter(function(p) { return String(p.graduacao_1_tipo || '').trim() === filters.nivel_ensino; });
+    if (filters.instituicao) fp = fp.filter(function(p) { return String(p.graduacao_1_instituicao||'').trim() === filters.instituicao; });
+    if (filters.nivel_ensino) fp = fp.filter(function(p) { return String(p.graduacao_1_tipo||'').trim() === filters.nivel_ensino; });
     if (filters.faixa) {
       var fv = filters.faixa;
       fp = fp.filter(function(p) {
-        var a = Number(p.idade || 0);
+        var a = Number(p.idade||0);
         if (fv === '< 18') return a > 0 && a < 18;
         if (fv === '18–24') return a >= 18 && a <= 24;
         if (fv === '25–34') return a >= 25 && a <= 34;
@@ -4555,22 +4572,53 @@ function GlobeFotografiaView({ token }) {
         return true;
       });
     }
+    if (filters.aceita_comunicacao) {
+      var commCols2 = ['aceita_mensagem','aceita_mensagens','aceita_comunicacao','aceita_email','aceita_sms','aceita_whatsapp','opt_in_email'];
+      fp = fp.filter(function(p) {
+        if (filters.aceita_comunicacao === 'Sim') {
+          return commCols2.some(function(k) { var v = String(p[k]||'').toLowerCase(); return v === 'sim' || v === 'true' || v === '1'; });
+        }
+        return commCols2.every(function(k) { var v = String(p[k]||'').toLowerCase(); return !v || v === 'não' || v === 'nao' || v === 'false' || v === '0'; });
+      });
+    }
+    if (filters.cad_de) {
+      var cadDe = new Date(filters.cad_de).getTime();
+      fp = fp.filter(function(p) { return Number(p.data_cadastro||0) >= cadDe; });
+    }
+    if (filters.cad_ate) {
+      var cadAte = new Date(filters.cad_ate + 'T23:59:59').getTime();
+      fp = fp.filter(function(p) { return Number(p.data_cadastro||0) <= cadAte; });
+    }
+    if (filters.mod_de) {
+      var modDe = new Date(filters.mod_de).getTime();
+      fp = fp.filter(function(p) { return Number(p.data_modificacao||p.data_atualizacao||0) >= modDe; });
+    }
+    if (filters.mod_ate) {
+      var modAte = new Date(filters.mod_ate + 'T23:59:59').getTime();
+      fp = fp.filter(function(p) { return Number(p.data_modificacao||p.data_atualizacao||0) <= modAte; });
+    }
+    if (filters.ult_cand_de || filters.ult_cand_ate) {
+      var ucDe = filters.ult_cand_de ? new Date(filters.ult_cand_de).getTime() : 0;
+      var ucAte = filters.ult_cand_ate ? new Date(filters.ult_cand_ate + 'T23:59:59').getTime() : Infinity;
+      fp = fp.filter(function(p) {
+        var uid = String(p.codigo_pessoa != null ? p.codigo_pessoa : '');
+        var uts = ultimaCand[uid] || 0;
+        return uts >= ucDe && uts <= ucAte;
+      });
+    }
     return fp;
-  }, [pessoas, filters]);
+  }, [pessoas, filters, ultimaCand]);
 
   var filteredIds = useMemo(function() {
     var s = new Set();
-    for (var i = 0; i < filteredPessoas.length; i++) {
-      var p = filteredPessoas[i];
-      s.add(String(p.codigo_pessoa != null ? p.codigo_pessoa : ''));
-    }
+    for (var i = 0; i < filteredPessoas.length; i++) s.add(String(filteredPessoas[i].codigo_pessoa != null ? filteredPessoas[i].codigo_pessoa : ''));
     return s;
   }, [filteredPessoas]);
 
   var filteredCandidaturas = useMemo(function() {
     var fc = candidaturas.filter(function(c) { return filteredIds.has(String(c.codigo_pessoa != null ? c.codigo_pessoa : '')); });
-    if (filters.etapa) fc = fc.filter(function(c) { return String(c.etapa_atual || '').trim() === filters.etapa; });
-    if (filters.processo) fc = fc.filter(function(c) { return String(c.nome_processo || '').trim() === filters.processo; });
+    if (filters.etapa) fc = fc.filter(function(c) { return String(c.etapa_atual||'').trim() === filters.etapa; });
+    if (filters.processo) fc = fc.filter(function(c) { return String(c.nome_processo||'').trim() === filters.processo; });
     return fc;
   }, [candidaturas, filteredIds, filters]);
 
@@ -4578,54 +4626,18 @@ function GlobeFotografiaView({ token }) {
     return idiomas.filter(function(i) { return filteredIds.has(String(i.codigo_pessoa != null ? i.codigo_pessoa : '')); });
   }, [idiomas, filteredIds]);
 
-  // ── Cruzamentos ──
-  var cruzData = useMemo(function() {
-    if (!filteredPessoas.length) return [];
-    var map = {};
-    for (var i = 0; i < filteredPessoas.length; i++) {
-      var p = filteredPessoas[i];
-      var id = String(p.codigo_pessoa != null ? p.codigo_pessoa : '');
-      var dim = String(p[cruzDim] || '').trim() || '(Vazio)';
-      map[id] = { dim: dim, cands: 0, procs: new Set() };
-    }
-    for (var j = 0; j < filteredCandidaturas.length; j++) {
-      var c = filteredCandidaturas[j];
-      var cid = String(c.codigo_pessoa != null ? c.codigo_pessoa : '');
-      if (map[cid]) { map[cid].cands++; map[cid].procs.add(String(c.codigo_processo != null ? c.codigo_processo : '')); }
-    }
-    var groups = {};
-    var vals = Object.values(map);
-    for (var k = 0; k < vals.length; k++) {
-      var e = vals[k];
-      if (!groups[e.dim]) groups[e.dim] = { cands: 0, procs: new Set(), withCand: 0 };
-      groups[e.dim].cands += e.cands;
-      e.procs.forEach(function(pr) { groups[e.dim].procs.add(pr); });
-      if (e.cands > 0) groups[e.dim].withCand++;
-    }
-    return Object.entries(groups).map(function(entry) {
-      var name = entry[0], g = entry[1];
-      return { name: name, value: cruzMet === 'total_candidaturas' ? g.cands : cruzMet === 'processos_unicos' ? g.procs.size : g.withCand };
-    }).sort(function(a, b) { return b.value - a.value; });
-  }, [filteredPessoas, filteredCandidaturas, cruzDim, cruzMet]);
-
-  // ── Render helpers ──
-  var fp = filteredPessoas;
-  var fc = filteredCandidaturas;
-  var fi = filteredIdiomas;
-  var activeFilterEntries = Object.entries(filters);
+  var activeFilters = Object.entries(filters);
+  var fp = filteredPessoas, fc = filteredCandidaturas, fi = filteredIdiomas;
 
   function bar(data, color, filterKey) {
-    return _gBar(data, color, {
-      activeVal: filterKey ? filters[filterKey] : undefined,
-      onFilter: filterKey ? function(v) { setFilter(filterKey, v); } : null
-    });
+    return _gBar(data, color, { activeVal: filterKey ? filters[filterKey] : undefined, onFilter: filterKey ? function(v) { setFilter(filterKey, v); } : null });
   }
 
   function kpiRow(items) {
     return CE('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 18 } },
       ...items.map(function(item) {
-        return CE('div', { key: item[0], style: { flex: '1 1 110px', background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, padding: '14px 16px', textAlign: 'center', boxShadow: '0 1px 2px rgba(0,0,0,0.04)' } },
-          CE('div', { style: { fontSize: 20, fontWeight: 700, color: item[2] || '#1e293b', letterSpacing: '-0.5px' } }, String(item[1])),
+        return CE('div', { key: item[0], style: { flex: '1 1 120px', background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, padding: '14px 16px', textAlign: 'center', boxShadow: '0 1px 2px rgba(0,0,0,0.04)' } },
+          CE('div', { style: { fontSize: 22, fontWeight: 800, color: item[2] || '#1e293b', letterSpacing: '-0.5px' } }, String(item[1])),
           CE('div', { style: { fontSize: 11, color: '#94a3b8', marginTop: 4, textTransform: 'uppercase', letterSpacing: '0.04em', lineHeight: 1.3 } }, item[0])
         );
       })
@@ -4637,10 +4649,7 @@ function GlobeFotografiaView({ token }) {
     return CE('div', { style: { background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, padding: '18px 20px', marginBottom: 14, boxShadow: '0 1px 3px rgba(0,0,0,0.04)' } },
       CE('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 } },
         CE('div', { style: { fontSize: 13, fontWeight: 600, color: '#334155', flex: 1 } }, title),
-        av ? CE('button', {
-          onClick: function() { setFilter(filterKey, av); },
-          style: { fontSize: 11, background: '#eef2ff', color: '#6366f1', border: 'none', borderRadius: 999, padding: '2px 10px', cursor: 'pointer' }
-        }, av + ' ×') : null
+        av ? CE('button', { onClick: function() { setFilter(filterKey, av); }, style: { fontSize: 11, background: '#eef2ff', color: '#6366f1', border: 'none', borderRadius: 999, padding: '2px 10px', cursor: 'pointer' } }, av + ' \xd7') : null
       ),
       content
     );
@@ -4658,330 +4667,419 @@ function GlobeFotografiaView({ token }) {
     );
   }
 
-  // ── Sections ──
+  function toggleBtn(label, active, onClick) {
+    return CE('button', { onClick: onClick, style: { fontSize: 11, padding: '3px 10px', borderRadius: 6, cursor: 'pointer', fontWeight: active ? 700 : 400, background: active ? '#6366f1' : '#f1f5f9', color: active ? '#fff' : '#64748b', border: 'none' } }, label);
+  }
+
+  function buildTimeData(arr, tsKey, periodo) {
+    var counts = {};
+    for (var i = 0; i < arr.length; i++) {
+      var ts = arr[i][tsKey];
+      if (!ts) continue;
+      var d = new Date(Number(ts));
+      if (isNaN(d.getTime())) continue;
+      var k;
+      if (periodo === 'mes') k = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0');
+      else if (periodo === 'dia') k = d.toISOString().slice(0,10);
+      else k = String(d.getFullYear());
+      counts[k] = (counts[k]||0) + 1;
+    }
+    return Object.entries(counts).sort(function(a,b){return a[0]<b[0]?-1:1;}).map(function(e){return {name:e[0],value:e[1]};});
+  }
+
   function renderBase() {
     var total = fp.length;
-    var ativos = fp.filter(function(p) { return String(p.status || '').toLowerCase() === 'ativo'; }).length;
-    var comCand = new Set(fc.map(function(c) { return String(c.codigo_pessoa != null ? c.codigo_pessoa : ''); })).size;
-    var diasMed = total > 0 ? (fp.reduce(function(s, p) { return s + Number(p.dias_cadastro_ate_primeira_candidatura || 0); }, 0) / total).toFixed(1) : '—';
-    var anoCounts = {};
-    for (var i = 0; i < fp.length; i++) {
-      var ts = fp[i].data_cadastro;
-      if (ts == null) continue;
-      var yr = new Date(Number(ts)).getFullYear();
-      if (yr >= 2010 && yr <= 2030) anoCounts[yr] = (anoCounts[yr] || 0) + 1;
+    var comCandSet = new Set(fc.map(function(c){return String(c.codigo_pessoa!=null?c.codigo_pessoa:'');}));
+    var comCand = comCandSet.size;
+    var totalCand = fc.length;
+    var mediaCand = comCand > 0 ? (totalCand / comCand).toFixed(1) : '—';
+    var ativos = fp.filter(function(p){return String(p.status||'').toLowerCase()==='ativo';}).length;
+    var diasMed = total > 0 ? (fp.reduce(function(s,p){return s+Number(p.dias_cadastro_ate_primeira_candidatura||0);},0)/total).toFixed(1) : '—';
+    var contMap = {};
+    for (var i = 0; i < fc.length; i++) {
+      var cid = String(fc[i].codigo_pessoa!=null?fc[i].codigo_pessoa:'');
+      if (cid) contMap[cid] = (contMap[cid]||0) + 1;
     }
-    var anoData = Object.entries(anoCounts).sort(function(a, b) { return Number(a[0]) - Number(b[0]); }).map(function(e) { return { name: e[0], value: e[1] }; });
-    var statusData = _gAllSorted(_gCountBy(fp, 'status'));
-    var latestYear = selectedYears.slice().sort(function(a,b){return b-a;})[0];
-    return CE('div', null,
-      selectedYears.length > 1 ? CE('div', { style: { marginBottom: 14, padding: '8px 14px', background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: 8, fontSize: 12, color: '#0369a1' } },
-        'ℹ️ Exibindo pessoas e candidaturas de ' + selectedYears.length + ' anos (' + Math.min.apply(null, selectedYears) + '–' + Math.max.apply(null, selectedYears) + '). Pessoas duplicadas entre anos são deduplicadas pelo registro mais recente.'
-      ) : null,
-      kpiRow([['Total Cadastros', total.toLocaleString('pt-BR'), '#6366f1'], ['Ativos', ativos.toLocaleString('pt-BR'), '#22c55e'], ['Inativos', (total - ativos).toLocaleString('pt-BR'), '#ef4444'], ['Com Candidatura', comCand.toLocaleString('pt-BR'), '#f59e0b'], ['Média Dias → 1ª Cand.', diasMed]]),
-      grid2(card('Cadastros por Ano', bar(anoData, '#6366f1', null)), card('Status', bar(statusData, '#22c55e', 'status'), 'status'))
-    );
-  }
-
-  function renderDemo() {
-    var idades = fp.map(function(p) { return Number(p.idade || 0); }).filter(function(n) { return n > 0 && n < 120; });
-    var med = idades.length > 0 ? (idades.reduce(function(a, b) { return a + b; }, 0) / idades.length).toFixed(1) : '—';
-    var mn = idades.length > 0 ? idades.reduce(function(m, n) { return n < m ? n : m; }, Infinity) : '—';
-    var mx = idades.length > 0 ? idades.reduce(function(m, n) { return n > m ? n : m; }, -Infinity) : '—';
-    var faixas = [
-      { name: '< 18', value: idades.filter(function(n) { return n < 18; }).length },
-      { name: '18–24', value: idades.filter(function(n) { return n >= 18 && n <= 24; }).length },
-      { name: '25–34', value: idades.filter(function(n) { return n >= 25 && n <= 34; }).length },
-      { name: '35–44', value: idades.filter(function(n) { return n >= 35 && n <= 44; }).length },
-      { name: '45–54', value: idades.filter(function(n) { return n >= 45 && n <= 54; }).length },
-      { name: '55+', value: idades.filter(function(n) { return n >= 55; }).length },
+    var histVals = Object.values(contMap);
+    var histData = [
+      {name:'1',value:histVals.filter(function(v){return v===1;}).length},
+      {name:'2',value:histVals.filter(function(v){return v===2;}).length},
+      {name:'3',value:histVals.filter(function(v){return v===3;}).length},
+      {name:'4',value:histVals.filter(function(v){return v===4;}).length},
+      {name:'5',value:histVals.filter(function(v){return v===5;}).length},
+      {name:'6+',value:histVals.filter(function(v){return v>=6;}).length},
     ];
+    var cadData = buildTimeData(fp, 'data_cadastro', cadPeriodo);
+    var candData = buildTimeData(fc, 'data_candidatura', candPeriodo);
+    var statusData = _gAllSorted(_gCountBy(fp, 'status'));
+    var procData = _gAllSorted(_gCountBy(fc, 'nome_processo'));
     return CE('div', null,
-      kpiRow([['Média de Idade', med], ['Mínima', mn], ['Máxima', mx]]),
-      grid2(card('Faixa Etária', bar(faixas, '#f59e0b', 'faixa'), 'faixa'), card('Identidade de Gênero', bar(_gAllSorted(_gCountBy(fp, 'identidade_genero')), '#8b5cf6', 'genero'), 'genero'))
-    );
-  }
-
-  function renderLocal() {
-    return CE('div', null,
+      selectedYears.length > 1 ? CE('div',{style:{marginBottom:14,padding:'8px 14px',background:'#f0f9ff',border:'1px solid #bae6fd',borderRadius:8,fontSize:12,color:'#0369a1'}},'ℹ️ Exibindo '+selectedYears.length+' anos ('+Math.min.apply(null,selectedYears)+'–'+Math.max.apply(null,selectedYears)+'). Duplicatas deduplicadas pelo registro mais recente.') : null,
       kpiRow([
-        ['Estados Únicos', new Set(fp.map(function(p) { return String(p.estado || '').trim(); }).filter(Boolean)).size],
-        ['Cidades Únicas', new Set(fp.map(function(p) { return String(p.cidade || '').trim(); }).filter(Boolean)).size]
+        ['Total no Banco',total.toLocaleString('pt-BR'),'#6366f1'],
+        ['Com Candidatura',comCand.toLocaleString('pt-BR'),'#22c55e'],
+        ['Total Candidaturas',totalCand.toLocaleString('pt-BR'),'#f59e0b'],
+        ['Média Cand./Pessoa',mediaCand],
+        ['Dias → 1ª Cand.',diasMed],
+        ['Ativos',ativos.toLocaleString('pt-BR'),'#10b981'],
       ]),
-      grid2(card('Estados', bar(_gAllSorted(_gCountBy(fp, 'estado')), '#6366f1', 'estado'), 'estado'), card('Regiões', bar(_gAllSorted(_gCountBy(fp, 'regiao')), '#14b8a6', 'regiao'), 'regiao')),
-      card('Cidades', bar(_gAllSorted(_gCountBy(fp, 'cidade')), '#f59e0b', null))
+      grid2(
+        card('Status',bar(statusData,'#22c55e','status'),'status'),
+        card('Candidaturas por Processo',bar(procData,'#f59e0b','processo'),'processo')
+      ),
+      card('Pessoas por Qtd de Candidaturas',bar(histData,'#8b5cf6',null)),
+      CE('div',{style:{background:'#fff',border:'1px solid #e2e8f0',borderRadius:12,padding:'18px 20px',marginBottom:14,boxShadow:'0 1px 3px rgba(0,0,0,0.04)'}},
+        CE('div',{style:{display:'flex',alignItems:'center',gap:8,marginBottom:14}},
+          CE('div',{style:{fontSize:13,fontWeight:600,color:'#334155',flex:1}},'Cadastros por Período'),
+          CE('div',{style:{display:'flex',gap:4}},
+            toggleBtn('Ano',cadPeriodo==='ano',function(){setCadPeriodo('ano');}),
+            toggleBtn('Mês',cadPeriodo==='mes',function(){setCadPeriodo('mes');}),
+            toggleBtn('Dia',cadPeriodo==='dia',function(){setCadPeriodo('dia');})
+          )
+        ),
+        _gBar(cadData,'#6366f1',{})
+      ),
+      CE('div',{style:{background:'#fff',border:'1px solid #e2e8f0',borderRadius:12,padding:'18px 20px',marginBottom:14,boxShadow:'0 1px 3px rgba(0,0,0,0.04)'}},
+        CE('div',{style:{display:'flex',alignItems:'center',gap:8,marginBottom:14}},
+          CE('div',{style:{fontSize:13,fontWeight:600,color:'#334155',flex:1}},'Candidaturas por Período'),
+          CE('div',{style:{display:'flex',gap:4}},
+            toggleBtn('Ano',candPeriodo==='ano',function(){setCandPeriodo('ano');}),
+            toggleBtn('Mês',candPeriodo==='mes',function(){setCandPeriodo('mes');}),
+            toggleBtn('Dia',candPeriodo==='dia',function(){setCandPeriodo('dia');})
+          )
+        ),
+        _gBar(candData,'#f59e0b',{})
+      )
     );
   }
 
   function renderDiv() {
     var total = fp.length || 1;
-    var comRaca = fp.filter(function(p) { return String(p.raca_cor || '').trim(); }).length;
-    var comPcd = fp.filter(function(p) { var v = String(p.pcd_cadastro || '').trim().toLowerCase(); return v && v !== 'não'; }).length;
-    return CE('div', null,
-      kpiRow([['% Raça/Cor preenchida', ((comRaca / total) * 100).toFixed(1) + '%'], ['% PCD', ((comPcd / total) * 100).toFixed(1) + '%']]),
-      grid2(card('Raça/Cor', bar(_gAllSorted(_gCountBy(fp, 'raca_cor')), '#ef4444', 'raca'), 'raca'), card('Gênero', bar(_gAllSorted(_gCountBy(fp, 'identidade_genero')), '#8b5cf6', 'genero'), 'genero')),
-      grid2(card('Orientação Afetivo-Sexual', bar(_gAllSorted(_gCountBy(fp, 'orientacao_afetivo_sexual')), '#f97316', null)), card('Renda Familiar', bar(_gAllSorted(_gCountBy(fp, 'renda_familiar')), '#06b6d4', 'renda'), 'renda')),
-      card('PCD (Cadastro)', bar(_gAllSorted(_gCountBy(fp, 'pcd_cadastro')), '#22c55e', 'pcd'), 'pcd')
+    var comRaca = fp.filter(function(p){return String(p.raca_cor||'').trim();}).length;
+    var comPcd = fp.filter(function(p){var v=String(p.pcd_cadastro||'').trim().toLowerCase();return v&&v!=='não'&&v!=='nao';}).length;
+    var idades = fp.map(function(p){return Number(p.idade||0);}).filter(function(n){return n>0&&n<120;});
+    var idadeMed = idades.length>0?(idades.reduce(function(a,b){return a+b;},0)/idades.length).toFixed(1):'—';
+    var idadeMin = idades.length>0?idades.reduce(function(m,n){return n<m?n:m;},Infinity):'—';
+    var idadeMax = idades.length>0?idades.reduce(function(m,n){return n>m?n:m;},-Infinity):'—';
+    var faixas = [
+      {name:'< 18',value:idades.filter(function(n){return n<18;}).length},
+      {name:'18–24',value:idades.filter(function(n){return n>=18&&n<=24;}).length},
+      {name:'25–34',value:idades.filter(function(n){return n>=25&&n<=34;}).length},
+      {name:'35–44',value:idades.filter(function(n){return n>=35&&n<=44;}).length},
+      {name:'45–54',value:idades.filter(function(n){return n>=45&&n<=54;}).length},
+      {name:'55+',value:idades.filter(function(n){return n>=55;}).length},
+    ];
+    var pcdTipoData = [];
+    if (filters.pcd) {
+      var pv = filters.pcd.toLowerCase();
+      if (pv !== 'não' && pv !== 'nao') pcdTipoData = _gAllSorted(_gCountBy(fp,'tipo_deficiencia'));
+    }
+    return CE('div',null,
+      kpiRow([
+        ['% Raça/Cor preenchida',((comRaca/total)*100).toFixed(1)+'%'],
+        ['% PCD',((comPcd/total)*100).toFixed(1)+'%'],
+        ['Idade Média',idadeMed],
+        ['Idade Mín.',idadeMin===Infinity?'—':idadeMin],
+        ['Idade Máx.',idadeMax===-Infinity?'—':idadeMax],
+      ]),
+      grid2(
+        card('Identidade de Gênero',bar(_gAllSorted(_gCountBy(fp,'identidade_genero')),'#8b5cf6','genero'),'genero'),
+        card('Autodeclaração Racial',bar(_gAllSorted(_gCountBy(fp,'raca_cor')),'#ef4444','raca'),'raca')
+      ),
+      grid2(
+        card('PCD (Cadastro)',bar(_gAllSorted(_gCountBy(fp,'pcd_cadastro')),'#22c55e','pcd'),'pcd'),
+        card('Faixa Etária',bar(faixas,'#f59e0b','faixa'),'faixa')
+      ),
+      pcdTipoData.length>0?card('Tipo de Deficiência',bar(pcdTipoData,'#6366f1',null)):null,
+      grid2(
+        card('Renda Familiar',bar(_gAllSorted(_gCountBy(fp,'renda_familiar')),'#06b6d4','renda'),'renda'),
+        card('Orientação Afetivo-Sexual',bar(_gAllSorted(_gCountBy(fp,'orientacao_afetivo_sexual')),'#f97316',null))
+      )
+    );
+  }
+
+  function renderLocal() {
+    var paisSet = new Set(fp.map(function(p){return String(p.pais||'').trim();}).filter(Boolean));
+    var estadoSet = new Set(fp.map(function(p){return String(p.estado||'').trim();}).filter(Boolean));
+    var cidadeSet = new Set(fp.map(function(p){return String(p.cidade||'').trim();}).filter(Boolean));
+    return CE('div',null,
+      kpiRow([
+        ['Países',paisSet.size],
+        ['Estados',estadoSet.size],
+        ['Cidades',cidadeSet.size],
+      ]),
+      grid2(
+        card('País',bar(_gAllSorted(_gCountBy(fp,'pais')),'#6366f1','pais'),'pais'),
+        card('Região',bar(_gAllSorted(_gCountBy(fp,'regiao')),'#14b8a6','regiao'),'regiao')
+      ),
+      grid2(
+        card('Estado',bar(_gAllSorted(_gCountBy(fp,'estado')),'#f59e0b','estado'),'estado'),
+        card('Cidade',bar(_gAllSorted(_gCountBy(fp,'cidade')),'#8b5cf6','cidade'),'cidade')
+      )
     );
   }
 
   function renderForm() {
     var total = fp.length || 1;
-    var comGrad = fp.filter(function(p) { return String(p.graduacao_1_curso || '').trim(); }).length;
-    var comPos = fp.filter(function(p) { return String(p.pos_1_curso || '').trim(); }).length;
+    var comGrad = fp.filter(function(p){return String(p.graduacao_1_curso||'').trim();}).length;
+    var comPos = fp.filter(function(p){return String(p.pos_1_curso||'').trim();}).length;
+    var comTec = fp.filter(function(p){return String(p.tecnico_1_curso||'').trim();}).length;
     var cursoMap = {};
     for (var i = 0; i < fp.length; i++) {
-      var p = fp[i];
-      ['graduacao_1_curso', 'graduacao_2_curso', 'graduacao_3_curso'].forEach(function(k) {
-        var c = String(p[k] || '').trim();
-        if (c) cursoMap[c] = (cursoMap[c] || 0) + 1;
+      ['graduacao_1_curso','graduacao_2_curso','graduacao_3_curso'].forEach(function(k){
+        var c = String(fp[i][k]||'').trim();
+        if (c) cursoMap[c] = (cursoMap[c]||0) + 1;
       });
     }
-    return CE('div', null,
-      kpiRow([['% Com Graduação', ((comGrad / total) * 100).toFixed(1) + '%', '#6366f1'], ['% Com Pós-Grad.', ((comPos / total) * 100).toFixed(1) + '%', '#8b5cf6']]),
-      grid2(card('Cursos de Graduação', bar(_gAllSorted(cursoMap), '#6366f1', 'curso'), 'curso'), card('Instituições', bar(_gAllSorted(_gCountBy(fp, 'graduacao_1_instituicao')), '#22c55e', null))),
-      grid2(card('Tipo de Graduação', bar(_gAllSorted(_gCountBy(fp, 'graduacao_1_tipo')), '#f59e0b', 'nivel_ensino'), 'nivel_ensino'), card('Modalidade', bar(_gAllSorted(_gCountBy(fp, 'graduacao_1_modalidade')), '#14b8a6', null)))
-    );
-  }
-
-  function renderIdiomas() {
-    return CE('div', null,
+    var idiomaGroups = {};
+    for (var j = 0; j < fi.length; j++) {
+      var idioma = String(fi[j].idioma||'').trim()||'(Vazio)';
+      var nivel = String(fi[j].nivel||'').trim()||'(Vazio)';
+      if (!idiomaGroups[idioma]) idiomaGroups[idioma] = {count:0,niveis:{}};
+      idiomaGroups[idioma].count++;
+      idiomaGroups[idioma].niveis[nivel] = (idiomaGroups[idioma].niveis[nivel]||0)+1;
+    }
+    var idiomaList = Object.entries(idiomaGroups).sort(function(a,b){return b[1].count-a[1].count;});
+    return CE('div',null,
       kpiRow([
-        ['Pessoas com Idioma', new Set(fi.map(function(i) { return String(i.codigo_pessoa != null ? i.codigo_pessoa : ''); })).size.toLocaleString('pt-BR'), '#6366f1'],
-        ['Total Declarações', fi.length.toLocaleString('pt-BR')],
-        ['Idiomas Únicos', new Set(fi.map(function(i) { return String(i.idioma || ''); })).size]
+        ['% Com Graduação',((comGrad/total)*100).toFixed(1)+'%','#6366f1'],
+        ['% Com Pós-Grad.',((comPos/total)*100).toFixed(1)+'%','#8b5cf6'],
+        ['% Com Técnico',((comTec/total)*100).toFixed(1)+'%','#14b8a6'],
       ]),
-      grid2(card('Idiomas', bar(_gAllSorted(_gCountBy(fi, 'idioma')), '#6366f1', null)), card('Nível', bar(_gAllSorted(_gCountBy(fi, 'nivel')), '#22c55e', null)))
-    );
-  }
-
-  function renderCand() {
-    var total = fc.length;
-    var pessoasComCand = new Set(fc.map(function(c) { return String(c.codigo_pessoa != null ? c.codigo_pessoa : ''); })).size;
-    var mediaCand = pessoasComCand > 0 ? (total / pessoasComCand).toFixed(1) : '—';
-    var anoCandCount = {};
-    for (var i = 0; i < fc.length; i++) {
-      var ts = fc[i].data_candidatura;
-      if (ts == null) continue;
-      var yr = new Date(Number(ts)).getFullYear();
-      if (yr >= 2010 && yr <= 2030) anoCandCount[yr] = (anoCandCount[yr] || 0) + 1;
-    }
-    var anoData = Object.entries(anoCandCount).sort(function(a, b) { return Number(a[0]) - Number(b[0]); }).map(function(e) { return { name: e[0], value: e[1] }; });
-    return CE('div', null,
-      kpiRow([['Total Candidaturas', total.toLocaleString('pt-BR'), '#6366f1'], ['Pessoas Únicas', pessoasComCand.toLocaleString('pt-BR')], ['Média por Pessoa', mediaCand]]),
-      grid2(card('Candidaturas por Ano', bar(anoData, '#6366f1', null)), card('Por Processo', bar(_gAllSorted(_gCountBy(fc, 'nome_processo')), '#f59e0b', 'processo'), 'processo'))
-    );
-  }
-
-  function renderProc() {
-    var procMap = {};
-    for (var i = 0; i < fc.length; i++) {
-      var c = fc[i];
-      var nome = String(c.nome_processo || '').trim() || '(sem nome)';
-      var pid = String(c.codigo_pessoa != null ? c.codigo_pessoa : '');
-      if (!procMap[nome]) procMap[nome] = { pessoas: new Set(), total: 0 };
-      procMap[nome].pessoas.add(pid);
-      procMap[nome].total++;
-    }
-    var processos = new Set(fc.map(function(c) { return String(c.codigo_processo != null ? c.codigo_processo : ''); })).size;
-    var procList = Object.entries(procMap).map(function(e) { return { nome: e[0], candidatos: e[1].pessoas.size, total: e[1].total }; }).sort(function(a, b) { return b.candidatos - a.candidatos; });
-    var barData = procList.map(function(d) { return { name: d.nome, value: d.candidatos }; });
-    return CE('div', null,
-      kpiRow([['Processos Únicos', processos.toLocaleString('pt-BR'), '#6366f1']]),
-      card('Processos por Candidatos Únicos', bar(barData, '#6366f1', 'processo'), 'processo'),
-      CE('div', { style: { background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, padding: '18px 20px', boxShadow: '0 1px 3px rgba(0,0,0,0.04)' } },
-        CE('div', { style: { fontSize: 13, fontWeight: 600, color: '#334155', marginBottom: 12 } }, 'Tabela de Processos'),
-        CE('div', { style: { maxHeight: 400, overflowY: 'auto' } },
-          CE('table', { style: { width: '100%', borderCollapse: 'collapse', fontSize: 12 } },
-            CE('thead', null,
-              CE('tr', { style: { background: '#f8fafc', position: 'sticky', top: 0 } },
-                CE('th', { style: { textAlign: 'left', padding: '8px 12px', color: '#64748b', fontWeight: 600, fontSize: 11 } }, 'Processo'),
-                CE('th', { style: { textAlign: 'right', padding: '8px 12px', color: '#64748b', fontWeight: 600, fontSize: 11 } }, 'Candidatos Únicos'),
-                CE('th', { style: { textAlign: 'right', padding: '8px 12px', color: '#64748b', fontWeight: 600, fontSize: 11 } }, 'Total Cand.')
-              )
+      grid2(
+        card('Cursos de Graduação',bar(_gAllSorted(cursoMap),'#6366f1','curso'),'curso'),
+        card('Instituições',bar(_gAllSorted(_gCountBy(fp,'graduacao_1_instituicao')),'#22c55e','instituicao'),'instituicao')
+      ),
+      grid2(
+        card('Tipo de Graduação',bar(_gAllSorted(_gCountBy(fp,'graduacao_1_tipo')),'#f59e0b','nivel_ensino'),'nivel_ensino'),
+        card('Modalidade',bar(_gAllSorted(_gCountBy(fp,'graduacao_1_modalidade')),'#14b8a6',null))
+      ),
+      grid2(
+        card('Curso Técnico',bar(_gAllSorted(_gCountBy(fp,'tecnico_1_curso')),'#ef4444',null)),
+        card('Instituição Técnica',bar(_gAllSorted(_gCountBy(fp,'tecnico_1_instituicao')),'#f97316',null))
+      ),
+      CE('div',{style:{background:'#fff',border:'1px solid #e2e8f0',borderRadius:12,padding:'18px 20px',boxShadow:'0 1px 3px rgba(0,0,0,0.04)'}},
+        CE('div',{style:{fontSize:13,fontWeight:600,color:'#334155',marginBottom:12}},'🗣️ Idiomas'),
+        kpiRow([
+          ['Pessoas com Idioma',new Set(fi.map(function(i){return String(i.codigo_pessoa!=null?i.codigo_pessoa:'');})).size.toLocaleString('pt-BR')],
+          ['Total Declarações',fi.length.toLocaleString('pt-BR')],
+          ['Idiomas Únicos',idiomaList.length],
+        ]),
+        ...idiomaList.map(function(entry){
+          var nome = entry[0], data = entry[1];
+          var exp = expandedIdioma === nome;
+          var nivelData = Object.entries(data.niveis).sort(function(a,b){return b[1]-a[1];}).map(function(e){return {name:e[0],value:e[1]};});
+          return CE('div',{key:nome,style:{borderTop:'1px solid #f1f5f9',paddingTop:8,marginTop:4}},
+            CE('div',{onClick:function(){setExpandedIdioma(exp?null:nome);},style:{display:'flex',alignItems:'center',gap:8,cursor:'pointer',padding:'4px 0'}},
+              CE('span',{style:{fontSize:12,fontWeight:600,color:'#334155',flex:1}},nome),
+              CE('span',{style:{fontSize:12,color:'#64748b',background:'#f1f5f9',borderRadius:9999,padding:'1px 8px'}},data.count.toLocaleString('pt-BR')),
+              CE('span',{style:{fontSize:10,color:'#94a3b8'}},exp?'▲':'▼')
             ),
-            CE('tbody', null,
-              ...procList.map(function(d, i) {
-                return CE('tr', { key: i, onClick: function() { setFilter('processo', d.nome); }, style: { borderBottom: '1px solid #f1f5f9', cursor: 'pointer', background: filters.processo === d.nome ? '#eef2ff' : 'transparent' } },
-                  CE('td', { style: { padding: '7px 12px', color: '#334155' } }, d.nome),
-                  CE('td', { style: { padding: '7px 12px', textAlign: 'right', fontWeight: 600, color: '#1e293b' } }, d.candidatos.toLocaleString('pt-BR')),
-                  CE('td', { style: { padding: '7px 12px', textAlign: 'right', color: '#64748b' } }, d.total.toLocaleString('pt-BR'))
-                );
-              })
-            )
-          )
-        )
+            exp?CE('div',{style:{paddingTop:8,paddingLeft:12}},_gBar(nivelData,'#6366f1',{})):null
+          );
+        })
       )
     );
   }
 
-  function renderEtapas() {
-    var etapaOrdMap = {};
-    for (var i = 0; i < fc.length; i++) {
-      var c = fc[i];
-      var etapa = String(c.etapa_atual || '').trim() || '(Vazio)';
-      var ord = Number(c.ordem_etapa || 0);
-      if (!etapaOrdMap[etapa]) etapaOrdMap[etapa] = { count: 0, ordSum: 0 };
-      etapaOrdMap[etapa].count++;
-      etapaOrdMap[etapa].ordSum += ord;
+  function renderPessoas() {
+    var commCols = ['aceita_mensagem','aceita_mensagens','aceita_comunicacao','aceita_email','aceita_whatsapp','opt_in_email','opt_in_sms'];
+    function getComm(p) { for (var i=0;i<commCols.length;i++){var v=p[commCols[i]];if(v!=null&&v!=='')return String(v);} return '—'; }
+    function getNome(p) { return String(p.nome||p.nome_completo||p.nome_pessoa||'—'); }
+    function getEmail(p) { return String(p.email||p.email_pessoal||'—'); }
+    function getTel(p) { return String(p.telefone||p.telefone_celular||p.celular||'—'); }
+    var visible = fp.filter(function(p){
+      if (!pessoasSearch) return true;
+      var s = pessoasSearch.toLowerCase();
+      return getNome(p).toLowerCase().indexOf(s)>=0||getEmail(p).toLowerCase().indexOf(s)>=0||String(p.codigo_pessoa||'').indexOf(s)>=0;
+    });
+    var shown = visible.slice(0,500);
+    function exportCsv() {
+      var header = ['Código','Nome','E-mail','Telefone','Aceita Comunicação','Status'];
+      var rows = visible.map(function(p){return [p.codigo_pessoa||'',getNome(p),getEmail(p),getTel(p),getComm(p),String(p.status||'')].map(function(v){return '"'+String(v).replace(/"/g,'""')+'"';});});
+      var csv = [header.join(',')].concat(rows.map(function(r){return r.join(',');})).join('\n');
+      var blob = new Blob(['﻿'+csv],{type:'text/csv;charset=utf-8;'});
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');a.href=url;a.download='globe-pessoas.csv';a.click();URL.revokeObjectURL(url);
     }
-    var etapaList = Object.entries(etapaOrdMap).map(function(e) { return { name: e[0], value: e[1].count, avgOrd: e[1].count > 0 ? e[1].ordSum / e[1].count : 0 }; });
-    var barData = etapaList.slice().sort(function(a, b) { return a.avgOrd - b.avgOrd; }).map(function(d) { return { name: d.name, value: d.value }; });
-    var top = etapaList.slice().sort(function(a, b) { return b.value - a.value; })[0];
-    return CE('div', null,
-      kpiRow([['Etapas Únicas', etapaList.length], ['Mais populosa', top ? String(top.name).slice(0, 30) : '—']]),
-      card('Distribuição por Etapa', bar(barData, '#6366f1', 'etapa'), 'etapa')
-    );
-  }
-
-  function renderRelac() {
-    var contMap = {};
-    for (var i = 0; i < fc.length; i++) {
-      var id = String(fc[i].codigo_pessoa != null ? fc[i].codigo_pessoa : '');
-      contMap[id] = (contMap[id] || 0) + 1;
+    function exportXlsx() {
+      if (!window.XLSX){alert('SheetJS não carregado');return;}
+      var data = [['Código','Nome','E-mail','Telefone','Aceita Comunicação','Status']].concat(visible.map(function(p){return [p.codigo_pessoa||'',getNome(p),getEmail(p),getTel(p),getComm(p),String(p.status||'')];}));
+      var ws = window.XLSX.utils.aoa_to_sheet(data);
+      var wb = window.XLSX.utils.book_new();
+      window.XLSX.utils.book_append_sheet(wb,ws,'Pessoas');
+      window.XLSX.writeFile(wb,'globe-pessoas.xlsx');
     }
-    var vals = Object.values(contMap);
-    var histData = [1, 2, 3, 4, 5].map(function(n) { return { name: String(n), value: vals.filter(function(v) { return v === n; }).length }; })
-      .concat([{ name: '6+', value: vals.filter(function(v) { return v >= 6; }).length }]);
-    return CE('div', null,
-      kpiRow([['1 candidatura', vals.filter(function(n) { return n === 1; }).length.toLocaleString('pt-BR')], ['2 candidaturas', vals.filter(function(n) { return n === 2; }).length.toLocaleString('pt-BR')], ['3+ candidaturas', vals.filter(function(n) { return n >= 3; }).length.toLocaleString('pt-BR'), '#6366f1']]),
-      card('Candidaturas por Pessoa (histograma)', bar(histData, '#6366f1', null))
-    );
-  }
-
-  function renderCruz() {
-    var dimOpts = [
-      { v: 'identidade_genero', label: 'Identidade de Gênero' },
-      { v: 'raca_cor', label: 'Raça/Cor' },
-      { v: 'regiao', label: 'Região' },
-      { v: 'estado', label: 'Estado' },
-      { v: 'renda_familiar', label: 'Renda Familiar' },
-      { v: 'pcd_cadastro', label: 'PCD Cadastro' },
-    ];
-    var metOpts = [
-      { v: 'total_candidaturas', label: 'Total de Candidaturas' },
-      { v: 'processos_unicos', label: 'Processos Únicos' },
-      { v: 'pessoas_unicas_com_candidatura', label: 'Pessoas com Candidatura' },
-    ];
-    return CE('div', { style: { background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, padding: '20px', boxShadow: '0 1px 3px rgba(0,0,0,0.04)' } },
-      CE('div', { style: { display: 'flex', gap: 16, marginBottom: 20, flexWrap: 'wrap' } },
-        CE('div', null,
-          CE('label', { style: { fontSize: 11, fontWeight: 600, color: '#94a3b8', display: 'block', marginBottom: 4, textTransform: 'uppercase' } }, 'Dimensão'),
-          CE('select', { value: cruzDim, onChange: function(e) { setCruzDim(e.target.value); }, style: { border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 12px', fontSize: 13 } },
-            ...dimOpts.map(function(o) { return CE('option', { key: o.v, value: o.v }, o.label); })
-          )
-        ),
-        CE('div', null,
-          CE('label', { style: { fontSize: 11, fontWeight: 600, color: '#94a3b8', display: 'block', marginBottom: 4, textTransform: 'uppercase' } }, 'Métrica'),
-          CE('select', { value: cruzMet, onChange: function(e) { setCruzMet(e.target.value); }, style: { border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 12px', fontSize: 13 } },
-            ...metOpts.map(function(o) { return CE('option', { key: o.v, value: o.v }, o.label); })
+    return CE('div',null,
+      CE('div',{style:{display:'flex',gap:10,marginBottom:14,flexWrap:'wrap',alignItems:'center'}},
+        CE('input',{type:'text',placeholder:'Buscar por nome, e-mail ou código…',value:pessoasSearch,onChange:function(e){setPessoasSearch(e.target.value);},style:{flex:1,minWidth:200,border:'1px solid #e2e8f0',borderRadius:8,padding:'8px 12px',fontSize:13}}),
+        CE('span',{style:{fontSize:12,color:'#94a3b8'}},visible.length.toLocaleString('pt-BR')+' de '+fp.length.toLocaleString('pt-BR')),
+        CE('button',{onClick:exportCsv,style:{fontSize:12,background:'#f0fdf4',color:'#16a34a',border:'1px solid #bbf7d0',borderRadius:8,padding:'7px 14px',cursor:'pointer',fontWeight:600}},'⬇ CSV'),
+        CE('button',{onClick:exportXlsx,style:{fontSize:12,background:'#eff6ff',color:'#2563eb',border:'1px solid #bfdbfe',borderRadius:8,padding:'7px 14px',cursor:'pointer',fontWeight:600}},'⬇ XLSX')
+      ),
+      shown.length<visible.length?CE('div',{style:{fontSize:12,color:'#f59e0b',marginBottom:8,padding:'6px 10px',background:'#fffbeb',borderRadius:6}},'⚠️ Exibindo primeiros 500 de '+visible.length.toLocaleString('pt-BR')+'. Use os filtros ou exporte para ver todos.'):null,
+      CE('div',{style:{maxHeight:600,overflowY:'auto',background:'#fff',border:'1px solid #e2e8f0',borderRadius:12}},
+        CE('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:12}},
+          CE('thead',null,
+            CE('tr',{style:{background:'#f8fafc',position:'sticky',top:0}},
+              ...['Código','Nome','E-mail','Telefone','Comunicação','Status'].map(function(h){return CE('th',{key:h,style:{textAlign:'left',padding:'10px 12px',color:'#64748b',fontWeight:600,fontSize:11,borderBottom:'1px solid #e2e8f0',whiteSpace:'nowrap'}},h);})
+            )
+          ),
+          CE('tbody',null,
+            ...shown.map(function(p,idx){
+              var comm = getComm(p);
+              var commSim = comm.toLowerCase()==='sim';
+              var ativo = String(p.status||'').toLowerCase()==='ativo';
+              return CE('tr',{key:idx,style:{borderBottom:'1px solid #f8fafc',background:idx%2===0?'#fff':'#fafafa'}},
+                CE('td',{style:{padding:'8px 12px',color:'#64748b',fontFamily:'monospace',fontSize:11}},String(p.codigo_pessoa||'')),
+                CE('td',{style:{padding:'8px 12px',color:'#1e293b',fontWeight:500}},getNome(p)),
+                CE('td',{style:{padding:'8px 12px',color:'#475569'}},getEmail(p)),
+                CE('td',{style:{padding:'8px 12px',color:'#475569'}},getTel(p)),
+                CE('td',{style:{padding:'8px 12px'}},CE('span',{style:{fontSize:11,borderRadius:9999,padding:'2px 8px',background:commSim?'#dcfce7':'#f1f5f9',color:commSim?'#16a34a':'#64748b'}},comm)),
+                CE('td',{style:{padding:'8px 12px'}},CE('span',{style:{fontSize:11,borderRadius:9999,padding:'2px 8px',background:ativo?'#dcfce7':'#f1f5f9',color:ativo?'#16a34a':'#64748b'}},String(p.status||'—')))
+              );
+            })
           )
         )
-      ),
-      _gBar(cruzData, '#6366f1', {})
+      )
     );
   }
 
   var SECTION_NAV = [
-    { id: 'base', icon: '👥', label: 'Base' },
-    { id: 'demografia', icon: '📊', label: 'Demografia' },
-    { id: 'localizacao', icon: '📍', label: 'Localização' },
-    { id: 'diversidade', icon: '🌈', label: 'Diversidade' },
-    { id: 'formacao', icon: '🎓', label: 'Formáção' },
-    { id: 'idiomas', icon: '🗣️', label: 'Idiomas' },
-    { id: 'candidaturas', icon: '📝', label: 'Candidaturas' },
-    { id: 'processos', icon: '🏢', label: 'Processos' },
-    { id: 'etapas', icon: '🔄', label: 'Etapas' },
-    { id: 'relacionamento', icon: '🔗', label: 'Relacionamento' },
-    { id: 'cruzamentos', icon: '⚡', label: 'Cruzamentos' },
+    {id:'base',icon:'👥',label:'Base'},
+    {id:'diversidade',icon:'🌈',label:'Diversidade'},
+    {id:'localizacao',icon:'📍',label:'Localização'},
+    {id:'formacao',icon:'🎓',label:'Formação'},
+    {id:'pessoas',icon:'🗂️',label:'Pessoas'},
   ];
 
-  var FILTER_LABELS = { genero: 'Gênero', raca: 'Raça/Cor', estado: 'Estado', regiao: 'Região', status: 'Status', faixa: 'Faixa Etária', pcd: 'PCD', renda: 'Renda', curso: 'Curso', nivel_ensino: 'Nível Ensino', etapa: 'Etapa', processo: 'Processo' };
+  var FILTER_LABELS = {
+    genero:'Gênero',raca:'Raça/Cor',estado:'Estado',regiao:'Região',pais:'País',cidade:'Cidade',
+    status:'Status',faixa:'Faixa Etária',pcd:'PCD',renda:'Renda',curso:'Curso',
+    nivel_ensino:'Nível Ensino',etapa:'Etapa',processo:'Processo',instituicao:'Instituição',
+    aceita_comunicacao:'Aceita Comunicação',
+    cad_de:'Cadastro desde',cad_ate:'Cadastro até',
+    mod_de:'Modif. desde',mod_ate:'Modif. até',
+    ult_cand_de:'Últ. Cand. desde',ult_cand_ate:'Últ. Cand. até',
+  };
 
-  function scrollTo(id) {
-    var el = document.getElementById('gs-' + id);
-    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  function scrollTo(id) { var el = document.getElementById('gs-'+id); if (el) el.scrollIntoView({behavior:'smooth',block:'start'}); }
+
+  function renderFilterPanel() {
+    if (!showFilterPanel) return null;
+    function fSelect(label, key, options) {
+      return CE('div',{style:{marginBottom:12}},
+        CE('label',{style:{fontSize:10,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',display:'block',marginBottom:4}},label),
+        CE('select',{value:filters[key]||'',onChange:function(e){if(e.target.value)setFilter(key,e.target.value);else setFilters(function(f){var n=Object.assign({},f);delete n[key];return n;});},style:{width:'100%',fontSize:12,border:'1px solid #e2e8f0',borderRadius:7,padding:'6px 8px',background:'#fff'}},
+          CE('option',{value:''},'Todos'),
+          ...options.map(function(o){return CE('option',{key:o,value:o},o);})
+        )
+      );
+    }
+    function fDate(label, key) {
+      return CE('div',{style:{marginBottom:8}},
+        CE('label',{style:{fontSize:10,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',display:'block',marginBottom:3}},label),
+        CE('input',{type:'date',value:filters[key]||'',onChange:function(e){setFilterRange(key,e.target.value);},style:{width:'100%',fontSize:12,border:'1px solid #e2e8f0',borderRadius:7,padding:'5px 8px',boxSizing:'border-box'}})
+      );
+    }
+    function uniq(key) { return [...new Set(pessoas.map(function(p){return String(p[key]||'').trim();}).filter(Boolean))].sort(); }
+    function uniqCurso() { var s=new Set(); pessoas.forEach(function(p){['graduacao_1_curso','graduacao_2_curso','graduacao_3_curso'].forEach(function(k){var v=String(p[k]||'').trim();if(v)s.add(v);});}); return [...s].sort(); }
+    return CE('div',{style:{position:'fixed',top:0,right:0,bottom:0,width:280,background:'#fff',boxShadow:'-4px 0 20px rgba(0,0,0,0.12)',zIndex:500,overflowY:'auto',display:'flex',flexDirection:'column'}},
+      CE('div',{style:{padding:'16px 18px',borderBottom:'1px solid #e2e8f0',display:'flex',alignItems:'center',gap:8,flexShrink:0}},
+        CE('span',{style:{fontSize:14,fontWeight:700,color:'#1e293b',flex:1}},'🔍 Filtros'),
+        activeFilters.length>0?CE('button',{onClick:function(){setFilters({});},style:{fontSize:11,color:'#dc2626',background:'#fee2e2',border:'none',borderRadius:6,padding:'3px 8px',cursor:'pointer'}},'Limpar todos'):null,
+        CE('button',{onClick:function(){setShowFilterPanel(false);},style:{fontSize:20,background:'none',border:'none',cursor:'pointer',color:'#94a3b8',lineHeight:1}},'\xd7')
+      ),
+      CE('div',{style:{padding:'14px 18px',flex:1}},
+        CE('div',{style:{fontSize:11,fontWeight:800,color:'#6366f1',textTransform:'uppercase',marginBottom:10,marginTop:4}},'Identidade'),
+        fSelect('Identidade de Gênero','genero',uniq('identidade_genero')),
+        fSelect('Autodeclaração Racial','raca',uniq('raca_cor')),
+        fSelect('PCD','pcd',uniq('pcd_cadastro')),
+        fSelect('Status','status',uniq('status')),
+        fSelect('Aceita Comunicação','aceita_comunicacao',['Sim','Não']),
+        CE('div',{style:{fontSize:11,fontWeight:800,color:'#6366f1',textTransform:'uppercase',marginBottom:10,marginTop:16}},'Localização'),
+        fSelect('País','pais',uniq('pais')),
+        fSelect('Estado','estado',uniq('estado')),
+        fSelect('Cidade','cidade',uniq('cidade')),
+        fSelect('Região','regiao',uniq('regiao')),
+        CE('div',{style:{fontSize:11,fontWeight:800,color:'#6366f1',textTransform:'uppercase',marginBottom:10,marginTop:16}},'Formação'),
+        fSelect('Curso','curso',uniqCurso()),
+        fSelect('Instituição','instituicao',uniq('graduacao_1_instituicao')),
+        fSelect('Nível de Ensino','nivel_ensino',uniq('graduacao_1_tipo')),
+        CE('div',{style:{fontSize:11,fontWeight:800,color:'#6366f1',textTransform:'uppercase',marginBottom:10,marginTop:16}},'Datas'),
+        fDate('Cadastro desde','cad_de'),
+        fDate('Cadastro até','cad_ate'),
+        fDate('Modificação desde','mod_de'),
+        fDate('Modificação até','mod_ate'),
+        fDate('Última cand. desde','ult_cand_de'),
+        fDate('Última cand. até','ult_cand_ate')
+      )
+    );
   }
 
-  return CE('div', { style: { display: 'flex', minHeight: '100vh', background: '#f1f5f9', fontFamily: "'Segoe UI', sans-serif" } },
-    CE('div', { style: { width: 172, flexShrink: 0, background: '#1e293b', position: 'sticky', top: 0, height: '100vh', overflowY: 'auto', display: 'flex', flexDirection: 'column', zIndex: 40 } },
-      CE('div', { style: { padding: '18px 16px 10px', fontSize: 13, fontWeight: 800, color: '#e2e8f0', letterSpacing: '-0.3px' } }, '🌍 Globe'),
-      CE('div', { style: { padding: '0 8px 12px' } },
-        ...SECTION_NAV.map(function(s) {
-          return CE('button', { key: s.id, onClick: function() { scrollTo(s.id); }, style: { display: 'block', width: '100%', textAlign: 'left', padding: '7px 10px', background: 'transparent', border: 'none', color: '#94a3b8', fontSize: 12, cursor: 'pointer', borderRadius: 6 } }, s.icon + ' ' + s.label);
-        })
+  return CE('div',{style:{display:'flex',minHeight:'100vh',background:'#f1f5f9',fontFamily:"'Segoe UI',sans-serif"}},
+    CE('div',{style:{width:160,flexShrink:0,background:'#1e293b',position:'sticky',top:0,height:'100vh',overflowY:'auto',display:'flex',flexDirection:'column',zIndex:40}},
+      CE('div',{style:{padding:'18px 14px 10px',fontSize:13,fontWeight:800,color:'#e2e8f0',letterSpacing:'-0.3px'}},'🌍 Globe'),
+      CE('div',{style:{padding:'0 8px 8px'}},
+        ...SECTION_NAV.map(function(s){return CE('button',{key:s.id,onClick:function(){scrollTo(s.id);},style:{display:'block',width:'100%',textAlign:'left',padding:'7px 10px',background:'transparent',border:'none',color:'#94a3b8',fontSize:12,cursor:'pointer',borderRadius:6}},s.icon+' '+s.label);})
       ),
-      activeFilterEntries.length > 0 ? CE('div', { style: { margin: '0 10px 12px', padding: '10px 10px', background: '#1e3a5f', borderRadius: 8 } },
-        CE('div', { style: { fontSize: 10, color: '#64748b', marginBottom: 6, textTransform: 'uppercase', fontWeight: 700 } }, 'Filtros ativos'),
-        ...activeFilterEntries.map(function(e) {
-          return CE('div', { key: e[0], onClick: function() { setFilter(e[0], e[1]); }, style: { fontSize: 10, color: '#93c5fd', cursor: 'pointer', marginBottom: 3, lineHeight: 1.4 } }, (FILTER_LABELS[e[0]] || e[0]) + ': ' + e[1] + ' ×');
-        }),
-        CE('button', { onClick: function() { setFilters({}); }, style: { marginTop: 6, fontSize: 10, color: '#f87171', background: 'transparent', border: 'none', cursor: 'pointer', padding: 0 } }, 'Limpar todos')
-      ) : null
+      activeFilters.length>0?CE('div',{style:{margin:'8px 10px 0',padding:'8px 10px',background:'#1e3a5f',borderRadius:8}},
+        CE('div',{style:{fontSize:10,color:'#64748b',marginBottom:5,textTransform:'uppercase',fontWeight:700}},activeFilters.length+' filtro(s)'),
+        ...activeFilters.slice(0,4).map(function(e){return CE('div',{key:e[0],onClick:function(){setFilter(e[0],e[1]);},style:{fontSize:10,color:'#93c5fd',cursor:'pointer',marginBottom:2,lineHeight:1.4,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},(FILTER_LABELS[e[0]]||e[0])+': '+e[1]+' \xd7');}),
+        activeFilters.length>4?CE('div',{style:{fontSize:10,color:'#64748b'}},'+ '+(activeFilters.length-4)+' mais'):null,
+        CE('button',{onClick:function(){setFilters({});},style:{marginTop:5,fontSize:10,color:'#f87171',background:'transparent',border:'none',cursor:'pointer',padding:0}},'Limpar todos')
+      ):null
     ),
-    CE('div', { style: { flex: 1, overflowX: 'hidden', minWidth: 0 } },
-      CE('div', { style: { background: '#fff', borderBottom: '1px solid #e2e8f0', padding: '12px 24px', position: 'sticky', top: 0, zIndex: 30, display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' } },
-        CE('div', { style: { flex: 1 } },
-          CE('div', { style: { fontSize: 15, fontWeight: 800, color: '#1e293b' } }, '🌍 Globe · Fotografia'),
-          CE('div', { style: { fontSize: 11, color: '#94a3b8', marginTop: 1 } }, fp.length.toLocaleString('pt-BR') + ' pessoas · ' + fc.length.toLocaleString('pt-BR') + ' candidaturas' + (activeFilterEntries.length > 0 ? ' (filtrado)' : ''))
+    CE('div',{style:{flex:1,overflowX:'hidden',minWidth:0}},
+      CE('div',{style:{background:'#fff',borderBottom:'1px solid #e2e8f0',padding:'10px 20px',position:'sticky',top:0,zIndex:30,display:'flex',alignItems:'center',gap:12,flexWrap:'wrap',boxShadow:'0 1px 3px rgba(0,0,0,0.06)'}},
+        CE('div',{style:{flex:1}},
+          CE('div',{style:{fontSize:15,fontWeight:800,color:'#1e293b'}},'🌍 Globe \xb7 Fotografia'),
+          CE('div',{style:{fontSize:11,color:'#94a3b8',marginTop:1}},fp.length.toLocaleString('pt-BR')+' pessoas \xb7 '+fc.length.toLocaleString('pt-BR')+' candidaturas'+(activeFilters.length>0?' (filtrado)':''))
         ),
-        CE('div', { style: { position: 'relative' } },
-          CE('button', { onClick: function() { setShowYearPicker(!showYearPicker); }, style: { display: 'flex', alignItems: 'center', gap: 6, background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: '7px 14px', fontSize: 13, cursor: 'pointer', color: '#334155', fontWeight: 500 } },
-            '📅 ' + (selectedYears.length === GLOBE_YEARS.length ? 'Todos os anos' : selectedYears.length === 1 ? String(selectedYears[0]) : selectedYears.length + ' anos') + ' ▾'
-          ),
-          showYearPicker ? CE('div', { style: { position: 'absolute', top: '100%', right: 0, marginTop: 6, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, padding: 16, boxShadow: '0 8px 24px rgba(0,0,0,0.12)', zIndex: 200, minWidth: 300 } },
-            CE('div', { style: { display: 'flex', gap: 8, marginBottom: 12 } },
-              CE('button', { onClick: function() { setSelectedYears(GLOBE_YEARS.slice()); setShowYearPicker(false); }, style: { fontSize: 12, background: '#6366f1', color: '#fff', border: 'none', borderRadius: 6, padding: '5px 12px', cursor: 'pointer' } }, 'Todos'),
-              CE('button', { onClick: function() { setShowYearPicker(false); }, style: { fontSize: 12, background: '#f1f5f9', color: '#64748b', border: 'none', borderRadius: 6, padding: '5px 12px', cursor: 'pointer', marginLeft: 'auto' } }, '✕ Fechar')
+        CE('button',{onClick:function(){setShowFilterPanel(!showFilterPanel);},style:{display:'flex',alignItems:'center',gap:6,background:activeFilters.length>0?'#eef2ff':'#f8fafc',border:activeFilters.length>0?'1px solid #c7d2fe':'1px solid #e2e8f0',borderRadius:8,padding:'7px 14px',fontSize:13,cursor:'pointer',color:activeFilters.length>0?'#6366f1':'#334155',fontWeight:500}},'🔍 Filtros'+(activeFilters.length>0?' ('+activeFilters.length+')':'')),
+        CE('div',{style:{position:'relative'}},
+          CE('button',{onClick:function(){setShowYearPicker(!showYearPicker);},style:{display:'flex',alignItems:'center',gap:6,background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8,padding:'7px 14px',fontSize:13,cursor:'pointer',color:'#334155',fontWeight:500}},'📅 '+(selectedYears.length===GLOBE_YEARS.length?'Todos os anos':selectedYears.length===1?String(selectedYears[0]):selectedYears.length+' anos')+' ▾'),
+          showYearPicker?CE('div',{style:{position:'absolute',top:'100%',right:0,marginTop:6,background:'#fff',border:'1px solid #e2e8f0',borderRadius:12,padding:16,boxShadow:'0 8px 24px rgba(0,0,0,0.12)',zIndex:200,minWidth:300}},
+            CE('div',{style:{display:'flex',gap:8,marginBottom:12}},
+              CE('button',{onClick:function(){setSelectedYears(GLOBE_YEARS.slice());setShowYearPicker(false);},style:{fontSize:12,background:'#6366f1',color:'#fff',border:'none',borderRadius:6,padding:'5px 12px',cursor:'pointer'}},'Todos'),
+              CE('button',{onClick:function(){setShowYearPicker(false);},style:{fontSize:12,background:'#f1f5f9',color:'#64748b',border:'none',borderRadius:6,padding:'5px 12px',cursor:'pointer',marginLeft:'auto'}},'✕ Fechar')
             ),
-            CE('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 6 } },
-              ...GLOBE_YEARS.map(function(y) {
-                var sel = selectedYears.indexOf(y) >= 0;
-                return CE('button', { key: y,
-                  onClick: function() {
-                    var yy = y;
-                    setSelectedYears(function(prev) {
-                      if (prev.indexOf(yy) >= 0) { if (prev.length === 1) return prev; return prev.filter(function(x) { return x !== yy; }); }
-                      return prev.concat([yy]).sort(function(a, b) { return a - b; });
-                    });
-                  },
-                  style: { fontSize: 13, fontWeight: sel ? 700 : 400, background: sel ? '#6366f1' : '#f8fafc', color: sel ? '#fff' : '#475569', border: sel ? '1px solid #6366f1' : '1px solid #e2e8f0', borderRadius: 7, padding: '5px 14px', cursor: 'pointer' }
-                }, String(y));
+            CE('div',{style:{display:'flex',flexWrap:'wrap',gap:6}},
+              ...GLOBE_YEARS.map(function(y){
+                var sel=selectedYears.indexOf(y)>=0;
+                return CE('button',{key:y,onClick:function(){var yy=y;setSelectedYears(function(prev){if(prev.indexOf(yy)>=0){if(prev.length===1)return prev;return prev.filter(function(x){return x!==yy;});}return prev.concat([yy]).sort(function(a,b){return a-b;});});},style:{fontSize:13,fontWeight:sel?700:400,background:sel?'#6366f1':'#f8fafc',color:sel?'#fff':'#475569',border:sel?'1px solid #6366f1':'1px solid #e2e8f0',borderRadius:7,padding:'5px 14px',cursor:'pointer'}},String(y));
               })
             )
-          ) : null
+          ):null
         ),
-        activeFilterEntries.length > 0 ? CE('button', { onClick: function() { setFilters({}); }, style: { fontSize: 12, background: '#fee2e2', color: '#dc2626', border: 'none', borderRadius: 8, padding: '7px 14px', cursor: 'pointer', fontWeight: 600 } }, '× Limpar ' + activeFilterEntries.length + ' filtro' + (activeFilterEntries.length > 1 ? 's' : '')) : null
+        activeFilters.length>0?CE('button',{onClick:function(){setFilters({});},style:{fontSize:12,background:'#fee2e2',color:'#dc2626',border:'none',borderRadius:8,padding:'7px 14px',cursor:'pointer',fontWeight:600}},'\xd7 Limpar '+activeFilters.length):null
       ),
-      activeFilterEntries.length > 0 ? CE('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 6, padding: '10px 24px', background: '#fff', borderBottom: '1px solid #e2e8f0' } },
-        ...activeFilterEntries.map(function(e) {
-          return CE('div', { key: e[0], onClick: function() { setFilter(e[0], e[1]); }, style: { fontSize: 12, background: '#eef2ff', color: '#6366f1', borderRadius: 999, padding: '4px 12px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, border: '1px solid #c7d2fe' } },
-            CE('span', { style: { fontWeight: 600 } }, FILTER_LABELS[e[0]] || e[0]), ': ', e[1], ' ×'
-          );
-        })
-      ) : null,
-      loading ? CE('div', { style: { margin: '24px 24px 0', background: '#fff', border: '1px solid #e0e7ff', borderRadius: 12, padding: '24px', textAlign: 'center' } },
-        CE('div', { style: { fontSize: 13, fontWeight: 600, color: '#6366f1', marginBottom: 4 } }, '⏳ ' + (loadProg || 'Carregando...')),
-        CE('div', { style: { fontSize: 11, color: '#94a3b8' } }, 'Carregamento paralelo ativo — todos os arquivos baixam simultaneamente')
-      ) : null,
-      error ? CE('div', { style: { margin: '12px 24px 0', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 10, padding: '10px 16px', fontSize: 12, color: '#92400e' } }, '⚠️ ' + error) : null,
-      CE('div', { style: { padding: '24px' } },
-        fp.length === 0 && !loading ? CE('div', { style: { textAlign: 'center', color: '#94a3b8', padding: '80px 0', fontSize: 14 } }, '📅 Selecione um ou mais anos para carregar os dados.') :
-        !loading ? CE('div', null,
-          sec('base', '👥', 'Base de Talentos', renderBase()),
-          sec('demografia', '📊', 'Demografia', renderDemo()),
-          sec('localizacao', '📍', 'Localização', renderLocal()),
-          sec('diversidade', '🌈', 'Diversidade', renderDiv()),
-          sec('formacao', '🎓', 'Formação Acadêmica', renderForm()),
-          sec('idiomas', '🗣️', 'Idiomas', renderIdiomas()),
-          sec('candidaturas', '📝', 'Candidaturas', renderCand()),
-          sec('processos', '🏢', 'Processos Seletivos', renderProc()),
-          sec('etapas', '🔄', 'Etapas', renderEtapas()),
-          sec('relacionamento', '🔗', 'Relacionamento', renderRelac()),
-          sec('cruzamentos', '⚡', 'Cruzamentos', renderCruz())
-        ) : null
+      activeFilters.length>0?CE('div',{style:{display:'flex',flexWrap:'wrap',gap:6,padding:'8px 20px',background:'#fff',borderBottom:'1px solid #e2e8f0'}},
+        ...activeFilters.map(function(e){return CE('div',{key:e[0],onClick:function(){setFilter(e[0],e[1]);},style:{fontSize:12,background:'#eef2ff',color:'#6366f1',borderRadius:999,padding:'4px 12px',cursor:'pointer',display:'flex',alignItems:'center',gap:4,border:'1px solid #c7d2fe'}},CE('span',{style:{fontWeight:600}},FILTER_LABELS[e[0]]||e[0]),': ',e[1],' \xd7');})
+      ):null,
+      loading?CE('div',{style:{margin:'20px 20px 0',background:'#fff',border:'1px solid #e0e7ff',borderRadius:12,padding:'20px 24px'}},
+        CE('div',{style:{display:'flex',alignItems:'center',gap:12,marginBottom:8}},
+          CE('div',{style:{fontSize:13,fontWeight:600,color:'#6366f1',flex:1}},'⏳ '+(loadMsg||'Carregando...')),
+          CE('div',{style:{fontSize:13,fontWeight:700,color:'#6366f1'}},loadPct+'%')
+        ),
+        CE('div',{style:{background:'#e0e7ff',borderRadius:9999,height:8,overflow:'hidden'}},
+          CE('div',{style:{width:loadPct+'%',height:'100%',background:'linear-gradient(90deg,#6366f1,#8b5cf6)',borderRadius:9999,transition:'width 0.3s ease'}})
+        )
+      ):null,
+      error?CE('div',{style:{margin:'12px 20px 0',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:10,padding:'10px 16px',fontSize:12,color:'#92400e'}},'⚠️ '+error):null,
+      CE('div',{style:{padding:'20px'}},
+        fp.length===0&&!loading?CE('div',{style:{textAlign:'center',color:'#94a3b8',padding:'80px 0',fontSize:14}},'📅 Selecione um ou mais anos para carregar os dados.'):
+        !loading?CE('div',null,
+          sec('base','👥','Base de Talentos e Candidaturas',renderBase()),
+          sec('diversidade','🌈','Diversidade',renderDiv()),
+          sec('localizacao','📍','Localização',renderLocal()),
+          sec('formacao','🎓','Formação Acadêmica e Idiomas',renderForm()),
+          sec('pessoas','🗂️','Tabela de Pessoas',renderPessoas())
+        ):null
       )
-    )
+    ),
+    showFilterPanel?CE('div',{onClick:function(){setShowFilterPanel(false);},style:{position:'fixed',inset:0,background:'rgba(0,0,0,0.3)',zIndex:499}}):null,
+    renderFilterPanel()
   );
 }
 
