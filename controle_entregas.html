@@ -4407,7 +4407,8 @@ function GlobeFotografiaView({ token }) {
   const [cruzDim, setCruzDim] = useState('identidade_genero');
   const [cruzMet, setCruzMet] = useState('total_candidaturas');
 
-  // ── Load in parallel whenever selected years change ──
+  // ── Carregamento sequencial com GC entre anos (evita OOM) ──
+  // Todos os tipos carregados ano a ano; raw array nullado após merge para liberar heap.
   useEffect(function() {
     if (!token || !selectedYears.length) return;
     var years = selectedYears.slice().sort(function(a, b) { return a - b; });
@@ -4417,58 +4418,63 @@ function GlobeFotografiaView({ token }) {
       setLoading(true); setError('');
       setPessoas([]); setCandidaturas([]); setIdiomas([]);
       setFilters({});
-      setLoadProg('Iniciando...');
 
-      var tasks = years.reduce(function(acc, y) {
-        return acc.concat([
-          loadGlobeParquet(token, y, 'pessoas.parquet', function() {}).then(function(data) { return { y: y, t: 'p', data: data }; }),
-          loadGlobeParquet(token, y, 'candidaturas.parquet', function() {}).then(function(data) { return { y: y, t: 'c', data: data }; }),
-          loadGlobeParquet(token, y, 'idiomas.parquet', function() {}).then(function(data) { return { y: y, t: 'i', data: data }; }),
-        ]);
-      }, []);
-
-      var done = 0;
-      var total = tasks.length;
-      var tracked = tasks.map(function(t) {
-        return t.then(function(r) {
-          done++;
-          if (!cancelled) setLoadProg(done + '/' + total + ' arquivos carregados');
-          return r;
-        });
-      });
-
-      var results = await Promise.allSettled(tracked);
-      if (cancelled) return;
-
-      var byYear = {};
       var erros = [];
-      for (var i = 0; i < results.length; i++) {
-        var res = results[i];
-        if (res.status === 'fulfilled') {
-          var rv = res.value;
-          if (!byYear[rv.y]) byYear[rv.y] = {};
-          byYear[rv.y][rv.t] = rv.data;
-        } else {
-          erros.push(String(res.reason && res.reason.message || 'erro').slice(0, 60));
-        }
-      }
+      var totalSteps = years.length * 3;
+      var done = 0;
+      function prog(msg) { if (!cancelled) setLoadProg(msg + ' (' + (++done) + '/' + totalSteps + ')'); }
 
+      // 1. Pessoas — todos os anos sequencial; deduplica por codigo_pessoa (ano mais antigo prevalece)
       var pessoaMap = new Map();
-      var allC = [], allI = [];
-      for (var yi = 0; yi < years.length; yi++) {
-        var y = years[yi];
-        var yr = byYear[y] || {};
-        if (yr.p) { for (var pi = 0; pi < yr.p.length; pi++) { var row = yr.p[pi]; var id = String(row.codigo_pessoa != null ? row.codigo_pessoa : ''); pessoaMap.set(id, row); } }
-        if (yr.c) { for (var ci = 0; ci < yr.c.length; ci++) allC.push(yr.c[ci]); }
-        if (yr.i) { for (var ii = 0; ii < yr.i.length; ii++) allI.push(yr.i[ii]); }
+      for (var pi = 0; pi < years.length; pi++) {
+        if (cancelled) break;
+        var py = years[pi];
+        try {
+          prog('pessoas ' + py);
+          var pRows = await loadGlobeParquet(token, py, 'pessoas.parquet', function() {});
+          for (var j = 0; j < pRows.length; j++) {
+            var row = pRows[j];
+            var pid = String(row.codigo_pessoa != null ? row.codigo_pessoa : '');
+            if (pid) pessoaMap.set(pid, row); // sobrescreve — anos em ordem crescente, o mais recente prevalece
+          }
+          pRows = null; // libera memória antes do próximo ano
+        } catch (e) { erros.push('pessoas ' + py + ': ' + String(e.message || e).slice(0, 40)); }
       }
+      if (!cancelled) setPessoas(Array.from(pessoaMap.values()));
+      pessoaMap = null;
 
-      setPessoas(Array.from(pessoaMap.values()));
-      setCandidaturas(allC);
-      setIdiomas(allI);
-      if (erros.length > 0 && erros.length < total) setError('Aviso: ' + erros.length + ' arquivo(s) não carregaram.');
-      else if (erros.length === total) setError('Falha total ao carregar. Verifique conexão com SharePoint.');
-      setLoading(false); setLoadProg('');
+      // 2. Candidaturas — todos os anos, sequencial
+      var allC = [];
+      for (var ci = 0; ci < years.length; ci++) {
+        if (cancelled) break;
+        var cy = years[ci];
+        try {
+          prog('candidaturas ' + cy);
+          var cRows = await loadGlobeParquet(token, cy, 'candidaturas.parquet', function() {});
+          for (var k = 0; k < cRows.length; k++) allC.push(cRows[k]);
+          cRows = null;
+        } catch (e) { erros.push('cand ' + cy + ': ' + String(e.message || e).slice(0, 40)); }
+      }
+      if (!cancelled) setCandidaturas(allC);
+
+      // 3. Idiomas — todos os anos, sequencial
+      var allI = [];
+      for (var ii = 0; ii < years.length; ii++) {
+        if (cancelled) break;
+        var iy = years[ii];
+        try {
+          prog('idiomas ' + iy);
+          var iRows = await loadGlobeParquet(token, iy, 'idiomas.parquet', function() {});
+          for (var l = 0; l < iRows.length; l++) allI.push(iRows[l]);
+          iRows = null;
+        } catch (e) { erros.push('idiomas ' + iy + ': ' + String(e.message || e).slice(0, 40)); }
+      }
+      if (!cancelled) setIdiomas(allI);
+
+      if (!cancelled) {
+        if (erros.length) setError('Aviso: ' + erros.join(' | '));
+        setLoading(false); setLoadProg('');
+      }
     }
 
     load();
@@ -4627,7 +4633,11 @@ function GlobeFotografiaView({ token }) {
     }
     var anoData = Object.entries(anoCounts).sort(function(a, b) { return Number(a[0]) - Number(b[0]); }).map(function(e) { return { name: e[0], value: e[1] }; });
     var statusData = _gAllSorted(_gCountBy(fp, 'status'));
+    var latestYear = selectedYears.slice().sort(function(a,b){return b-a;})[0];
     return CE('div', null,
+      selectedYears.length > 1 ? CE('div', { style: { marginBottom: 14, padding: '8px 14px', background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: 8, fontSize: 12, color: '#0369a1' } },
+        'ℹ️ Exibindo pessoas e candidaturas de ', selectedYears.length, ' anos (', years[0], '–', years[years.length - 1], '). Pessoas com o mesmo código cadastradas em anos diferentes são deduplicadas.'
+      ) : null,
       kpiRow([['Total Cadastros', total.toLocaleString('pt-BR'), '#6366f1'], ['Ativos', ativos.toLocaleString('pt-BR'), '#22c55e'], ['Inativos', (total - ativos).toLocaleString('pt-BR'), '#ef4444'], ['Com Candidatura', comCand.toLocaleString('pt-BR'), '#f59e0b'], ['Média Dias → 1ª Cand.', diasMed]]),
       grid2(card('Cadastros por Ano', bar(anoData, '#6366f1', null)), card('Status', bar(statusData, '#22c55e', 'status'), 'status'))
     );
