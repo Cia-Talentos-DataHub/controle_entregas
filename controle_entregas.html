@@ -4347,640 +4347,591 @@ async function loadGlobeParquet(token, year, file, onProg) {
 }
 
 function _gCountBy(arr, key) {
-  return arr.reduce((acc, row) => {
-    const v = String(row[key] || '').trim() || '(Vazio)';
+  return arr.reduce(function(acc, row) {
+    var v = String(row[key] || '').trim() || '(Vazio)';
     acc[v] = (acc[v] || 0) + 1;
     return acc;
   }, {});
 }
 function _gTopN(countObj, n) {
-  return Object.entries(countObj).sort((a, b) => b[1] - a[1]).slice(0, n).map(([name, value]) => ({ name, value }));
+  return Object.entries(countObj).sort(function(a, b) { return b[1] - a[1]; }).slice(0, n).map(function(e) { return { name: e[0], value: e[1] }; });
 }
-function _gKpiCard(label, value) {
-  return React.createElement('div', { className: 'bg-slate-50 rounded-xl border border-slate-100 p-4 text-center' },
-    React.createElement('div', { className: 'text-2xl font-bold text-slate-800' }, value),
-    React.createElement('div', { className: 'text-xs text-slate-500 mt-1' }, label)
-  );
+function _gAllSorted(countObj) {
+  return Object.entries(countObj).sort(function(a, b) { return b[1] - a[1]; }).map(function(e) { return { name: e[0], value: e[1] }; });
 }
-function _gSectionCard(title, children) {
-  return React.createElement('div', { className: 'bg-white rounded-2xl border border-slate-200 shadow-sm p-6 mb-6' },
-    React.createElement('h3', { className: 'text-lg font-bold text-slate-800 mb-4' }, title),
-    ...children
-  );
-}
-function _gBar(data, color) {
-  if (!data || !data.length) return React.createElement('div', { className: 'text-xs text-slate-400 py-4 text-center' }, 'Sem dados');
+
+// Interactive bar — clickable filter + scrollable when > 10 items
+function _gBar(data, color, opts) {
+  opts = opts || {};
+  var activeVal = opts.activeVal;
+  var onFilter = opts.onFilter;
+  if (!data || !data.length) return React.createElement('div', { style: { color: '#94a3b8', fontSize: 12, padding: '16px 0', textAlign: 'center' } }, 'Sem dados');
   var max = Math.max.apply(null, data.map(function(d) { return d.value; })) || 1;
   var fill = color || '#6366f1';
-  return React.createElement('div', { className: 'space-y-1.5' },
-    ...data.map(function(d, i) {
-      var pct = (d.value / max * 100).toFixed(1);
-      return React.createElement('div', { key: i, className: 'flex items-center gap-2' },
-        React.createElement('div', {
-          className: 'text-xs text-slate-500 text-right flex-shrink-0 truncate',
-          style: { width: '140px' },
-          title: String(d.name)
-        }, String(d.name)),
-        React.createElement('div', { className: 'flex-1 flex items-center gap-1.5' },
-          React.createElement('div', {
-            style: { width: pct + '%', background: fill, height: '16px', borderRadius: '3px', minWidth: '2px', transition: 'width .4s' }
-          }),
-          React.createElement('span', { className: 'text-xs text-slate-500 whitespace-nowrap' },
-            d.value.toLocaleString('pt-BR')
-          )
-        )
-      );
-    })
-  );
+  var hasFilter = activeVal != null;
+  var rows = data.map(function(d, i) {
+    var pct = (d.value / max * 100).toFixed(1);
+    var isSelected = activeVal === d.name;
+    var dimmed = hasFilter && !isSelected;
+    return React.createElement('div', {
+      key: i,
+      onClick: onFilter ? function() { onFilter(d.name); } : undefined,
+      title: String(d.name) + ': ' + d.value.toLocaleString('pt-BR'),
+      style: { display: 'flex', alignItems: 'center', gap: 8, cursor: onFilter ? 'pointer' : 'default', opacity: dimmed ? 0.28 : 1, transition: 'opacity 0.2s', padding: '2px 4px', borderRadius: 5, background: isSelected ? fill + '18' : 'transparent', flexShrink: 0 }
+    },
+      React.createElement('div', { style: { width: 160, textAlign: 'right', fontSize: 12, color: '#475569', flexShrink: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, String(d.name)),
+      React.createElement('div', { style: { flex: 1, display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 } },
+        React.createElement('div', { style: { height: 18, borderRadius: 4, minWidth: 2, transition: 'width 0.4s', width: pct + '%', background: isSelected ? fill : fill + (hasFilter ? '70' : 'cc') } }),
+        React.createElement('span', { style: { fontSize: 12, color: '#64748b', whiteSpace: 'nowrap', minWidth: 36, textAlign: 'right' } }, d.value.toLocaleString('pt-BR') + (isSelected ? ' ✓' : ''))
+      )
+    );
+  });
+  var inner = React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } }, ...rows);
+  if (data.length > 10) {
+    return React.createElement('div', { style: { maxHeight: 380, overflowY: 'auto', paddingRight: 2 } }, inner);
+  }
+  return inner;
 }
-function _gPie(data) {
-  if (!data || !data.length) return React.createElement('div', { className: 'text-xs text-slate-400 py-4 text-center' }, 'Sem dados');
-  var total = data.reduce(function(s, d) { return s + d.value; }, 0) || 1;
-  return React.createElement('div', { className: 'space-y-1.5' },
-    ...data.map(function(d, i) {
-      var pct = (d.value / total * 100).toFixed(1);
-      return React.createElement('div', { key: i, className: 'flex items-center gap-2' },
-        React.createElement('div', {
-          style: { width: '10px', height: '10px', borderRadius: '50%', background: GLOBE_COLORS[i % GLOBE_COLORS.length], flexShrink: 0 }
-        }),
-        React.createElement('div', { className: 'text-xs text-slate-600 flex-1 truncate', title: String(d.name) }, String(d.name)),
-        React.createElement('div', { className: 'text-xs font-semibold text-slate-700 w-10 text-right' }, pct + '%'),
-        React.createElement('div', { className: 'text-xs text-slate-400 w-16 text-right' }, d.value.toLocaleString('pt-BR'))
-      );
-    })
-  );
-}
-
-const GLOBE_TABS = [
-  { k: 'base', label: 'Base de Talentos' },
-  { k: 'demografia', label: 'Demografia' },
-  { k: 'localizacao', label: 'Localização' },
-  { k: 'diversidade', label: 'Diversidade' },
-  { k: 'formacao', label: 'Formação' },
-  { k: 'idiomas', label: 'Idiomas' },
-  { k: 'experiencia', label: 'Experiência' },
-  { k: 'candidaturas', label: 'Candidaturas' },
-  { k: 'processos', label: 'Processos' },
-  { k: 'etapas', label: 'Etapas' },
-  { k: 'relacionamento', label: 'Relacionamento' },
-  { k: 'cruzamentos', label: 'Cruzamentos' },
-];
 
 function GlobeFotografiaView({ token }) {
-  const [year, setYear] = useState(2026);
-  const [allYears, setAllYears] = useState(false);
+  var CE = React.createElement;
+  const [selectedYears, setSelectedYears] = useState([2026]);
+  const [showYearPicker, setShowYearPicker] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [prog, setProg] = useState('');
+  const [loadProg, setLoadProg] = useState('');
   const [error, setError] = useState('');
   const [pessoas, setPessoas] = useState([]);
   const [candidaturas, setCandidaturas] = useState([]);
   const [idiomas, setIdiomas] = useState([]);
-  const [experiencias, setExperiencias] = useState([]);
-  const [expLoaded, setExpLoaded] = useState(false);
-  const [activeSection, setActiveSection] = useState('base');
+  const [filters, setFilters] = useState({});
   const [cruzDim, setCruzDim] = useState('identidade_genero');
   const [cruzMet, setCruzMet] = useState('total_candidaturas');
 
-  useEffect(() => {
-    if (!token) return;
+  // ── Load in parallel whenever selected years change ──
+  useEffect(function() {
+    if (!token || !selectedYears.length) return;
+    var years = selectedYears.slice().sort(function(a, b) { return a - b; });
+    var cancelled = false;
+
     async function load() {
-      setLoading(true);
-      setError('');
-      setPessoas([]);
-      setCandidaturas([]);
-      setIdiomas([]);
-      setExpLoaded(false);
-      setExperiencias([]);
-      const erros = [];
+      setLoading(true); setError('');
+      setPessoas([]); setCandidaturas([]); setIdiomas([]);
+      setFilters({});
+      setLoadProg('Iniciando...');
 
-      // Estratégia de carga:
-      // - pessoas: apenas o ano selecionado (ou 2026 em modo "Todos") — snapshot demográfico sem duplicatas
-      // - candidaturas + idiomas: todos os anos quando "Todos" — dados históricos corretos
-      const pessoasYear = allYears ? Math.max.apply(null, GLOBE_YEARS) : Number(year);
-      const transfYears = allYears ? GLOBE_YEARS : [Number(year)];
+      var tasks = years.reduce(function(acc, y) {
+        return acc.concat([
+          loadGlobeParquet(token, y, 'pessoas.parquet', function() {}).then(function(data) { return { y: y, t: 'p', data: data }; }),
+          loadGlobeParquet(token, y, 'candidaturas.parquet', function() {}).then(function(data) { return { y: y, t: 'c', data: data }; }),
+          loadGlobeParquet(token, y, 'idiomas.parquet', function() {}).then(function(data) { return { y: y, t: 'i', data: data }; }),
+        ]);
+      }, []);
 
-      // 1. Pessoas (snapshot do ano mais recente)
-      try {
-        setProg('Baixando pessoas...');
-        const p = await loadGlobeParquet(token, pessoasYear, 'pessoas.parquet', setProg);
-        setPessoas(p);
-      } catch (e) { erros.push('pessoas ' + pessoasYear + ': ' + e.message); }
+      var done = 0;
+      var total = tasks.length;
+      var tracked = tasks.map(function(t) {
+        return t.then(function(r) {
+          done++;
+          if (!cancelled) setLoadProg(done + '/' + total + ' arquivos carregados');
+          return r;
+        });
+      });
 
-      // 2. Candidaturas — todos os anos (para contagem correta de processos históricos)
-      let allC = [];
-      for (const y of transfYears) {
-        try {
-          const c = await loadGlobeParquet(token, y, 'candidaturas.parquet', setProg);
-          allC = allC.concat(c);
-        } catch (e) { erros.push('candidaturas ' + y + ': ' + e.message); }
-      }
-      setCandidaturas(allC);
+      var results = await Promise.allSettled(tracked);
+      if (cancelled) return;
 
-      // 3. Idiomas — todos os anos
-      let allI = [];
-      for (const y of transfYears) {
-        try {
-          const id = await loadGlobeParquet(token, y, 'idiomas.parquet', setProg);
-          allI = allI.concat(id);
-        } catch (e) { erros.push('idiomas ' + y + ': ' + e.message); }
-      }
-      setIdiomas(allI);
-
-      if (erros.length) setError('Aviso: alguns arquivos não carregaram — ' + erros.join(' | '));
-      setLoading(false);
-      setProg('');
-    }
-    load();
-  }, [token, year, allYears]);
-
-  useEffect(() => {
-    if (activeSection !== 'experiencia' || expLoaded || !token) return;
-    async function loadExp() {
-      setLoading(true);
-      setError('');
-      const errosExp = [];
-      const transfYears = allYears ? GLOBE_YEARS : [Number(year)];
-      let allE = [];
-      for (const y of transfYears) {
-        try {
-          const exp = await loadGlobeParquet(token, y, 'experiencias.parquet', setProg);
-          allE = allE.concat(exp);
-        } catch (e) { errosExp.push(y + ': ' + e.message); }
-      }
-      setExperiencias(allE);
-      setExpLoaded(true);
-      if (errosExp.length) setError('Aviso experiências: ' + errosExp.join(' | '));
-      setLoading(false);
-      setProg('');
-    }
-    loadExp();
-  }, [activeSection, expLoaded, token]);
-
-  const cruzData = useMemo(() => {
-    if (!pessoas.length) return [];
-    const pessoaMap = new Map();
-    for (const p of pessoas) {
-      const id = String(p.codigo_pessoa != null ? p.codigo_pessoa : '');
-      pessoaMap.set(id, { _id: id, _dim: String(p[cruzDim] || '').trim() || '(Vazio)', _total_cand: 0, _processos: new Set() });
-    }
-    for (const c of candidaturas) {
-      const id = String(c.codigo_pessoa != null ? c.codigo_pessoa : '');
-      const entry = pessoaMap.get(id);
-      if (entry) {
-        entry._total_cand++;
-        entry._processos.add(String(c.codigo_processo != null ? c.codigo_processo : ''));
-      }
-    }
-    const groups = {};
-    for (const [, entry] of pessoaMap) {
-      const dim = entry._dim;
-      if (!groups[dim]) groups[dim] = { total_candidaturas: 0, processos_set: new Set(), pessoas_com_cand: new Set() };
-      groups[dim].total_candidaturas += entry._total_cand;
-      for (const proc of entry._processos) groups[dim].processos_set.add(proc);
-      if (entry._total_cand > 0) groups[dim].pessoas_com_cand.add(entry._id);
-    }
-    return Object.entries(groups).map(([name, g]) => {
-      const value = cruzMet === 'total_candidaturas' ? g.total_candidaturas
-                  : cruzMet === 'processos_unicos' ? g.processos_set.size
-                  : g.pessoas_com_cand.size;
-      return { name, value };
-    }).sort((a, b) => b.value - a.value).slice(0, 20);
-  }, [pessoas, candidaturas, cruzDim, cruzMet]);
-
-  function renderSection() {
-    const s = activeSection;
-
-    // ── base ──
-    if (s === 'base') {
-      const total = pessoas.length;
-      const ativos = pessoas.filter(p => String(p.status || '').toLowerCase() === 'ativo').length;
-      const comCand = pessoas.filter(p => Number(p.quantidade_processos || 0) > 0).length;
-      const diasTotal = pessoas.reduce((sum, p) => sum + Number(p.dias_cadastro_ate_primeira_candidatura || 0), 0);
-      const diasMedio = total > 0 ? (diasTotal / total).toFixed(1) : '—';
-      const anoCounts = {};
-      for (const p of pessoas) {
-        const ts = p.data_cadastro;
-        if (ts == null) continue;
-        const yr = new Date(Number(ts)).getFullYear();
-        if (yr >= 2000 && yr <= 2100) anoCounts[yr] = (anoCounts[yr] || 0) + 1;
-      }
-      const anoData = Object.entries(anoCounts).sort((a, b) => Number(a[0]) - Number(b[0])).map(([name, value]) => ({ name, value }));
-      const statusData = _gTopN(_gCountBy(pessoas, 'status'), 8);
-      return React.createElement('div', null,
-        React.createElement('div', { className: 'grid grid-cols-2 sm:grid-cols-5 gap-3 mb-6' },
-          _gKpiCard('Total Cadastros', total.toLocaleString('pt-BR')),
-          _gKpiCard('Ativos', ativos.toLocaleString('pt-BR')),
-          _gKpiCard('Inativos', (total - ativos).toLocaleString('pt-BR')),
-          _gKpiCard('Com Candidatura', comCand.toLocaleString('pt-BR')),
-          _gKpiCard('Média Dias até 1ª Cand.', String(diasMedio))
-        ),
-        _gSectionCard('Cadastros por Ano', [_gBar(anoData, '#6366f1')]),
-        _gSectionCard('Distribuição por Status', [_gPie(statusData)])
-      );
-    }
-
-    // ── demografia ──
-    if (s === 'demografia') {
-      const idades = pessoas.map(p => Number(p.idade || 0)).filter(n => n > 0 && n < 120);
-      const mediaIdade = idades.length > 0 ? (idades.reduce((a, b) => a + b, 0) / idades.length).toFixed(1) : '—';
-      const minIdade = idades.length > 0 ? idades.reduce((m, n) => n < m ? n : m, Infinity) : '—';
-      const maxIdade = idades.length > 0 ? idades.reduce((m, n) => n > m ? n : m, -Infinity) : '—';
-      const faixas = [
-        { name: '< 18', value: idades.filter(n => n < 18).length },
-        { name: '18–24', value: idades.filter(n => n >= 18 && n <= 24).length },
-        { name: '25–34', value: idades.filter(n => n >= 25 && n <= 34).length },
-        { name: '35–44', value: idades.filter(n => n >= 35 && n <= 44).length },
-        { name: '45–54', value: idades.filter(n => n >= 45 && n <= 54).length },
-        { name: '55+', value: idades.filter(n => n >= 55).length },
-      ];
-      const generoData = _gTopN(_gCountBy(pessoas, 'identidade_genero'), 10);
-      return React.createElement('div', null,
-        React.createElement('div', { className: 'grid grid-cols-3 gap-3 mb-6' },
-          _gKpiCard('Média de Idade', String(mediaIdade)),
-          _gKpiCard('Idade Mínima', String(minIdade)),
-          _gKpiCard('Idade Máxima', String(maxIdade))
-        ),
-        _gSectionCard('Faixas Etárias', [_gBar(faixas, '#22c55e')]),
-        _gSectionCard('Identidade de Gênero', [_gBar(generoData, '#8b5cf6')])
-      );
-    }
-
-    // ── localizacao ──
-    if (s === 'localizacao') {
-      const paises = new Set(pessoas.map(p => String(p.pais || '').trim()).filter(Boolean));
-      const estados = new Set(pessoas.map(p => String(p.estado || '').trim()).filter(Boolean));
-      const cidades = new Set(pessoas.map(p => String(p.cidade || '').trim()).filter(Boolean));
-      const estadoData = _gTopN(_gCountBy(pessoas, 'estado'), 10);
-      const cidadeData = _gTopN(_gCountBy(pessoas, 'cidade'), 10);
-      const regiaoData = _gTopN(_gCountBy(pessoas, 'regiao'), 10);
-      return React.createElement('div', null,
-        React.createElement('div', { className: 'grid grid-cols-3 gap-3 mb-6' },
-          _gKpiCard('Países Únicos', paises.size.toLocaleString('pt-BR')),
-          _gKpiCard('Estados Únicos', estados.size.toLocaleString('pt-BR')),
-          _gKpiCard('Cidades Únicas', cidades.size.toLocaleString('pt-BR'))
-        ),
-        _gSectionCard('Top 10 Estados', [_gBar(estadoData, '#6366f1')]),
-        _gSectionCard('Top 10 Cidades', [_gBar(cidadeData, '#14b8a6')]),
-        _gSectionCard('Regiões', [_gBar(regiaoData, '#f59e0b')])
-      );
-    }
-
-    // ── diversidade ──
-    if (s === 'diversidade') {
-      const total = pessoas.length || 1;
-      const comRaca = pessoas.filter(p => String(p.raca_cor || '').trim()).length;
-      const comPcd = pessoas.filter(p => String(p.pcd_cadastro || '').trim()).length;
-      const diversoGen = pessoas.filter(p => {
-        const g = String(p.identidade_genero || '').trim();
-        return g && g !== 'Masculino' && g !== 'Feminino';
-      }).length;
-      return React.createElement('div', null,
-        React.createElement('div', { className: 'grid grid-cols-3 gap-3 mb-6' },
-          _gKpiCard('% Raça/Cor Preenchida', ((comRaca / total) * 100).toFixed(1) + '%'),
-          _gKpiCard('% PCD', ((comPcd / total) * 100).toFixed(1) + '%'),
-          _gKpiCard('% Gênero Diverso', ((diversoGen / total) * 100).toFixed(1) + '%')
-        ),
-        _gSectionCard('Raça/Cor', [_gBar(_gTopN(_gCountBy(pessoas, 'raca_cor'), 10), '#ef4444')]),
-        _gSectionCard('Identidade de Gênero', [_gBar(_gTopN(_gCountBy(pessoas, 'identidade_genero'), 10), '#8b5cf6')]),
-        _gSectionCard('Orientação Afetivo-Sexual', [_gBar(_gTopN(_gCountBy(pessoas, 'orientacao_afetivo_sexual'), 10), '#f97316')]),
-        _gSectionCard('Renda Familiar', [_gBar(_gTopN(_gCountBy(pessoas, 'renda_familiar'), 10), '#06b6d4')]),
-        _gSectionCard('PCD (Cadastro)', [_gBar(_gTopN(_gCountBy(pessoas, 'pcd_cadastro'), 8), '#22c55e')])
-      );
-    }
-
-    // ── formacao ──
-    if (s === 'formacao') {
-      const total = pessoas.length || 1;
-      const comGrad = pessoas.filter(p => String(p.graduacao_1_curso || '').trim()).length;
-      const comPos = pessoas.filter(p => String(p.pos_1_curso || '').trim()).length;
-      const comTec = pessoas.filter(p => String(p.tecnico_1_curso || '').trim()).length;
-      const cursoMap = {};
-      for (const p of pessoas) {
-        for (const k of ['graduacao_1_curso', 'graduacao_2_curso', 'graduacao_3_curso']) {
-          const c = String(p[k] || '').trim();
-          if (c) cursoMap[c] = (cursoMap[c] || 0) + 1;
+      var byYear = {};
+      var erros = [];
+      for (var i = 0; i < results.length; i++) {
+        var res = results[i];
+        if (res.status === 'fulfilled') {
+          var rv = res.value;
+          if (!byYear[rv.y]) byYear[rv.y] = {};
+          byYear[rv.y][rv.t] = rv.data;
+        } else {
+          erros.push(String(res.reason && res.reason.message || 'erro').slice(0, 60));
         }
       }
-      const cursoData = _gTopN(cursoMap, 15);
-      return React.createElement('div', null,
-        React.createElement('div', { className: 'grid grid-cols-3 gap-3 mb-6' },
-          _gKpiCard('% Com Graduação', ((comGrad / total) * 100).toFixed(1) + '%'),
-          _gKpiCard('% Com Pós-Graduação', ((comPos / total) * 100).toFixed(1) + '%'),
-          _gKpiCard('% Com Técnico', ((comTec / total) * 100).toFixed(1) + '%')
-        ),
-        _gSectionCard('Top 15 Cursos de Graduação', [_gBar(cursoData, '#6366f1')]),
-        _gSectionCard('Top 10 Instituições', [_gBar(_gTopN(_gCountBy(pessoas, 'graduacao_1_instituicao'), 10), '#22c55e')]),
-        _gSectionCard('Tipo de Graduação', [_gBar(_gTopN(_gCountBy(pessoas, 'graduacao_1_tipo'), 10), '#f59e0b')]),
-        _gSectionCard('Modalidade', [_gBar(_gTopN(_gCountBy(pessoas, 'graduacao_1_modalidade'), 8), '#14b8a6')])
-      );
+
+      var pessoaMap = new Map();
+      var allC = [], allI = [];
+      for (var yi = 0; yi < years.length; yi++) {
+        var y = years[yi];
+        var yr = byYear[y] || {};
+        if (yr.p) { for (var pi = 0; pi < yr.p.length; pi++) { var row = yr.p[pi]; var id = String(row.codigo_pessoa != null ? row.codigo_pessoa : ''); pessoaMap.set(id, row); } }
+        if (yr.c) { for (var ci = 0; ci < yr.c.length; ci++) allC.push(yr.c[ci]); }
+        if (yr.i) { for (var ii = 0; ii < yr.i.length; ii++) allI.push(yr.i[ii]); }
+      }
+
+      setPessoas(Array.from(pessoaMap.values()));
+      setCandidaturas(allC);
+      setIdiomas(allI);
+      if (erros.length > 0 && erros.length < total) setError('Aviso: ' + erros.length + ' arquivo(s) não carregaram.');
+      else if (erros.length === total) setError('Falha total ao carregar. Verifique conexão com SharePoint.');
+      setLoading(false); setLoadProg('');
     }
 
-    // ── idiomas ──
-    if (s === 'idiomas') {
-      const pessoasComIdioma = new Set(idiomas.map(i => String(i.codigo_pessoa != null ? i.codigo_pessoa : ''))).size;
-      const idiomasUnicos = new Set(idiomas.map(i => String(i.idioma || ''))).size;
-      const idiomaData = _gTopN(_gCountBy(idiomas, 'idioma'), 10);
-      const nivelData = _gTopN(_gCountBy(idiomas, 'nivel'), 10);
-      return React.createElement('div', null,
-        React.createElement('div', { className: 'grid grid-cols-3 gap-3 mb-6' },
-          _gKpiCard('Pessoas com Idioma', pessoasComIdioma.toLocaleString('pt-BR')),
-          _gKpiCard('Total Declarações', idiomas.length.toLocaleString('pt-BR')),
-          _gKpiCard('Idiomas Únicos', idiomasUnicos.toLocaleString('pt-BR'))
-        ),
-        _gSectionCard('Top 10 Idiomas', [_gBar(idiomaData, '#6366f1')]),
-        _gSectionCard('Distribuição por Nível', [_gBar(nivelData, '#22c55e')])
-      );
-    }
+    load();
+    return function() { cancelled = true; };
+  }, [token, selectedYears.join(',')]);
 
-    // ── experiencia ──
-    if (s === 'experiencia') {
-      if (!expLoaded) {
-        return React.createElement('div', { className: 'bg-white rounded-2xl border border-slate-200 shadow-sm p-10 mb-6 flex flex-col items-center gap-4' },
-          React.createElement('div', { className: 'text-5xl' }, '📦'),
-          React.createElement('h3', { className: 'text-lg font-bold text-slate-800' }, 'Dados de Experiência Profissional'),
-          React.createElement('p', { className: 'text-sm text-slate-500 text-center max-w-md' }, 'Este arquivo tem aproximadamente 33 MB por ano. O download pode levar alguns segundos dependendo da sua conexão.'),
-          loading
-            ? React.createElement('div', { className: 'text-sm text-indigo-600 font-medium' }, prog || 'Carregando...')
-            : React.createElement('button', {
-                onClick: function() {
-                  async function doLoad() {
-                    setLoading(true);
-                    setError('');
-                    try {
-                      const yearsToLoad = allYears ? GLOBE_YEARS : [Number(year)];
-                      let allE = [];
-                      for (const y of yearsToLoad) {
-                        const exp = await loadGlobeParquet(token, y, 'experiencias.parquet', setProg);
-                        allE = allE.concat(exp);
-                      }
-                      setExperiencias(allE);
-                      setExpLoaded(true);
-                    } catch (e) {
-                      setError(e.message);
-                    } finally {
-                      setLoading(false);
-                      setProg('');
-                    }
-                  }
-                  doLoad();
-                },
-                className: 'bg-indigo-600 text-white px-6 py-2.5 rounded-xl text-sm font-semibold hover:bg-indigo-700 transition'
-              }, 'Carregar dados de experiência')
+  // ── Filter helpers ──
+  function setFilter(key, val) {
+    setFilters(function(f) {
+      var n = Object.assign({}, f);
+      if (n[key] === val) delete n[key]; else n[key] = val;
+      return n;
+    });
+  }
+
+  // ── Filtered data ──
+  var filteredPessoas = useMemo(function() {
+    var fp = pessoas;
+    if (filters.status) fp = fp.filter(function(p) { return String(p.status || '').trim() === filters.status; });
+    if (filters.genero) fp = fp.filter(function(p) { return String(p.identidade_genero || '').trim() === filters.genero; });
+    if (filters.raca) fp = fp.filter(function(p) { return String(p.raca_cor || '').trim() === filters.raca; });
+    if (filters.estado) fp = fp.filter(function(p) { return String(p.estado || '').trim() === filters.estado; });
+    if (filters.regiao) fp = fp.filter(function(p) { return String(p.regiao || '').trim() === filters.regiao; });
+    if (filters.pcd) fp = fp.filter(function(p) { return String(p.pcd_cadastro || '').trim() === filters.pcd; });
+    if (filters.renda) fp = fp.filter(function(p) { return String(p.renda_familiar || '').trim() === filters.renda; });
+    if (filters.curso) fp = fp.filter(function(p) { return ['graduacao_1_curso','graduacao_2_curso','graduacao_3_curso'].some(function(k) { return String(p[k]||'').trim() === filters.curso; }); });
+    if (filters.nivel_ensino) fp = fp.filter(function(p) { return String(p.graduacao_1_tipo || '').trim() === filters.nivel_ensino; });
+    if (filters.faixa) {
+      var fv = filters.faixa;
+      fp = fp.filter(function(p) {
+        var a = Number(p.idade || 0);
+        if (fv === '< 18') return a > 0 && a < 18;
+        if (fv === '18–24') return a >= 18 && a <= 24;
+        if (fv === '25–34') return a >= 25 && a <= 34;
+        if (fv === '35–44') return a >= 35 && a <= 44;
+        if (fv === '45–54') return a >= 45 && a <= 54;
+        if (fv === '55+') return a >= 55;
+        return true;
+      });
+    }
+    return fp;
+  }, [pessoas, filters]);
+
+  var filteredIds = useMemo(function() {
+    var s = new Set();
+    for (var i = 0; i < filteredPessoas.length; i++) {
+      var p = filteredPessoas[i];
+      s.add(String(p.codigo_pessoa != null ? p.codigo_pessoa : ''));
+    }
+    return s;
+  }, [filteredPessoas]);
+
+  var filteredCandidaturas = useMemo(function() {
+    var fc = candidaturas.filter(function(c) { return filteredIds.has(String(c.codigo_pessoa != null ? c.codigo_pessoa : '')); });
+    if (filters.etapa) fc = fc.filter(function(c) { return String(c.etapa_atual || '').trim() === filters.etapa; });
+    if (filters.processo) fc = fc.filter(function(c) { return String(c.nome_processo || '').trim() === filters.processo; });
+    return fc;
+  }, [candidaturas, filteredIds, filters]);
+
+  var filteredIdiomas = useMemo(function() {
+    return idiomas.filter(function(i) { return filteredIds.has(String(i.codigo_pessoa != null ? i.codigo_pessoa : '')); });
+  }, [idiomas, filteredIds]);
+
+  // ── Cruzamentos ──
+  var cruzData = useMemo(function() {
+    if (!filteredPessoas.length) return [];
+    var map = {};
+    for (var i = 0; i < filteredPessoas.length; i++) {
+      var p = filteredPessoas[i];
+      var id = String(p.codigo_pessoa != null ? p.codigo_pessoa : '');
+      var dim = String(p[cruzDim] || '').trim() || '(Vazio)';
+      map[id] = { dim: dim, cands: 0, procs: new Set() };
+    }
+    for (var j = 0; j < filteredCandidaturas.length; j++) {
+      var c = filteredCandidaturas[j];
+      var cid = String(c.codigo_pessoa != null ? c.codigo_pessoa : '');
+      if (map[cid]) { map[cid].cands++; map[cid].procs.add(String(c.codigo_processo != null ? c.codigo_processo : '')); }
+    }
+    var groups = {};
+    var vals = Object.values(map);
+    for (var k = 0; k < vals.length; k++) {
+      var e = vals[k];
+      if (!groups[e.dim]) groups[e.dim] = { cands: 0, procs: new Set(), withCand: 0 };
+      groups[e.dim].cands += e.cands;
+      e.procs.forEach(function(pr) { groups[e.dim].procs.add(pr); });
+      if (e.cands > 0) groups[e.dim].withCand++;
+    }
+    return Object.entries(groups).map(function(entry) {
+      var name = entry[0], g = entry[1];
+      return { name: name, value: cruzMet === 'total_candidaturas' ? g.cands : cruzMet === 'processos_unicos' ? g.procs.size : g.withCand };
+    }).sort(function(a, b) { return b.value - a.value; });
+  }, [filteredPessoas, filteredCandidaturas, cruzDim, cruzMet]);
+
+  // ── Render helpers ──
+  var fp = filteredPessoas;
+  var fc = filteredCandidaturas;
+  var fi = filteredIdiomas;
+  var activeFilterEntries = Object.entries(filters);
+
+  function bar(data, color, filterKey) {
+    return _gBar(data, color, {
+      activeVal: filterKey ? filters[filterKey] : undefined,
+      onFilter: filterKey ? function(v) { setFilter(filterKey, v); } : null
+    });
+  }
+
+  function kpiRow(items) {
+    return CE('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 18 } },
+      ...items.map(function(item) {
+        return CE('div', { key: item[0], style: { flex: '1 1 110px', background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, padding: '14px 16px', textAlign: 'center', boxShadow: '0 1px 2px rgba(0,0,0,0.04)' } },
+          CE('div', { style: { fontSize: 20, fontWeight: 700, color: item[2] || '#1e293b', letterSpacing: '-0.5px' } }, String(item[1])),
+          CE('div', { style: { fontSize: 11, color: '#94a3b8', marginTop: 4, textTransform: 'uppercase', letterSpacing: '0.04em', lineHeight: 1.3 } }, item[0])
         );
-      }
-      const pessoasExp = new Set(experiencias.map(e => String(e.codigo_pessoa != null ? e.codigo_pessoa : ''))).size;
-      const areasUnicas = new Set(experiencias.map(e => String(e.area_profissional || '').trim()).filter(Boolean)).size;
-      return React.createElement('div', null,
-        React.createElement('div', { className: 'grid grid-cols-2 gap-3 mb-6' },
-          _gKpiCard('Pessoas com Experiência', pessoasExp.toLocaleString('pt-BR')),
-          _gKpiCard('Áreas Únicas', areasUnicas.toLocaleString('pt-BR'))
-        ),
-        _gSectionCard('Top 10 Áreas Profissionais', [_gBar(_gTopN(_gCountBy(experiencias, 'area_profissional'), 10), '#6366f1')]),
-        _gSectionCard('Nível do Cargo', [_gBar(_gTopN(_gCountBy(experiencias, 'nivel_cargo'), 10), '#22c55e')]),
-        _gSectionCard('Setor da Empresa', [_gBar(_gTopN(_gCountBy(experiencias, 'setor_empresa'), 10), '#f59e0b')]),
-        _gSectionCard('Porte da Empresa', [_gBar(_gTopN(_gCountBy(experiencias, 'porte_empresa'), 8), '#14b8a6')])
-      );
-    }
+      })
+    );
+  }
 
-    // ── candidaturas ──
-    if (s === 'candidaturas') {
-      const totalCand = candidaturas.length;
-      const pessoasComCand = new Set(candidaturas.map(c => String(c.codigo_pessoa != null ? c.codigo_pessoa : ''))).size;
-      const mediaCand = pessoasComCand > 0 ? (totalCand / pessoasComCand).toFixed(1) : '—';
-      const contPorPessoaCand = {};
-      for (const c of candidaturas) {
-        const id = String(c.codigo_pessoa != null ? c.codigo_pessoa : '');
-        contPorPessoaCand[id] = (contPorPessoaCand[id] || 0) + 1;
-      }
-      const contValsCand = Object.values(contPorPessoaCand);
-      const maxCand = contValsCand.length > 0 ? contValsCand.reduce((m, n) => n > m ? n : m, 0) : 0;
-      const anoCandCount = {};
-      for (const c of candidaturas) {
-        const ts = c.data_candidatura;
-        if (ts == null) continue;
-        const yr = new Date(Number(ts)).getFullYear();
-        if (yr >= 2000 && yr <= 2100) anoCandCount[yr] = (anoCandCount[yr] || 0) + 1;
-      }
-      const anoData = Object.entries(anoCandCount).sort((a, b) => Number(a[0]) - Number(b[0])).map(([name, value]) => ({ name, value }));
-      const procData = _gTopN(_gCountBy(candidaturas, 'nome_processo'), 10);
-      return React.createElement('div', null,
-        React.createElement('div', { className: 'grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6' },
-          _gKpiCard('Total Candidaturas', totalCand.toLocaleString('pt-BR')),
-          _gKpiCard('Pessoas Únicas', pessoasComCand.toLocaleString('pt-BR')),
-          _gKpiCard('Média por Pessoa', String(mediaCand)),
-          _gKpiCard('Máx por Pessoa', String(maxCand))
-        ),
-        _gSectionCard('Candidaturas por Ano', [_gBar(anoData, '#6366f1')]),
-        _gSectionCard('Top 10 Processos por Volume', [_gBar(procData, '#f59e0b')])
-      );
-    }
+  function card(title, content, filterKey) {
+    var av = filterKey ? filters[filterKey] : null;
+    return CE('div', { style: { background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, padding: '18px 20px', marginBottom: 14, boxShadow: '0 1px 3px rgba(0,0,0,0.04)' } },
+      CE('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 } },
+        CE('div', { style: { fontSize: 13, fontWeight: 600, color: '#334155', flex: 1 } }, title),
+        av ? CE('button', {
+          onClick: function() { setFilter(filterKey, av); },
+          style: { fontSize: 11, background: '#eef2ff', color: '#6366f1', border: 'none', borderRadius: 999, padding: '2px 10px', cursor: 'pointer' }
+        }, av + ' ×') : null
+      ),
+      content
+    );
+  }
 
-    // ── processos ──
-    if (s === 'processos') {
-      const procMap = {};
-      for (const c of candidaturas) {
-        const nome = String(c.nome_processo || '').trim() || '(sem nome)';
-        const pid = String(c.codigo_pessoa != null ? c.codigo_pessoa : '');
-        if (!procMap[nome]) procMap[nome] = { pessoas: new Set(), total: 0 };
-        procMap[nome].pessoas.add(pid);
-        procMap[nome].total++;
-      }
-      const processos = new Set(candidaturas.map(c => String(c.codigo_processo != null ? c.codigo_processo : ''))).size;
-      const procList = Object.entries(procMap)
-        .map(([nome, d]) => ({ nome, candidatos: d.pessoas.size, total: d.total }))
-        .sort((a, b) => b.candidatos - a.candidatos);
-      const barData = procList.slice(0, 15).map(d => ({ name: d.nome, value: d.candidatos }));
-      return React.createElement('div', null,
-        !allYears && React.createElement('div', { className: 'mb-4 px-4 py-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800' },
-          '⚠️ Exibindo apenas candidaturas de ', year, '. Processos que ocorreram em múltiplos anos (ex: Estágio Vale) terão contagens parciais. Selecione "Todos os anos" para ver o histórico completo.'
-        ),
-        React.createElement('div', { className: 'grid grid-cols-1 gap-3 mb-6' },
-          _gKpiCard('Processos Únicos', processos.toLocaleString('pt-BR'))
-        ),
-        _gSectionCard('Top 15 Processos por Candidatos Únicos', [_gBar(barData, '#6366f1')]),
-        React.createElement('div', { className: 'bg-white rounded-2xl border border-slate-200 shadow-sm p-6 mb-6' },
-          React.createElement('h3', { className: 'text-lg font-bold text-slate-800 mb-4' }, 'Tabela de Processos'),
-          React.createElement('div', { style: { maxHeight: '420px', overflowY: 'auto' } },
-            React.createElement('table', { className: 'w-full text-sm' },
-              React.createElement('thead', null,
-                React.createElement('tr', { className: 'bg-slate-50 text-left' },
-                  React.createElement('th', { className: 'px-3 py-2 text-xs font-semibold text-slate-500' }, 'Nome do Processo'),
-                  React.createElement('th', { className: 'px-3 py-2 text-xs font-semibold text-slate-500 text-right' }, 'Candidatos Únicos'),
-                  React.createElement('th', { className: 'px-3 py-2 text-xs font-semibold text-slate-500 text-right' }, 'Total Candidaturas')
-                )
-              ),
-              React.createElement('tbody', null,
-                ...procList.slice(0, 20).map(function(d, i) {
-                  return React.createElement('tr', { key: i, className: 'border-b border-slate-50' },
-                    React.createElement('td', { className: 'px-3 py-2 text-slate-700' }, d.nome),
-                    React.createElement('td', { className: 'px-3 py-2 text-right text-slate-800 font-medium' }, d.candidatos.toLocaleString('pt-BR')),
-                    React.createElement('td', { className: 'px-3 py-2 text-right text-slate-600' }, d.total.toLocaleString('pt-BR'))
-                  );
-                })
-              )
-            )
-          )
-        )
-      );
-    }
+  function grid2(a, b) { return CE('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 } }, a, b); }
 
-    // ── etapas ──
-    if (s === 'etapas') {
-      const etapaOrdMap = {};
-      for (const c of candidaturas) {
-        const etapa = String(c.etapa_atual || '').trim() || '(Vazio)';
-        const ord = Number(c.ordem_etapa || 0);
-        if (!etapaOrdMap[etapa]) etapaOrdMap[etapa] = { count: 0, ordSum: 0 };
-        etapaOrdMap[etapa].count++;
-        etapaOrdMap[etapa].ordSum += ord;
-      }
-      const etapaEntries = Object.entries(etapaOrdMap).map(([name, d]) => ({
-        name, value: d.count, avgOrd: d.count > 0 ? d.ordSum / d.count : 0
-      }));
-      const etapaBarData = [...etapaEntries].sort((a, b) => a.avgOrd - b.avgOrd).map(d => ({ name: d.name, value: d.value }));
-      const topEtapa = [...etapaEntries].sort((a, b) => b.value - a.value)[0];
-      return React.createElement('div', null,
-        React.createElement('div', { className: 'grid grid-cols-2 gap-3 mb-6' },
-          _gKpiCard('Etapas Únicas', String(etapaEntries.length)),
-          _gKpiCard('Etapa com mais candidatos', topEtapa ? String(topEtapa.name).slice(0, 30) : '—')
-        ),
-        _gSectionCard('Distribuição por Etapa Atual', [_gBar(etapaBarData, '#6366f1')])
-      );
-    }
+  function sec(id, icon, title, content) {
+    return CE('div', { id: 'gs-' + id, style: { marginBottom: 36 } },
+      CE('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16, paddingBottom: 12, borderBottom: '2px solid #e2e8f0' } },
+        CE('span', { style: { fontSize: 20 } }, icon),
+        CE('span', { style: { fontSize: 16, fontWeight: 700, color: '#1e293b' } }, title)
+      ),
+      content
+    );
+  }
 
-    // ── relacionamento ──
-    if (s === 'relacionamento') {
-      const contPorPessoa = {};
-      for (const c of candidaturas) {
-        const id = String(c.codigo_pessoa != null ? c.codigo_pessoa : '');
-        contPorPessoa[id] = (contPorPessoa[id] || 0) + 1;
-      }
-      const vals = Object.values(contPorPessoa);
-      const p1 = vals.filter(n => n === 1).length;
-      const p2 = vals.filter(n => n === 2).length;
-      const p3p = vals.filter(n => n >= 3).length;
-      const histData = [1, 2, 3, 4, 5].map(n => ({ name: String(n), value: vals.filter(v => v === n).length }))
-        .concat([{ name: '6+', value: vals.filter(v => v >= 6).length }]);
-      const top10 = Object.entries(contPorPessoa).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([id, count]) => ({ id, count }));
-      return React.createElement('div', null,
-        React.createElement('div', { className: 'grid grid-cols-3 gap-3 mb-6' },
-          _gKpiCard('Pessoas com 1 candidatura', p1.toLocaleString('pt-BR')),
-          _gKpiCard('Pessoas com 2 candidaturas', p2.toLocaleString('pt-BR')),
-          _gKpiCard('Pessoas com 3+ candidaturas', p3p.toLocaleString('pt-BR'))
-        ),
-        _gSectionCard('Candidaturas por Pessoa (histograma)', [_gBar(histData, '#6366f1')]),
-        React.createElement('div', { className: 'bg-white rounded-2xl border border-slate-200 shadow-sm p-6 mb-6' },
-          React.createElement('h3', { className: 'text-lg font-bold text-slate-800 mb-4' }, 'Top 10 — Mais Candidaturas'),
-          React.createElement('table', { className: 'w-full text-sm' },
-            React.createElement('thead', null,
-              React.createElement('tr', { className: 'bg-slate-50' },
-                React.createElement('th', { className: 'px-3 py-2 text-xs font-semibold text-slate-500 text-left' }, 'ID Pessoa'),
-                React.createElement('th', { className: 'px-3 py-2 text-xs font-semibold text-slate-500 text-right' }, 'Candidaturas')
+  // ── Sections ──
+  function renderBase() {
+    var total = fp.length;
+    var ativos = fp.filter(function(p) { return String(p.status || '').toLowerCase() === 'ativo'; }).length;
+    var comCand = new Set(fc.map(function(c) { return String(c.codigo_pessoa != null ? c.codigo_pessoa : ''); })).size;
+    var diasMed = total > 0 ? (fp.reduce(function(s, p) { return s + Number(p.dias_cadastro_ate_primeira_candidatura || 0); }, 0) / total).toFixed(1) : '—';
+    var anoCounts = {};
+    for (var i = 0; i < fp.length; i++) {
+      var ts = fp[i].data_cadastro;
+      if (ts == null) continue;
+      var yr = new Date(Number(ts)).getFullYear();
+      if (yr >= 2010 && yr <= 2030) anoCounts[yr] = (anoCounts[yr] || 0) + 1;
+    }
+    var anoData = Object.entries(anoCounts).sort(function(a, b) { return Number(a[0]) - Number(b[0]); }).map(function(e) { return { name: e[0], value: e[1] }; });
+    var statusData = _gAllSorted(_gCountBy(fp, 'status'));
+    return CE('div', null,
+      kpiRow([['Total Cadastros', total.toLocaleString('pt-BR'), '#6366f1'], ['Ativos', ativos.toLocaleString('pt-BR'), '#22c55e'], ['Inativos', (total - ativos).toLocaleString('pt-BR'), '#ef4444'], ['Com Candidatura', comCand.toLocaleString('pt-BR'), '#f59e0b'], ['Média Dias → 1ª Cand.', diasMed]]),
+      grid2(card('Cadastros por Ano', bar(anoData, '#6366f1', null)), card('Status', bar(statusData, '#22c55e', 'status'), 'status'))
+    );
+  }
+
+  function renderDemo() {
+    var idades = fp.map(function(p) { return Number(p.idade || 0); }).filter(function(n) { return n > 0 && n < 120; });
+    var med = idades.length > 0 ? (idades.reduce(function(a, b) { return a + b; }, 0) / idades.length).toFixed(1) : '—';
+    var mn = idades.length > 0 ? Math.min.apply(null, idades) : '—';
+    var mx = idades.length > 0 ? Math.max.apply(null, idades) : '—';
+    var faixas = [
+      { name: '< 18', value: idades.filter(function(n) { return n < 18; }).length },
+      { name: '18–24', value: idades.filter(function(n) { return n >= 18 && n <= 24; }).length },
+      { name: '25–34', value: idades.filter(function(n) { return n >= 25 && n <= 34; }).length },
+      { name: '35–44', value: idades.filter(function(n) { return n >= 35 && n <= 44; }).length },
+      { name: '45–54', value: idades.filter(function(n) { return n >= 45 && n <= 54; }).length },
+      { name: '55+', value: idades.filter(function(n) { return n >= 55; }).length },
+    ];
+    return CE('div', null,
+      kpiRow([['Média de Idade', med], ['Mínima', mn], ['Máxima', mx]]),
+      grid2(card('Faixa Etária', bar(faixas, '#f59e0b', 'faixa'), 'faixa'), card('Identidade de Gênero', bar(_gAllSorted(_gCountBy(fp, 'identidade_genero')), '#8b5cf6', 'genero'), 'genero'))
+    );
+  }
+
+  function renderLocal() {
+    return CE('div', null,
+      kpiRow([
+        ['Estados Únicos', new Set(fp.map(function(p) { return String(p.estado || '').trim(); }).filter(Boolean)).size],
+        ['Cidades Únicas', new Set(fp.map(function(p) { return String(p.cidade || '').trim(); }).filter(Boolean)).size]
+      ]),
+      grid2(card('Estados', bar(_gAllSorted(_gCountBy(fp, 'estado')), '#6366f1', 'estado'), 'estado'), card('Regiões', bar(_gAllSorted(_gCountBy(fp, 'regiao')), '#14b8a6', 'regiao'), 'regiao')),
+      card('Cidades', bar(_gAllSorted(_gCountBy(fp, 'cidade')), '#f59e0b', null))
+    );
+  }
+
+  function renderDiv() {
+    var total = fp.length || 1;
+    var comRaca = fp.filter(function(p) { return String(p.raca_cor || '').trim(); }).length;
+    var comPcd = fp.filter(function(p) { var v = String(p.pcd_cadastro || '').trim().toLowerCase(); return v && v !== 'não'; }).length;
+    return CE('div', null,
+      kpiRow([['% Raça/Cor preenchida', ((comRaca / total) * 100).toFixed(1) + '%'], ['% PCD', ((comPcd / total) * 100).toFixed(1) + '%']]),
+      grid2(card('Raça/Cor', bar(_gAllSorted(_gCountBy(fp, 'raca_cor')), '#ef4444', 'raca'), 'raca'), card('Gênero', bar(_gAllSorted(_gCountBy(fp, 'identidade_genero')), '#8b5cf6', 'genero'), 'genero')),
+      grid2(card('Orientação Afetivo-Sexual', bar(_gAllSorted(_gCountBy(fp, 'orientacao_afetivo_sexual')), '#f97316', null)), card('Renda Familiar', bar(_gAllSorted(_gCountBy(fp, 'renda_familiar')), '#06b6d4', 'renda'), 'renda')),
+      card('PCD (Cadastro)', bar(_gAllSorted(_gCountBy(fp, 'pcd_cadastro')), '#22c55e', 'pcd'), 'pcd')
+    );
+  }
+
+  function renderForm() {
+    var total = fp.length || 1;
+    var comGrad = fp.filter(function(p) { return String(p.graduacao_1_curso || '').trim(); }).length;
+    var comPos = fp.filter(function(p) { return String(p.pos_1_curso || '').trim(); }).length;
+    var cursoMap = {};
+    for (var i = 0; i < fp.length; i++) {
+      var p = fp[i];
+      ['graduacao_1_curso', 'graduacao_2_curso', 'graduacao_3_curso'].forEach(function(k) {
+        var c = String(p[k] || '').trim();
+        if (c) cursoMap[c] = (cursoMap[c] || 0) + 1;
+      });
+    }
+    return CE('div', null,
+      kpiRow([['% Com Graduação', ((comGrad / total) * 100).toFixed(1) + '%', '#6366f1'], ['% Com Pós-Grad.', ((comPos / total) * 100).toFixed(1) + '%', '#8b5cf6']]),
+      grid2(card('Cursos de Graduação', bar(_gAllSorted(cursoMap), '#6366f1', 'curso'), 'curso'), card('Instituições', bar(_gAllSorted(_gCountBy(fp, 'graduacao_1_instituicao')), '#22c55e', null))),
+      grid2(card('Tipo de Graduação', bar(_gAllSorted(_gCountBy(fp, 'graduacao_1_tipo')), '#f59e0b', 'nivel_ensino'), 'nivel_ensino'), card('Modalidade', bar(_gAllSorted(_gCountBy(fp, 'graduacao_1_modalidade')), '#14b8a6', null)))
+    );
+  }
+
+  function renderIdiomas() {
+    return CE('div', null,
+      kpiRow([
+        ['Pessoas com Idioma', new Set(fi.map(function(i) { return String(i.codigo_pessoa != null ? i.codigo_pessoa : ''); })).size.toLocaleString('pt-BR'), '#6366f1'],
+        ['Total Declarações', fi.length.toLocaleString('pt-BR')],
+        ['Idiomas Únicos', new Set(fi.map(function(i) { return String(i.idioma || ''); })).size]
+      ]),
+      grid2(card('Idiomas', bar(_gAllSorted(_gCountBy(fi, 'idioma')), '#6366f1', null)), card('Nível', bar(_gAllSorted(_gCountBy(fi, 'nivel')), '#22c55e', null)))
+    );
+  }
+
+  function renderCand() {
+    var total = fc.length;
+    var pessoasComCand = new Set(fc.map(function(c) { return String(c.codigo_pessoa != null ? c.codigo_pessoa : ''); })).size;
+    var mediaCand = pessoasComCand > 0 ? (total / pessoasComCand).toFixed(1) : '—';
+    var anoCandCount = {};
+    for (var i = 0; i < fc.length; i++) {
+      var ts = fc[i].data_candidatura;
+      if (ts == null) continue;
+      var yr = new Date(Number(ts)).getFullYear();
+      if (yr >= 2010 && yr <= 2030) anoCandCount[yr] = (anoCandCount[yr] || 0) + 1;
+    }
+    var anoData = Object.entries(anoCandCount).sort(function(a, b) { return Number(a[0]) - Number(b[0]); }).map(function(e) { return { name: e[0], value: e[1] }; });
+    return CE('div', null,
+      kpiRow([['Total Candidaturas', total.toLocaleString('pt-BR'), '#6366f1'], ['Pessoas Únicas', pessoasComCand.toLocaleString('pt-BR')], ['Média por Pessoa', mediaCand]]),
+      grid2(card('Candidaturas por Ano', bar(anoData, '#6366f1', null)), card('Por Processo', bar(_gAllSorted(_gCountBy(fc, 'nome_processo')), '#f59e0b', 'processo'), 'processo'))
+    );
+  }
+
+  function renderProc() {
+    var procMap = {};
+    for (var i = 0; i < fc.length; i++) {
+      var c = fc[i];
+      var nome = String(c.nome_processo || '').trim() || '(sem nome)';
+      var pid = String(c.codigo_pessoa != null ? c.codigo_pessoa : '');
+      if (!procMap[nome]) procMap[nome] = { pessoas: new Set(), total: 0 };
+      procMap[nome].pessoas.add(pid);
+      procMap[nome].total++;
+    }
+    var processos = new Set(fc.map(function(c) { return String(c.codigo_processo != null ? c.codigo_processo : ''); })).size;
+    var procList = Object.entries(procMap).map(function(e) { return { nome: e[0], candidatos: e[1].pessoas.size, total: e[1].total }; }).sort(function(a, b) { return b.candidatos - a.candidatos; });
+    var barData = procList.map(function(d) { return { name: d.nome, value: d.candidatos }; });
+    return CE('div', null,
+      kpiRow([['Processos Únicos', processos.toLocaleString('pt-BR'), '#6366f1']]),
+      card('Processos por Candidatos Únicos', bar(barData, '#6366f1', 'processo'), 'processo'),
+      CE('div', { style: { background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, padding: '18px 20px', boxShadow: '0 1px 3px rgba(0,0,0,0.04)' } },
+        CE('div', { style: { fontSize: 13, fontWeight: 600, color: '#334155', marginBottom: 12 } }, 'Tabela de Processos'),
+        CE('div', { style: { maxHeight: 400, overflowY: 'auto' } },
+          CE('table', { style: { width: '100%', borderCollapse: 'collapse', fontSize: 12 } },
+            CE('thead', null,
+              CE('tr', { style: { background: '#f8fafc', position: 'sticky', top: 0 } },
+                CE('th', { style: { textAlign: 'left', padding: '8px 12px', color: '#64748b', fontWeight: 600, fontSize: 11 } }, 'Processo'),
+                CE('th', { style: { textAlign: 'right', padding: '8px 12px', color: '#64748b', fontWeight: 600, fontSize: 11 } }, 'Candidatos Únicos'),
+                CE('th', { style: { textAlign: 'right', padding: '8px 12px', color: '#64748b', fontWeight: 600, fontSize: 11 } }, 'Total Cand.')
               )
             ),
-            React.createElement('tbody', null,
-              ...top10.map(function(r, i) {
-                return React.createElement('tr', { key: i, className: 'border-b border-slate-50' },
-                  React.createElement('td', { className: 'px-3 py-2 text-slate-700' }, r.id),
-                  React.createElement('td', { className: 'px-3 py-2 text-right font-medium text-slate-800' }, String(r.count))
+            CE('tbody', null,
+              ...procList.map(function(d, i) {
+                return CE('tr', { key: i, onClick: function() { setFilter('processo', d.nome); }, style: { borderBottom: '1px solid #f1f5f9', cursor: 'pointer', background: filters.processo === d.nome ? '#eef2ff' : 'transparent' } },
+                  CE('td', { style: { padding: '7px 12px', color: '#334155' } }, d.nome),
+                  CE('td', { style: { padding: '7px 12px', textAlign: 'right', fontWeight: 600, color: '#1e293b' } }, d.candidatos.toLocaleString('pt-BR')),
+                  CE('td', { style: { padding: '7px 12px', textAlign: 'right', color: '#64748b' } }, d.total.toLocaleString('pt-BR'))
                 );
               })
             )
           )
         )
-      );
-    }
-
-    // ── cruzamentos ──
-    if (s === 'cruzamentos') {
-      const dimOpts = [
-        { v: 'identidade_genero', label: 'Identidade de Gênero' },
-        { v: 'raca_cor', label: 'Raça/Cor' },
-        { v: 'regiao', label: 'Região' },
-        { v: 'estado', label: 'Estado' },
-        { v: 'renda_familiar', label: 'Renda Familiar' },
-        { v: 'pcd_cadastro', label: 'PCD Cadastro' },
-      ];
-      const metOpts = [
-        { v: 'total_candidaturas', label: 'Total de Candidaturas' },
-        { v: 'processos_unicos', label: 'Processos Únicos' },
-        { v: 'pessoas_unicas_com_candidatura', label: 'Pessoas Únicas com Candidatura' },
-      ];
-      return React.createElement('div', null,
-        React.createElement('div', { className: 'bg-white rounded-2xl border border-slate-200 shadow-sm p-6 mb-6' },
-          React.createElement('div', { className: 'flex flex-wrap gap-4 mb-6' },
-            React.createElement('div', null,
-              React.createElement('label', { className: 'text-xs font-semibold text-slate-500 mb-1 block' }, 'Dimensão'),
-              React.createElement('select', {
-                value: cruzDim,
-                onChange: function(e) { setCruzDim(e.target.value); },
-                className: 'border border-slate-200 rounded-lg px-3 py-2 text-sm'
-              },
-                ...dimOpts.map(function(o) { return React.createElement('option', { key: o.v, value: o.v }, o.label); })
-              )
-            ),
-            React.createElement('div', null,
-              React.createElement('label', { className: 'text-xs font-semibold text-slate-500 mb-1 block' }, 'Métrica'),
-              React.createElement('select', {
-                value: cruzMet,
-                onChange: function(e) { setCruzMet(e.target.value); },
-                className: 'border border-slate-200 rounded-lg px-3 py-2 text-sm'
-              },
-                ...metOpts.map(function(o) { return React.createElement('option', { key: o.v, value: o.v }, o.label); })
-              )
-            )
-          ),
-          React.createElement('h3', { className: 'text-lg font-bold text-slate-800 mb-4' }, 'Resultado do Cruzamento'),
-          _gBar(cruzData, '#6366f1')
-        )
-      );
-    }
-
-    return React.createElement('div', { className: 'text-slate-400 text-sm p-6' }, 'Selecione uma seção.');
+      )
+    );
   }
 
-  return React.createElement('div', { className: 'max-w-screen-xl mx-auto px-6 py-6' },
-    React.createElement('div', { className: 'flex flex-wrap items-center gap-4 mb-6' },
-      React.createElement('div', null,
-        React.createElement('h1', { className: 'text-2xl font-bold text-slate-800' }, '🌍 Globe · Fotografia'),
-        React.createElement('p', { className: 'text-sm text-slate-500 mt-0.5' }, 'Dashboard de pessoas cadastradas no ATS Globe')
-      ),
-      React.createElement('div', { className: 'flex items-center gap-2 ml-auto' },
-        React.createElement('label', { className: 'text-xs font-semibold text-slate-500' }, 'Ano:'),
-        React.createElement('select', {
-          value: allYears ? 'todos' : String(year),
-          onChange: function(e) {
-            if (e.target.value === 'todos') { setAllYears(true); }
-            else { setAllYears(false); setYear(Number(e.target.value)); }
-          },
-          className: 'border border-slate-200 rounded-lg px-3 py-1.5 text-sm'
-        },
-          ...GLOBE_YEARS.map(function(y) { return React.createElement('option', { key: y, value: String(y) }, String(y)); }),
-          React.createElement('option', { value: 'todos' }, 'Todos (2015–2026)')
+  function renderEtapas() {
+    var etapaOrdMap = {};
+    for (var i = 0; i < fc.length; i++) {
+      var c = fc[i];
+      var etapa = String(c.etapa_atual || '').trim() || '(Vazio)';
+      var ord = Number(c.ordem_etapa || 0);
+      if (!etapaOrdMap[etapa]) etapaOrdMap[etapa] = { count: 0, ordSum: 0 };
+      etapaOrdMap[etapa].count++;
+      etapaOrdMap[etapa].ordSum += ord;
+    }
+    var etapaList = Object.entries(etapaOrdMap).map(function(e) { return { name: e[0], value: e[1].count, avgOrd: e[1].count > 0 ? e[1].ordSum / e[1].count : 0 }; });
+    var barData = etapaList.slice().sort(function(a, b) { return a.avgOrd - b.avgOrd; }).map(function(d) { return { name: d.name, value: d.value }; });
+    var top = etapaList.slice().sort(function(a, b) { return b.value - a.value; })[0];
+    return CE('div', null,
+      kpiRow([['Etapas Únicas', etapaList.length], ['Mais populosa', top ? String(top.name).slice(0, 30) : '—']]),
+      card('Distribuição por Etapa', bar(barData, '#6366f1', 'etapa'), 'etapa')
+    );
+  }
+
+  function renderRelac() {
+    var contMap = {};
+    for (var i = 0; i < fc.length; i++) {
+      var id = String(fc[i].codigo_pessoa != null ? fc[i].codigo_pessoa : '');
+      contMap[id] = (contMap[id] || 0) + 1;
+    }
+    var vals = Object.values(contMap);
+    var histData = [1, 2, 3, 4, 5].map(function(n) { return { name: String(n), value: vals.filter(function(v) { return v === n; }).length }; })
+      .concat([{ name: '6+', value: vals.filter(function(v) { return v >= 6; }).length }]);
+    return CE('div', null,
+      kpiRow([['1 candidatura', vals.filter(function(n) { return n === 1; }).length.toLocaleString('pt-BR')], ['2 candidaturas', vals.filter(function(n) { return n === 2; }).length.toLocaleString('pt-BR')], ['3+ candidaturas', vals.filter(function(n) { return n >= 3; }).length.toLocaleString('pt-BR'), '#6366f1']]),
+      card('Candidaturas por Pessoa (histograma)', bar(histData, '#6366f1', null))
+    );
+  }
+
+  function renderCruz() {
+    var dimOpts = [
+      { v: 'identidade_genero', label: 'Identidade de Gênero' },
+      { v: 'raca_cor', label: 'Raça/Cor' },
+      { v: 'regiao', label: 'Região' },
+      { v: 'estado', label: 'Estado' },
+      { v: 'renda_familiar', label: 'Renda Familiar' },
+      { v: 'pcd_cadastro', label: 'PCD Cadastro' },
+    ];
+    var metOpts = [
+      { v: 'total_candidaturas', label: 'Total de Candidaturas' },
+      { v: 'processos_unicos', label: 'Processos Únicos' },
+      { v: 'pessoas_unicas_com_candidatura', label: 'Pessoas com Candidatura' },
+    ];
+    return CE('div', { style: { background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, padding: '20px', boxShadow: '0 1px 3px rgba(0,0,0,0.04)' } },
+      CE('div', { style: { display: 'flex', gap: 16, marginBottom: 20, flexWrap: 'wrap' } },
+        CE('div', null,
+          CE('label', { style: { fontSize: 11, fontWeight: 600, color: '#94a3b8', display: 'block', marginBottom: 4, textTransform: 'uppercase' } }, 'Dimensão'),
+          CE('select', { value: cruzDim, onChange: function(e) { setCruzDim(e.target.value); }, style: { border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 12px', fontSize: 13 } },
+            ...dimOpts.map(function(o) { return CE('option', { key: o.v, value: o.v }, o.label); })
+          )
+        ),
+        CE('div', null,
+          CE('label', { style: { fontSize: 11, fontWeight: 600, color: '#94a3b8', display: 'block', marginBottom: 4, textTransform: 'uppercase' } }, 'Métrica'),
+          CE('select', { value: cruzMet, onChange: function(e) { setCruzMet(e.target.value); }, style: { border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 12px', fontSize: 13 } },
+            ...metOpts.map(function(o) { return CE('option', { key: o.v, value: o.v }, o.label); })
+          )
         )
-      )
-    ),
-    error ? React.createElement('div', { className: 'bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl mb-4 text-sm' }, error) : null,
-    loading ? React.createElement('div', { className: 'bg-indigo-50 border border-indigo-200 text-indigo-700 px-4 py-3 rounded-xl mb-4 text-sm flex items-center gap-2' },
-      React.createElement('span', null, '⏳'),
-      React.createElement('span', null, prog || 'Carregando...')
-    ) : null,
-    React.createElement('div', { className: 'overflow-x-auto mb-6' },
-      React.createElement('div', { className: 'flex gap-1 min-w-max' },
-        ...GLOBE_TABS.map(function(tab) {
-          return React.createElement('button', {
-            key: tab.k,
-            onClick: function() { setActiveSection(tab.k); },
-            className: activeSection === tab.k
-              ? 'bg-indigo-600 text-white px-4 py-2 text-sm font-medium rounded-lg'
-              : 'text-slate-600 hover:bg-slate-100 px-4 py-2 text-sm font-medium rounded-lg'
-          }, tab.label);
+      ),
+      _gBar(cruzData, '#6366f1', {})
+    );
+  }
+
+  var SECTION_NAV = [
+    { id: 'base', icon: '👥', label: 'Base' },
+    { id: 'demografia', icon: '📊', label: 'Demografia' },
+    { id: 'localizacao', icon: '📍', label: 'Localização' },
+    { id: 'diversidade', icon: '🌈', label: 'Diversidade' },
+    { id: 'formacao', icon: '🎓', label: 'Formáção' },
+    { id: 'idiomas', icon: '🗣️', label: 'Idiomas' },
+    { id: 'candidaturas', icon: '📝', label: 'Candidaturas' },
+    { id: 'processos', icon: '🏢', label: 'Processos' },
+    { id: 'etapas', icon: '🔄', label: 'Etapas' },
+    { id: 'relacionamento', icon: '🔗', label: 'Relacionamento' },
+    { id: 'cruzamentos', icon: '⚡', label: 'Cruzamentos' },
+  ];
+
+  var FILTER_LABELS = { genero: 'Gênero', raca: 'Raça/Cor', estado: 'Estado', regiao: 'Região', status: 'Status', faixa: 'Faixa Etária', pcd: 'PCD', renda: 'Renda', curso: 'Curso', nivel_ensino: 'Nível Ensino', etapa: 'Etapa', processo: 'Processo' };
+
+  function scrollTo(id) {
+    var el = document.getElementById('gs-' + id);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  return CE('div', { style: { display: 'flex', minHeight: '100vh', background: '#f1f5f9', fontFamily: "'Segoe UI', sans-serif" } },
+    CE('div', { style: { width: 172, flexShrink: 0, background: '#1e293b', position: 'sticky', top: 0, height: '100vh', overflowY: 'auto', display: 'flex', flexDirection: 'column', zIndex: 40 } },
+      CE('div', { style: { padding: '18px 16px 10px', fontSize: 13, fontWeight: 800, color: '#e2e8f0', letterSpacing: '-0.3px' } }, '🌍 Globe'),
+      CE('div', { style: { padding: '0 8px 12px' } },
+        ...SECTION_NAV.map(function(s) {
+          return CE('button', { key: s.id, onClick: function() { scrollTo(s.id); }, style: { display: 'block', width: '100%', textAlign: 'left', padding: '7px 10px', background: 'transparent', border: 'none', color: '#94a3b8', fontSize: 12, cursor: 'pointer', borderRadius: 6 } }, s.icon + ' ' + s.label);
         })
-      )
+      ),
+      activeFilterEntries.length > 0 ? CE('div', { style: { margin: '0 10px 12px', padding: '10px 10px', background: '#1e3a5f', borderRadius: 8 } },
+        CE('div', { style: { fontSize: 10, color: '#64748b', marginBottom: 6, textTransform: 'uppercase', fontWeight: 700 } }, 'Filtros ativos'),
+        ...activeFilterEntries.map(function(e) {
+          return CE('div', { key: e[0], onClick: function() { setFilter(e[0], e[1]); }, style: { fontSize: 10, color: '#93c5fd', cursor: 'pointer', marginBottom: 3, lineHeight: 1.4 } }, (FILTER_LABELS[e[0]] || e[0]) + ': ' + e[1] + ' ×');
+        }),
+        CE('button', { onClick: function() { setFilters({}); }, style: { marginTop: 6, fontSize: 10, color: '#f87171', background: 'transparent', border: 'none', cursor: 'pointer', padding: 0 } }, 'Limpar todos')
+      ) : null
     ),
-    pessoas.length === 0 && !loading
-      ? React.createElement('div', { className: 'text-slate-400 text-sm text-center py-12' }, 'Nenhum dado carregado. Aguarde o carregamento ou verifique a conexão.')
-      : renderSection()
+    CE('div', { style: { flex: 1, overflowX: 'hidden', minWidth: 0 } },
+      CE('div', { style: { background: '#fff', borderBottom: '1px solid #e2e8f0', padding: '12px 24px', position: 'sticky', top: 0, zIndex: 30, display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' } },
+        CE('div', { style: { flex: 1 } },
+          CE('div', { style: { fontSize: 15, fontWeight: 800, color: '#1e293b' } }, '🌍 Globe · Fotografia'),
+          CE('div', { style: { fontSize: 11, color: '#94a3b8', marginTop: 1 } }, fp.length.toLocaleString('pt-BR') + ' pessoas · ' + fc.length.toLocaleString('pt-BR') + ' candidaturas' + (activeFilterEntries.length > 0 ? ' (filtrado)' : ''))
+        ),
+        CE('div', { style: { position: 'relative' } },
+          CE('button', { onClick: function() { setShowYearPicker(!showYearPicker); }, style: { display: 'flex', alignItems: 'center', gap: 6, background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: '7px 14px', fontSize: 13, cursor: 'pointer', color: '#334155', fontWeight: 500 } },
+            '📅 ' + (selectedYears.length === GLOBE_YEARS.length ? 'Todos os anos' : selectedYears.length === 1 ? String(selectedYears[0]) : selectedYears.length + ' anos') + ' ▾'
+          ),
+          showYearPicker ? CE('div', { style: { position: 'absolute', top: '100%', right: 0, marginTop: 6, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, padding: 16, boxShadow: '0 8px 24px rgba(0,0,0,0.12)', zIndex: 200, minWidth: 300 } },
+            CE('div', { style: { display: 'flex', gap: 8, marginBottom: 12 } },
+              CE('button', { onClick: function() { setSelectedYears(GLOBE_YEARS.slice()); setShowYearPicker(false); }, style: { fontSize: 12, background: '#6366f1', color: '#fff', border: 'none', borderRadius: 6, padding: '5px 12px', cursor: 'pointer' } }, 'Todos'),
+              CE('button', { onClick: function() { setShowYearPicker(false); }, style: { fontSize: 12, background: '#f1f5f9', color: '#64748b', border: 'none', borderRadius: 6, padding: '5px 12px', cursor: 'pointer', marginLeft: 'auto' } }, '✕ Fechar')
+            ),
+            CE('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 6 } },
+              ...GLOBE_YEARS.map(function(y) {
+                var sel = selectedYears.indexOf(y) >= 0;
+                return CE('button', { key: y,
+                  onClick: function() {
+                    var yy = y;
+                    setSelectedYears(function(prev) {
+                      if (prev.indexOf(yy) >= 0) { if (prev.length === 1) return prev; return prev.filter(function(x) { return x !== yy; }); }
+                      return prev.concat([yy]).sort(function(a, b) { return a - b; });
+                    });
+                  },
+                  style: { fontSize: 13, fontWeight: sel ? 700 : 400, background: sel ? '#6366f1' : '#f8fafc', color: sel ? '#fff' : '#475569', border: sel ? '1px solid #6366f1' : '1px solid #e2e8f0', borderRadius: 7, padding: '5px 14px', cursor: 'pointer' }
+                }, String(y));
+              })
+            )
+          ) : null
+        ),
+        activeFilterEntries.length > 0 ? CE('button', { onClick: function() { setFilters({}); }, style: { fontSize: 12, background: '#fee2e2', color: '#dc2626', border: 'none', borderRadius: 8, padding: '7px 14px', cursor: 'pointer', fontWeight: 600 } }, '× Limpar ' + activeFilterEntries.length + ' filtro' + (activeFilterEntries.length > 1 ? 's' : '')) : null
+      ),
+      activeFilterEntries.length > 0 ? CE('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 6, padding: '10px 24px', background: '#fff', borderBottom: '1px solid #e2e8f0' } },
+        ...activeFilterEntries.map(function(e) {
+          return CE('div', { key: e[0], onClick: function() { setFilter(e[0], e[1]); }, style: { fontSize: 12, background: '#eef2ff', color: '#6366f1', borderRadius: 999, padding: '4px 12px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, border: '1px solid #c7d2fe' } },
+            CE('span', { style: { fontWeight: 600 } }, FILTER_LABELS[e[0]] || e[0]), ': ', e[1], ' ×'
+          );
+        })
+      ) : null,
+      loading ? CE('div', { style: { margin: '24px 24px 0', background: '#fff', border: '1px solid #e0e7ff', borderRadius: 12, padding: '24px', textAlign: 'center' } },
+        CE('div', { style: { fontSize: 13, fontWeight: 600, color: '#6366f1', marginBottom: 4 } }, '⏳ ' + (loadProg || 'Carregando...')),
+        CE('div', { style: { fontSize: 11, color: '#94a3b8' } }, 'Carregamento paralelo ativo — todos os arquivos baixam simultaneamente')
+      ) : null,
+      error ? CE('div', { style: { margin: '12px 24px 0', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 10, padding: '10px 16px', fontSize: 12, color: '#92400e' } }, '⚠️ ' + error) : null,
+      CE('div', { style: { padding: '24px' } },
+        fp.length === 0 && !loading ? CE('div', { style: { textAlign: 'center', color: '#94a3b8', padding: '80px 0', fontSize: 14 } }, '📅 Selecione um ou mais anos para carregar os dados.') :
+        !loading ? CE('div', null,
+          sec('base', '👥', 'Base de Talentos', renderBase()),
+          sec('demografia', '📊', 'Demografia', renderDemo()),
+          sec('localizacao', '📍', 'Localização', renderLocal()),
+          sec('diversidade', '🌈', 'Diversidade', renderDiv()),
+          sec('formacao', '🎓', 'Formação Acadêmica', renderForm()),
+          sec('idiomas', '🗣️', 'Idiomas', renderIdiomas()),
+          sec('candidaturas', '📝', 'Candidaturas', renderCand()),
+          sec('processos', '🏢', 'Processos Seletivos', renderProc()),
+          sec('etapas', '🔄', 'Etapas', renderEtapas()),
+          sec('relacionamento', '🔗', 'Relacionamento', renderRelac()),
+          sec('cruzamentos', '⚡', 'Cruzamentos', renderCruz())
+        ) : null
+      )
+    )
   );
 }
 
