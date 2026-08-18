@@ -4444,14 +4444,14 @@ function _gBar(data, color, opts) {
 
 function GlobeFotografiaView({ token }) {
   var CE = React.createElement;
-  const [selectedYears, setSelectedYears] = useState([2026]);
+  const [selectedYears, setSelectedYears] = useState(function() { return GLOBE_YEARS.slice(); });
   const [showYearPicker, setShowYearPicker] = useState(false);
   const [loading, setLoading] = useState(false);
   const [loadPct, setLoadPct] = useState(0);
   const [loadMsg, setLoadMsg] = useState('');
   const [error, setError] = useState('');
-  const [pessoaIdx, setPessoaIdx] = useState(new Map());     // id -> minimal filter obj
-  const [pessoaContact, setPessoaContact] = useState(new Map()); // id -> {nome,email,tel,comm,st}
+  const [pessoaIdx, setPessoaIdx] = useState(function() { return new Map(); });     // id -> minimal filter obj
+  const [pessoaContact, setPessoaContact] = useState(function() { return new Map(); }); // id -> {nome,email,tel,comm,st}
   const [candidaturas, setCandidaturas] = useState([]);
   const [idiomas, setIdiomas] = useState([]);
   const [ultimaCand, setUltimaCand] = useState({});
@@ -4722,12 +4722,12 @@ function GlobeFotografiaView({ token }) {
     if (filters.etapa) fc = fc.filter(function(c) { return String(c.etapa_atual||'').trim() === filters.etapa; });
     if (filters.processo) fc = fc.filter(function(c) { return String(c.nome_processo||'').trim() === filters.processo; });
     return fc;
-  }, [candidaturas, computedData.filteredIds, filters]);
+  }, [candidaturas, computedData, filters]);
 
   var filteredIdiomas = useMemo(function() {
     var fids = computedData.filteredIds;
     return idiomas.filter(function(i) { return fids.has(String(i.codigo_pessoa != null ? i.codigo_pessoa : '')); });
-  }, [idiomas, computedData.filteredIds]);
+  }, [idiomas, computedData]);
 
   var activeFilters = Object.entries(filters);
   var fc = filteredCandidaturas, fi = filteredIdiomas;
@@ -5169,14 +5169,23 @@ function GlobeFotografiaView({ token }) {
       ):null,
       error?CE('div',{style:{margin:'12px 20px 0',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:10,padding:'10px 16px',fontSize:12,color:'#92400e'}},'⚠️ '+error):null,
       CE('div',{style:{padding:'20px'}},
-        computedData.total===0&&!loading?CE('div',{style:{textAlign:'center',color:'#94a3b8',padding:'80px 0',fontSize:14}},'📅 Selecione um ou mais anos para carregar os dados.'):
-        !loading?CE('div',null,
-          sec('base','👥','Base de Talentos e Candidaturas',renderBase()),
-          sec('diversidade','🌈','Diversidade',renderDiv()),
-          sec('localizacao','📍','Localização',renderLocal()),
-          sec('formacao','🎓','Formação Acadêmica e Idiomas',renderForm()),
-          sec('pessoas','🗂️','Tabela de Pessoas',renderPessoas())
-        ):null
+        computedData.total===0&&!loading?CE('div',{style:{textAlign:'center',color:'#94a3b8',padding:'80px 0',fontSize:14}},'📅 Selecione um ou mais anos para carregar os dados. Carregando automaticamente…'):
+        !loading?(function(){
+          try {
+            return CE('div',null,
+              sec('base','👥','Base de Talentos e Candidaturas',renderBase()),
+              sec('diversidade','🌈','Diversidade',renderDiv()),
+              sec('localizacao','📍','Localização',renderLocal()),
+              sec('formacao','🎓','Formação Acadêmica e Idiomas',renderForm()),
+              sec('pessoas','🗂️','Tabela de Pessoas',renderPessoas())
+            );
+          } catch(err) {
+            return CE('div',{style:{padding:'20px',background:'#fee2e2',border:'1px solid #fca5a5',borderRadius:10,color:'#991b1b',fontSize:13}},
+              CE('strong',null,'Erro ao renderizar: '),
+              String(err && err.message ? err.message : err)
+            );
+          }
+        })():null
       )
     ),
     showFilterPanel?CE('div',{onClick:function(){setShowFilterPanel(false);},style:{position:'fixed',inset:0,background:'rgba(0,0,0,0.3)',zIndex:499}}):null,
