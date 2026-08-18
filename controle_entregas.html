@@ -4452,9 +4452,8 @@ function GlobeFotografiaView({ token }) {
   const [error, setError] = useState('');
   const [pessoaIdx, setPessoaIdx] = useState(function() { return new Map(); });     // id -> minimal filter obj
   const [pessoaContact, setPessoaContact] = useState(function() { return new Map(); }); // id -> {nome,email,tel,comm,st}
-  const [candidaturas, setCandidaturas] = useState([]);
-  const [idiomas, setIdiomas] = useState([]);
-  const [ultimaCand, setUltimaCand] = useState({});
+  const [candAggr, setCandAggr] = useState(null);   // {perPessoa:Map, byProcesso:{}, totalCand:n}
+  const [idiomaAggr, setIdiomaAggr] = useState(null); // {pessoaIdiomaMap:Map, uniquePessoas:n}
   const [filters, setFilters] = useState({});
   const [showFilterPanel, setShowFilterPanel] = useState(false);
   const [cadPeriodo, setCadPeriodo] = useState('ano');
@@ -4469,7 +4468,7 @@ function GlobeFotografiaView({ token }) {
     async function load() {
       setLoading(true); setError('');
       setPessoaIdx(new Map()); setPessoaContact(new Map());
-      setCandidaturas([]); setIdiomas([]); setUltimaCand({});
+      setCandAggr(null); setIdiomaAggr(null);
       setFilters({});
       var totalSteps = years.length * 3;
       var doneSteps = 0;
@@ -4540,38 +4539,57 @@ function GlobeFotografiaView({ token }) {
       }
       if (!cancelled) { setPessoaIdx(pIdx); setPessoaContact(pContact); }
       pIdx = null; pContact = null;
-      // 2. Candidaturas
-      var allC = [];
-      var ultMap = {};
+      // 2. Candidaturas — aggregate per-pessoa instead of storing raw rows
+      var cPerPessoa = new Map(); // pid -> {cnt, maxDate, procs:{nome:n}, dates:[]}
+      var cByProcesso = {};       // nome_processo -> total count (global)
+      var cTotalCand = 0;
       for (var ci = 0; ci < years.length; ci++) {
         if (cancelled) break;
         var cy = years[ci];
         try {
           var cRows = await loadGlobeParquet(token, cy, 'candidaturas.parquet', function(){}, GLOBE_CAND_COLS);
           for (var k = 0; k < cRows.length; k++) {
-            allC.push(cRows[k]);
-            var cid = String(cRows[k].codigo_pessoa != null ? cRows[k].codigo_pessoa : '');
-            var ts = Number(cRows[k].data_candidatura || 0);
-            if (cid && ts && (!ultMap[cid] || ts > ultMap[cid])) ultMap[cid] = ts;
+            var cr = cRows[k];
+            var cid = String(cr.codigo_pessoa != null ? cr.codigo_pessoa : '');
+            if (!cid) continue;
+            var proc = String(cr.nome_processo||'').trim();
+            var cts = Number(cr.data_candidatura || 0);
+            var cp = cPerPessoa.get(cid);
+            if (!cp) { cp = {cnt:0, maxDate:0, procs:{}, dates:[]}; cPerPessoa.set(cid, cp); }
+            cp.cnt++;
+            if (cts > cp.maxDate) cp.maxDate = cts;
+            if (proc) cp.procs[proc] = (cp.procs[proc]||0) + 1;
+            if (cts) cp.dates.push(cts);
+            if (proc) cByProcesso[proc] = (cByProcesso[proc]||0) + 1;
+            cTotalCand++;
           }
           cRows = null;
         } catch(e) { erros.push('cand ' + cy + ': ' + String(e.message||e).slice(0,40)); }
         step('Candidaturas ' + cy);
       }
-      if (!cancelled) { setCandidaturas(allC); setUltimaCand(ultMap); }
-      // 3. Idiomas
-      var allI = [];
+      if (!cancelled) setCandAggr({perPessoa:cPerPessoa, byProcesso:cByProcesso, totalCand:cTotalCand});
+      cPerPessoa = null;
+      // 3. Idiomas — aggregate per-pessoa instead of storing raw rows
+      var iPessoaMap = new Map(); // pid -> [{i:idioma, n:nivel}]
       for (var ii = 0; ii < years.length; ii++) {
         if (cancelled) break;
         var iy = years[ii];
         try {
           var iRows = await loadGlobeParquet(token, iy, 'idiomas.parquet', function(){}, GLOBE_IDIOMAS_COLS);
-          for (var l = 0; l < iRows.length; l++) allI.push(iRows[l]);
+          for (var l = 0; l < iRows.length; l++) {
+            var ir = iRows[l];
+            var iid = String(ir.codigo_pessoa != null ? ir.codigo_pessoa : '');
+            if (!iid) continue;
+            var iEntry = iPessoaMap.get(iid);
+            if (!iEntry) { iEntry = []; iPessoaMap.set(iid, iEntry); }
+            iEntry.push({i: String(ir.idioma||'').trim()||'(Vazio)', n: String(ir.nivel||'').trim()||'(Vazio)'});
+          }
           iRows = null;
         } catch(e) { erros.push('idiomas ' + iy + ': ' + String(e.message||e).slice(0,40)); }
         step('Idiomas ' + iy);
       }
-      if (!cancelled) setIdiomas(allI);
+      if (!cancelled) setIdiomaAggr({pessoaIdiomaMap: iPessoaMap, uniquePessoas: iPessoaMap.size});
+      iPessoaMap = null;
       if (!cancelled) {
         if (erros.length) setError('Aviso: ' + erros.join(' | '));
         setLoading(false); setLoadMsg(''); setLoadPct(0);
@@ -4588,7 +4606,7 @@ function GlobeFotografiaView({ token }) {
     setFilters(function(f) { var n = Object.assign({}, f); if (val == null || val === '') delete n[key]; else n[key] = val; return n; });
   }
 
-  // Single O(N) pass: filter + compute all counts in one go — no filteredPessoas array copy
+  // Single O(N) pass: filter + compute all counts in one go — no raw arrays
   var computedData = useMemo(function() {
     var filteredIds = new Set();
     var total = 0;
@@ -4600,6 +4618,13 @@ function GlobeFotografiaView({ token }) {
     var idadeArr = [], idadeSum = 0;
     var paisSet = new Set(), estadoSet = new Set(), cidadeSet = new Set();
     var cadCounts = {}; // year -> count (for default period)
+    // Candidatura aggregation vars
+    var pp = candAggr ? candAggr.perPessoa : null;
+    var comCand = 0, totalCandFiltered = 0;
+    var byProcessoFiltered = {}, histCounts = {};
+    var candByYear = {}, candByMonth = {};
+    // Idioma aggregation vars
+    var filteredIdiomaGroups = {}, idiomaUniquePessoas = 0, idiomaTotal = 0;
 
     // Parse date filters once
     var cadDe  = filters.cad_de  ? new Date(filters.cad_de).getTime()             : 0;
@@ -4643,8 +4668,13 @@ function GlobeFotografiaView({ token }) {
       if (cadAte < Infinity && p.dCad > cadAte) return;
       if (modDe  && p.dMod < modDe)  return;
       if (modAte < Infinity && p.dMod > modAte) return;
+      // Candidatura-based filters (uses aggregated data)
+      var cp = pp ? pp.get(pid) : null;
+      if (filters.processo) {
+        if (!cp || !cp.procs[filters.processo]) return;
+      }
       if (hasUltCand) {
-        var uts = ultimaCand[pid] || 0;
+        var uts = cp ? cp.maxDate : 0;
         if (uts < ucDe || uts > ucAte) return;
       }
 
@@ -4690,6 +4720,40 @@ function GlobeFotografiaView({ token }) {
           cadCounts[yr] = (cadCounts[yr]||0)+1;
         }
       }
+
+      // Accumulate candidatura stats from per-pessoa aggregate
+      if (cp) {
+        comCand++;
+        totalCandFiltered += filters.processo ? (cp.procs[filters.processo]||0) : cp.cnt;
+        var hk = cp.cnt <= 5 ? String(cp.cnt) : '6+';
+        histCounts[hk] = (histCounts[hk]||0) + 1;
+        var procKeys = Object.keys(cp.procs);
+        for (var pk = 0; pk < procKeys.length; pk++) {
+          byProcessoFiltered[procKeys[pk]] = (byProcessoFiltered[procKeys[pk]]||0) + cp.procs[procKeys[pk]];
+        }
+        for (var di = 0; di < cp.dates.length; di++) {
+          var dts = cp.dates[di];
+          if (!dts) continue;
+          var dd = new Date(dts);
+          if (isNaN(dd.getTime())) continue;
+          var dyr = String(dd.getFullYear());
+          candByYear[dyr] = (candByYear[dyr]||0) + 1;
+          var dym = dyr + '-' + String(dd.getMonth()+1).padStart(2,'0');
+          candByMonth[dym] = (candByMonth[dym]||0) + 1;
+        }
+      }
+
+      // Accumulate idioma stats from per-pessoa aggregate
+      var iList = idiomaAggr ? idiomaAggr.pessoaIdiomaMap.get(pid) : null;
+      if (iList) {
+        idiomaUniquePessoas++;
+        idiomaTotal += iList.length;
+        for (var il = 0; il < iList.length; il++) {
+          var ig = filteredIdiomaGroups[iList[il].i] || (filteredIdiomaGroups[iList[il].i] = {count:0, niveis:{}});
+          ig.count++;
+          ig.niveis[iList[il].n] = (ig.niveis[iList[il].n]||0) + 1;
+        }
+      }
     });
 
     var idadeMed = idadeArr.length > 0 ? (idadeSum / idadeArr.length).toFixed(1) : '—';
@@ -4712,25 +4776,16 @@ function GlobeFotografiaView({ token }) {
       cadCounts: cadCounts,
       kpis: { ativos:ativos, comRaca:comRaca, comPcd:comPcd,
               comGrad:comGrad, comPos:comPos, comTec:comTec,
-              idadeMed:idadeMed, idadeMin:idadeMin, idadeMax:idadeMax, diasMed:diasMed }
+              idadeMed:idadeMed, idadeMin:idadeMin, idadeMax:idadeMax, diasMed:diasMed },
+      cand: { comCand:comCand, totalCandFiltered:totalCandFiltered,
+              byProcessoFiltered:byProcessoFiltered, histCounts:histCounts,
+              byYear:candByYear, byMonth:candByMonth },
+      idiomaGroups: filteredIdiomaGroups,
+      idiomaStats: { uniquePessoas:idiomaUniquePessoas, totalDecl:idiomaTotal }
     };
-  }, [pessoaIdx, filters, ultimaCand]);
-
-  var filteredCandidaturas = useMemo(function() {
-    var fids = computedData.filteredIds;
-    var fc = candidaturas.filter(function(c) { return fids.has(String(c.codigo_pessoa != null ? c.codigo_pessoa : '')); });
-    if (filters.etapa) fc = fc.filter(function(c) { return String(c.etapa_atual||'').trim() === filters.etapa; });
-    if (filters.processo) fc = fc.filter(function(c) { return String(c.nome_processo||'').trim() === filters.processo; });
-    return fc;
-  }, [candidaturas, computedData, filters]);
-
-  var filteredIdiomas = useMemo(function() {
-    var fids = computedData.filteredIds;
-    return idiomas.filter(function(i) { return fids.has(String(i.codigo_pessoa != null ? i.codigo_pessoa : '')); });
-  }, [idiomas, computedData]);
+  }, [pessoaIdx, filters, candAggr, idiomaAggr]);
 
   var activeFilters = Object.entries(filters);
-  var fc = filteredCandidaturas, fi = filteredIdiomas;
 
   function bar(data, color, filterKey) {
     return _gBar(data, color, { activeVal: filterKey ? filters[filterKey] : undefined, onFilter: filterKey ? function(v) { setFilter(filterKey, v); } : null });
@@ -4810,28 +4865,24 @@ function GlobeFotografiaView({ token }) {
   function renderBase() {
     var total = computedData.total;
     var kpis = computedData.kpis;
-    var comCandSet = new Set(fc.map(function(c){return String(c.codigo_pessoa!=null?c.codigo_pessoa:'');}));
-    var comCand = comCandSet.size;
-    var totalCand = fc.length;
+    var cand = computedData.cand || {};
+    var comCand = cand.comCand || 0;
+    var totalCand = cand.totalCandFiltered || 0;
     var mediaCand = comCand > 0 ? (totalCand / comCand).toFixed(1) : '—';
-    var contMap = {};
-    for (var i = 0; i < fc.length; i++) {
-      var cid = String(fc[i].codigo_pessoa!=null?fc[i].codigo_pessoa:'');
-      if (cid) contMap[cid] = (contMap[cid]||0) + 1;
-    }
-    var histVals = Object.values(contMap);
+    var histC = cand.histCounts || {};
     var histData = [
-      {name:'1',value:histVals.filter(function(v){return v===1;}).length},
-      {name:'2',value:histVals.filter(function(v){return v===2;}).length},
-      {name:'3',value:histVals.filter(function(v){return v===3;}).length},
-      {name:'4',value:histVals.filter(function(v){return v===4;}).length},
-      {name:'5',value:histVals.filter(function(v){return v===5;}).length},
-      {name:'6+',value:histVals.filter(function(v){return v>=6;}).length},
+      {name:'1',value:histC['1']||0},
+      {name:'2',value:histC['2']||0},
+      {name:'3',value:histC['3']||0},
+      {name:'4',value:histC['4']||0},
+      {name:'5',value:histC['5']||0},
+      {name:'6+',value:histC['6+']||0},
     ];
     var cadData = buildTimePessoas(cadPeriodo);
-    var candData = buildTimeData(fc, 'data_candidatura', candPeriodo);
+    var candSrc = candPeriodo === 'mes' ? (cand.byMonth||{}) : (cand.byYear||{});
+    var candData = Object.entries(candSrc).sort(function(a,b){return a[0]<b[0]?-1:1;}).map(function(e){return {name:e[0],value:e[1]};});
     var statusData = _gAllSorted(computedData.counts.status);
-    var procData = _gAllSorted(_gCountBy(fc, 'nome_processo'));
+    var procData = _gAllSorted(cand.byProcessoFiltered||{});
     return CE('div', null,
       selectedYears.length > 1 ? CE('div',{style:{marginBottom:14,padding:'8px 14px',background:'#f0f9ff',border:'1px solid #bae6fd',borderRadius:8,fontSize:12,color:'#0369a1'}},'ℹ️ Exibindo '+selectedYears.length+' anos ('+Math.min.apply(null,selectedYears)+'–'+Math.max.apply(null,selectedYears)+'). Duplicatas deduplicadas pelo registro mais recente.') : null,
       kpiRow([
@@ -4929,14 +4980,7 @@ function GlobeFotografiaView({ token }) {
     var kpis = computedData.kpis;
     var cnt = computedData.counts;
     var cursoMap = computedData.cursoMap;
-    var idiomaGroups = {};
-    for (var j = 0; j < fi.length; j++) {
-      var idioma = String(fi[j].idioma||'').trim()||'(Vazio)';
-      var nivel = String(fi[j].nivel||'').trim()||'(Vazio)';
-      if (!idiomaGroups[idioma]) idiomaGroups[idioma] = {count:0,niveis:{}};
-      idiomaGroups[idioma].count++;
-      idiomaGroups[idioma].niveis[nivel] = (idiomaGroups[idioma].niveis[nivel]||0)+1;
-    }
+    var idiomaGroups = computedData.idiomaGroups || {};
     var idiomaList = Object.entries(idiomaGroups).sort(function(a,b){return b[1].count-a[1].count;});
     return CE('div',null,
       kpiRow([
@@ -4959,8 +5003,8 @@ function GlobeFotografiaView({ token }) {
       CE('div',{style:{background:'#fff',border:'1px solid #e2e8f0',borderRadius:12,padding:'18px 20px',boxShadow:'0 1px 3px rgba(0,0,0,0.04)'}},
         CE('div',{style:{fontSize:13,fontWeight:600,color:'#334155',marginBottom:12}},'🗣️ Idiomas'),
         kpiRow([
-          ['Pessoas com Idioma',new Set(fi.map(function(i){return String(i.codigo_pessoa!=null?i.codigo_pessoa:'');})).size.toLocaleString('pt-BR')],
-          ['Total Declarações',fi.length.toLocaleString('pt-BR')],
+          ['Pessoas com Idioma',(computedData.idiomaStats?computedData.idiomaStats.uniquePessoas:0).toLocaleString('pt-BR')],
+          ['Total Declarações',(computedData.idiomaStats?computedData.idiomaStats.totalDecl:0).toLocaleString('pt-BR')],
           ['Idiomas Únicos',idiomaList.length],
         ]),
         ...idiomaList.map(function(entry){
@@ -5135,7 +5179,7 @@ function GlobeFotografiaView({ token }) {
       CE('div',{style:{background:'#fff',borderBottom:'1px solid #e2e8f0',padding:'10px 20px',position:'sticky',top:0,zIndex:30,display:'flex',alignItems:'center',gap:12,flexWrap:'wrap',boxShadow:'0 1px 3px rgba(0,0,0,0.06)'}},
         CE('div',{style:{flex:1}},
           CE('div',{style:{fontSize:15,fontWeight:800,color:'#1e293b'}},'🌍 Globe \xb7 Fotografia'),
-          CE('div',{style:{fontSize:11,color:'#94a3b8',marginTop:1}},computedData.total.toLocaleString('pt-BR')+' pessoas \xb7 '+fc.length.toLocaleString('pt-BR')+' candidaturas'+(activeFilters.length>0?' (filtrado)':''))
+          CE('div',{style:{fontSize:11,color:'#94a3b8',marginTop:1}},computedData.total.toLocaleString('pt-BR')+' pessoas \xb7 '+(computedData.cand?computedData.cand.totalCandFiltered:0).toLocaleString('pt-BR')+' candidaturas'+(activeFilters.length>0?' (filtrado)':''))
         ),
         CE('button',{onClick:function(){setShowFilterPanel(!showFilterPanel);},style:{display:'flex',alignItems:'center',gap:6,background:activeFilters.length>0?'#eef2ff':'#f8fafc',border:activeFilters.length>0?'1px solid #c7d2fe':'1px solid #e2e8f0',borderRadius:8,padding:'7px 14px',fontSize:13,cursor:'pointer',color:activeFilters.length>0?'#6366f1':'#334155',fontWeight:500}},'🔍 Filtros'+(activeFilters.length>0?' ('+activeFilters.length+')':'')),
         CE('div',{style:{position:'relative'}},
