@@ -4366,7 +4366,7 @@ function _gBar(data, color, opts) {
   var activeVal = opts.activeVal;
   var onFilter = opts.onFilter;
   if (!data || !data.length) return React.createElement('div', { style: { color: '#94a3b8', fontSize: 12, padding: '16px 0', textAlign: 'center' } }, 'Sem dados');
-  var max = Math.max.apply(null, data.map(function(d) { return d.value; })) || 1;
+  var max = data.reduce(function(m, d) { return d.value > m ? d.value : m; }, 0) || 1;
   var fill = color || '#6366f1';
   var hasFilter = activeVal != null;
   var rows = data.map(function(d, i) {
@@ -4636,8 +4636,8 @@ function GlobeFotografiaView({ token }) {
   function renderDemo() {
     var idades = fp.map(function(p) { return Number(p.idade || 0); }).filter(function(n) { return n > 0 && n < 120; });
     var med = idades.length > 0 ? (idades.reduce(function(a, b) { return a + b; }, 0) / idades.length).toFixed(1) : '—';
-    var mn = idades.length > 0 ? Math.min.apply(null, idades) : '—';
-    var mx = idades.length > 0 ? Math.max.apply(null, idades) : '—';
+    var mn = idades.length > 0 ? idades.reduce(function(m, n) { return n < m ? n : m; }, Infinity) : '—';
+    var mx = idades.length > 0 ? idades.reduce(function(m, n) { return n > m ? n : m; }, -Infinity) : '—';
     var faixas = [
       { name: '< 18', value: idades.filter(function(n) { return n < 18; }).length },
       { name: '18–24', value: idades.filter(function(n) { return n >= 18 && n <= 24; }).length },
