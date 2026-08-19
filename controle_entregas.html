@@ -4446,6 +4446,46 @@ function _gBar(data, color, opts) {
   return inner;
 }
 
+function _gLine(data, color, opts) {
+  opts = opts || {};
+  if (!data || !data.length) return React.createElement('div',{style:{color:'#94a3b8',fontSize:12,padding:'16px 0',textAlign:'center'}},'Sem dados');
+  var fill = color || '#2563eb';
+  var pointW = Math.max(64, Math.floor(520 / data.length));
+  var W = pointW * data.length + 40;
+  var H = 170;
+  var PAD = {top:48, right:20, bottom:28, left:20};
+  var chartW = W - PAD.left - PAD.right;
+  var chartH = H - PAD.top - PAD.bottom;
+  var maxV = data.reduce(function(m,d){return d.value>m?d.value:m;},0)||1;
+  function xPos(i){return PAD.left + (data.length<2 ? chartW/2 : (i/(data.length-1))*chartW);}
+  function yPos(v){return PAD.top + chartH - (v/maxV)*chartH;}
+  var els = [];
+  // grid lines
+  [0,0.25,0.5,0.75,1].forEach(function(f,gi){
+    var y=yPos(maxV*f);
+    els.push(React.createElement('line',{key:'g'+gi,x1:PAD.left,y1:y,x2:W-PAD.right,y2:y,stroke:'#f1f5f9',strokeWidth:1}));
+  });
+  if(data.length>1){
+    var pathD=data.map(function(d,i){return (i===0?'M':'L')+xPos(i).toFixed(1)+','+yPos(d.value).toFixed(1);}).join(' ');
+    var areaD=pathD+' L'+xPos(data.length-1).toFixed(1)+','+(PAD.top+chartH)+' L'+xPos(0).toFixed(1)+','+(PAD.top+chartH)+' Z';
+    els.push(React.createElement('path',{key:'area',d:areaD,fill:fill+'15',stroke:'none'}));
+    els.push(React.createElement('path',{key:'line',d:pathD,fill:'none',stroke:fill,strokeWidth:2,strokeLinejoin:'round',strokeLinecap:'round'}));
+  }
+  data.forEach(function(d,i){
+    var x=xPos(i), y=yPos(d.value);
+    var pct=i>0&&data[i-1].value>0?((d.value-data[i-1].value)/data[i-1].value*100):null;
+    var pctStr=pct!==null?(pct>=0?'+':'')+pct.toFixed(1)+'%':'';
+    var pctColor=pct===null?'#94a3b8':pct>=0?'#16a34a':'#dc2626';
+    els.push(React.createElement('circle',{key:'dot'+i,cx:x,cy:y,r:4,fill:'#fff',stroke:fill,strokeWidth:2}));
+    els.push(React.createElement('text',{key:'val'+i,x:x,y:y-10,textAnchor:'middle',fontSize:10,fontWeight:'600',fill:'#0f172a',fontFamily:'system-ui,sans-serif'},d.value.toLocaleString('pt-BR')));
+    if(pctStr)els.push(React.createElement('text',{key:'pct'+i,x:x,y:y-23,textAnchor:'middle',fontSize:9,fill:pctColor,fontFamily:'system-ui,sans-serif'},pctStr));
+    els.push(React.createElement('text',{key:'xl'+i,x:x,y:H-6,textAnchor:'middle',fontSize:9,fill:'#94a3b8',fontFamily:'system-ui,sans-serif'},String(d.name)));
+  });
+  var svg=React.createElement('svg',{viewBox:'0 0 '+W+' '+H,style:{width:'100%',minWidth:Math.min(W,300)+'px',height:H+'px',display:'block',overflow:'visible'}},els);
+  if(data.length>7) return React.createElement('div',{style:{overflowX:'auto',paddingBottom:2}},svg);
+  return svg;
+}
+
 function GlobeFotografiaView({ token }) {
   var CE = React.createElement;
   const [loading, setLoading] = useState(false);
@@ -4607,14 +4647,12 @@ function GlobeFotografiaView({ token }) {
     var pconvA=bA(cats.pconv,filters.preferencia_convites);
     var c1A=null,c2A=null,c3A=null;
     if(filters.curso&&filters.curso.length){c1A=new Set();c2A=new Set();c3A=new Set();filters.curso.forEach(function(v){var i=(cats.c1||[]).indexOf(v);if(i>=0)c1A.add(i);i=(cats.c2||[]).indexOf(v);if(i>=0)c2A.add(i);i=(cats.c3||[]).indexOf(v);if(i>=0)c3A.add(i);});}
-    var commSimSet=new Set();(cats.comm||[]).forEach(function(v,i){var l=(v||'').toLowerCase();if(l==='sim'||l==='true'||l==='1')commSimSet.add(i);});
     var EPOCH_MS=new Date('2010-01-01').getTime(),DAY_MS=86400000;
     function toDays(s,eod){return s?Math.max(0,Math.floor((new Date(s+(eod?'T23:59:59':'')).getTime()-EPOCH_MS)/DAY_MS)):(eod?65535:0);}
     var cadDe=toDays(filters.cad_de,false),cadAte=toDays(filters.cad_ate,true);
     var modDe=toDays(filters.mod_de,false),modAte=toDays(filters.mod_ate,true);
     var ucDe=toDays(filters.ult_cand_de,false),ucAte=toDays(filters.ult_cand_ate,true);
     var hasCad=!!(filters.cad_de||filters.cad_ate),hasMod=!!(filters.mod_de||filters.mod_ate),hasUC=!!(filters.ult_cand_de||filters.ult_cand_ate);
-    var commF=filters.aceita_comunicacao&&filters.aceita_comunicacao.length?filters.aceita_comunicacao:null;
     var faixaF=filters.faixa&&filters.faixa.length?filters.faixa:null;
     var procF=filters.processo&&filters.processo.length?filters.processo:null;
     var comCandF=filters.com_candidatura&&filters.com_candidatura.length?filters.com_candidatura:null;
@@ -4641,7 +4679,6 @@ function GlobeFotografiaView({ token }) {
       if (acpA&&!acpA.has(gd.acp[i])) continue;
       if (pconvA&&!pconvA.has(gd.pconv[i])) continue;
       if (c1A&&!c1A.has(gd.c1[i])&&!c2A.has(gd.c2[i])&&!c3A.has(gd.c3[i])) continue;
-      if (commF){var commV=commSimSet.has(gd.comm[i])?'Sim':'Não';if(commF.indexOf(commV)<0)continue;}
       if (faixaF){var fa=gd.idade[i];var fOk=faixaF.some(function(fv){if(fv==='< 18')return fa>0&&fa<18;if(fv==='18–24')return fa>=18&&fa<=24;if(fv==='25–34')return fa>=25&&fa<=34;if(fv==='35–44')return fa>=35&&fa<=44;if(fv==='45–54')return fa>=45&&fa<=54;if(fv==='55+')return fa>=55;return false;});if(!fOk)continue;}
       if (hasCad&&(gd.dcad[i]<cadDe||gd.dcad[i]>cadAte)) continue;
       if (hasMod&&(gd.dmod[i]<modDe||gd.dmod[i]>modAte)) continue;
@@ -4855,7 +4892,7 @@ function GlobeFotografiaView({ token }) {
             toggleBtn('Dia',cadPeriodo==='dia',function(){setCadPeriodo('dia');})
           )
         ),
-        _gBar(cadData,'#2563eb',{})
+        _gLine(cadData,'#2563eb',{})
       ),
       CE('div',{style:{background:'#fff',border:'1px solid #e8ecf2',borderRadius:8,padding:'18px 20px',marginBottom:14,boxShadow:'0 1px 6px rgba(15,23,42,0.06)'}},
         CE('div',{style:{display:'flex',alignItems:'center',gap:8,marginBottom:14,paddingBottom:10,borderBottom:'1px solid #f1f5f9'}},
@@ -4867,7 +4904,7 @@ function GlobeFotografiaView({ token }) {
             toggleBtn('Dia',candPeriodo==='dia',function(){setCandPeriodo('dia');})
           )
         ),
-        _gBar(candData,'#0284c7',{})
+        _gLine(candData,'#0284c7',{})
       )
     );
   }
@@ -5115,7 +5152,7 @@ function GlobeFotografiaView({ token }) {
     genero:'Gênero',raca:'Raça/Cor',estado:'Estado',regiao:'Região',pais:'País',cidade:'Cidade',
     status:'Status',faixa:'Faixa Etária',pcd:'PCD',renda:'Renda',curso:'Curso',
     nivel_ensino:'Nível Ensino',etapa:'Etapa',processo:'Processo',instituicao:'Instituição',
-    aceita_comunicacao:'Aceita Comunicação',com_candidatura:'Com Candidatura',
+    com_candidatura:'Com Candidatura',
     aceita_mensagem_instantanea:'Msg Instantânea',aceita_receber_novidades:'Novidades',
     aceita_alerta_vagas:'Alerta de Vagas',aceita_comunicacoes_processos:'Comu. Processos',
     preferencia_convites:'Pref. Convites',
@@ -5174,7 +5211,6 @@ function GlobeFotografiaView({ token }) {
         secLabel('Geral'),
         fMulti('Status','status',uniq('status')),
         fMulti('Com Candidatura','com_candidatura',['Sim','Não']),
-        fMulti('Aceita Comunicação','aceita_comunicacao',['Sim','Não']),
         secLabel('Diversidade'),
         fMulti('Identidade de Gênero','genero',uniq('identidade_genero')),
         fMulti('Autodeclaração Racial','raca',uniq('raca_cor')),
@@ -6460,8 +6496,10 @@ function App() {
   }
 
   // ── Globe Fotografia module ──
+  // URL do dashboard publicado — atualizar quando o deploy estiver pronto
+  const GLOBE_DASHBOARD_URL = 'https://companhiadetalentos.com.br/dash_globe/globe_dashboard.html';
   if (module === 'globe_fotografia') {
-    return React.createElement("div", { className: "min-h-screen bg-slate-50" },
+    return React.createElement("div", { style:{display:'flex',flexDirection:'column',height:'100vh',overflow:'hidden'} },
       React.createElement(AppHeader, {
         view: view, setView: setView, authState: authState, onSignOut: signOut,
         projectCount: projects.length, loading: loading,
@@ -6469,8 +6507,18 @@ function App() {
         module: module, onHome: () => setModule(null),
         onBackupDownload: handleBackupDownload, onBackupUpload: handleBackupUpload
       }),
-      saveMsgBanner, errorBanner,
-      React.createElement(GlobeFotografiaView, { token: authState.token })
+      GLOBE_DASHBOARD_URL.includes('PLACEHOLDER')
+        ? React.createElement('div', {style:{flex:1,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:12,background:'#f8fafc',color:'#64748b'}},
+            React.createElement('span', {style:{fontSize:32}},'📊'),
+            React.createElement('div', {style:{fontSize:14,fontWeight:600,color:'#0f172a'}},'Dashboard Globe Fotografia'),
+            React.createElement('div', {style:{fontSize:13}},'URL de publicação ainda não configurada.'),
+            React.createElement('div', {style:{fontSize:12,color:'#94a3b8'}},'Defina GLOBE_DASHBOARD_URL no código após o primeiro deploy.')
+          )
+        : React.createElement('iframe', {
+            src: GLOBE_DASHBOARD_URL,
+            style:{flex:1,border:'none',display:'block',width:'100%'},
+            allow:'fullscreen'
+          })
     );
   }
 
