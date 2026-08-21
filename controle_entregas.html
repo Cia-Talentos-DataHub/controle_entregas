@@ -2130,22 +2130,30 @@ async function readCronogramaExcel(token, siteUrl, fileRel) {
     if (!atividades[eid]) atividades[eid] = [];
     atividades[eid].push({...a, status: a.status || 'aguardando'});
   });
-  return { etapas, atividades };
+  const wsM = wb.Sheets['Materiais'];
+  const materiais = wsM ? XLSX.utils.sheet_to_json(wsM, { defval: '' }).filter(m => m.id && m.nome).map(m => ({...m, status: m.status || 'pendente'})) : [];
+  const wsMeta = wb.Sheets['Meta'];
+  const alertNote = wsMeta ? (XLSX.utils.sheet_to_json(wsMeta, { defval: '' })[0]?.alertNote || '') : '';
+  return { etapas, atividades, materiais, alertNote };
 }
 
-async function saveCronogramaExcel(token, siteUrl, folderRel, fileName, etapas, atividades) {
+async function saveCronogramaExcel(token, siteUrl, folderRel, fileName, etapas, atividades, materiais, alertNote) {
   const wb = XLSX.utils.book_new();
-  const wsE = XLSX.utils.json_to_sheet(etapas.length ? etapas : [{ id:'',nome:'',inicio:'',termino:'',cor:'',tipo:'',obs:'' }]);
+  const wsE = XLSX.utils.json_to_sheet(etapas.length ? etapas : [{ id:'',nome:'',inicio:'',termino:'',cor:'',tipo:'',obs:'',status:'' }]);
   XLSX.utils.book_append_sheet(wb, wsE, 'Etapas');
   const atFlat = Object.entries(atividades).flatMap(([eid, ats]) => ats.map(a => ({ ...a, etapaId: eid })));
-  const wsA = XLSX.utils.json_to_sheet(atFlat.length ? atFlat : [{ etapaId:'',id:'',nome:'',responsavel:'',inicio:'',termino:'',obs:'' }]);
+  const wsA = XLSX.utils.json_to_sheet(atFlat.length ? atFlat : [{ etapaId:'',id:'',nome:'',responsavel:'',inicio:'',termino:'',obs:'',status:'' }]);
   XLSX.utils.book_append_sheet(wb, wsA, 'Atividades');
+  const matRows = (materiais || []);
+  const wsM = XLSX.utils.json_to_sheet(matRows.length ? matRows : [{ id:'',nome:'',resp:'',prazo:'',status:'',obs:'' }]);
+  XLSX.utils.book_append_sheet(wb, wsM, 'Materiais');
+  const wsMeta = XLSX.utils.json_to_sheet([{ alertNote: alertNote || '' }]);
+  XLSX.utils.book_append_sheet(wb, wsMeta, 'Meta');
   const buf = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
-  // Passa o Uint8Array diretamente; buf.buffer pode ter byteOffset incorreto
   return await spUploadFile(token, siteUrl, folderRel, fileName, buf);
 }
 
-function generateCronogramaHTML(project, etapas, atividades) {
+function generateCronogramaHTML(project, etapas, atividades, materiais, alertNote) {
   const titulo = `Cronograma — ${project?.title || 'Processo'}`;
   const cliente = project?.client || '';
   const vagas = project?.pulseData?.Qtd_Vagas || project?.vagas || '';
@@ -2266,6 +2274,20 @@ function generateCronogramaHTML(project, etapas, atividades) {
   const periodoFim    = fmt(etapas.filter(e=>e.termino).slice(-1)[0]?.termino);
   const now=new Date().toLocaleDateString('pt-BR');
 
+  // ── Progresso ────────────────────────────────────────────────────────────────
+  const etDone = etapas.filter(e=>e.status==='concluido').length;
+  const etPct  = etapas.length ? Math.round(etDone/etapas.length*100) : 0;
+  const progressHTML = etapas.length ? `<div class="progress-bar-wrap"><div class="progress-row"><span>${etDone}/${etapas.length} etapas concluídas</span><b>${etPct}%</b></div><div class="progress-track"><div class="progress-fill" style="width:${etPct}%"></div></div></div>` : '';
+  const alertHTML = (alertNote||'').trim() ? `<div class="alert-box"><strong>⚠️ Ponto de atenção:</strong> ${(alertNote||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div>` : '';
+
+  // ── Materiais ─────────────────────────────────────────────────────────────────
+  const mats = materiais || [];
+  const stMatMap={pendente:'🔴 Pendente',parcial:'🟡 Parcial',enviado:'🟢 Enviado'};
+  const matDone=mats.filter(m=>m.status==='enviado').length;
+  const matPct=mats.length?Math.round(matDone/mats.length*100):0;
+  const matProgressHTML=mats.length?`<div class="progress-bar-wrap"><div class="progress-row"><span>${matDone}/${mats.length} materiais recebidos</span><b>${matPct}%</b></div><div class="progress-track"><div class="progress-fill" style="width:${matPct}%;background:#10b981"></div></div></div>`:'';
+  const matRows=mats.map((m,i)=>`<tr data-status="${m.status||'pendente'}" data-search="${(m.nome+' '+m.resp+' '+m.obs).toLowerCase()}"><td class="num center">${i+1}</td><td>${m.nome}</td><td>${m.resp||'—'}</td><td>${m.prazo?fmt(m.prazo):'—'}</td><td>${stMatMap[m.status||'pendente']||'🔴 Pendente'}</td><td>${m.obs||''}</td></tr>`).join('');
+
   const html=`<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -2322,6 +2344,18 @@ function generateCronogramaHTML(project, etapas, atividades) {
   .cal-day.no-stage{background:#eef0f3;color:var(--muted);font-weight:400;}
   .cal-day.weekend-no-stage{background:#f6f7f9;color:#b7bcc4;font-weight:400;}
   .cal-day.is-holiday{outline:2px solid #d64545;outline-offset:-2px;}
+  .progress-bar-wrap{margin-bottom:18px;}
+  .progress-row{display:flex;justify-content:space-between;font-size:0.8rem;color:var(--muted);margin-bottom:6px;}
+  .progress-row b{color:var(--accent);}
+  .progress-track{height:10px;background:#e2e8f0;border-radius:99px;overflow:hidden;}
+  .progress-fill{height:100%;background:#4f46e5;border-radius:99px;}
+  .alert-box{background:#fdf3dc;border:1px solid #e3a429;border-radius:10px;padding:14px 18px;margin-bottom:18px;font-size:0.84rem;line-height:1.55;color:#5c4008;}
+  .alert-box strong{color:#3d2a05;}
+  .mat-controls{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;}
+  .mat-chip{border:1px solid var(--line);background:#f8fafc;color:var(--muted);padding:6px 14px;border-radius:99px;font-size:0.8rem;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:6px;}
+  .mat-chip.active{background:var(--accent);border-color:var(--accent);color:#fff;}
+  .mat-search{flex:1 1 200px;padding:7px 12px;border:1px solid var(--line);border-radius:99px;font-size:0.84rem;outline:none;}
+  .mat-search:focus{border-color:#6366f1;}
   @media(max-width:900px){.calendar-grid{grid-template-columns:repeat(2,1fr);}}
   @media(max-width:600px){.calendar-grid{grid-template-columns:1fr;}}
   @media(max-width:720px){.gantt-label{width:130px;flex:0 0 130px;font-size:.68rem;}}
@@ -2337,14 +2371,18 @@ function generateCronogramaHTML(project, etapas, atividades) {
       <div class="badge"><b>${etapas.length}</b>Etapas</div>
       <div class="badge"><b>${totalDays}</b>Dias corridos</div>
       ${totalUtil!==null?`<div class="badge"><b>${totalUtil}</b>Dias úteis</div>`:''}
+      ${etapas.length?`<div class="badge"><b>${etPct}%</b>Concluído</div>`:''}
     </div>
   </header>
+  ${alertHTML}
   <div class="card">
     <div class="view-switch">
       <button class="view-btn active" data-view="timeline">Linha do tempo</button>
       <button class="view-btn" data-view="calendar">Calendário</button>
+      ${mats.length?`<button class="view-btn" data-view="materiais">📦 Materiais</button>`:''}
     </div>
     <div class="view-panel active" id="view-timeline">
+      ${progressHTML}
       <h2>Linha do tempo do processo</h2>
       <div class="gantt-container">
         <div class="month-track">${monthMarks.join('')}</div>
@@ -2361,6 +2399,20 @@ function generateCronogramaHTML(project, etapas, atividades) {
       <div class="calendar-legend">${legend}</div>
       <div class="calendar-grid" id="cal-grid">${calMonths.join('')}</div>
     </div>
+    ${mats.length?`<div class="view-panel" id="view-materiais">
+      ${matProgressHTML}
+      <div class="mat-controls">
+        <input class="mat-search" id="mat-search" type="text" placeholder="Buscar material…">
+        <button class="mat-chip active" data-mf="all">Todos</button>
+        <button class="mat-chip" data-mf="pendente">🔴 Pendente</button>
+        <button class="mat-chip" data-mf="parcial">🟡 Parcial</button>
+        <button class="mat-chip" data-mf="enviado">🟢 Enviado</button>
+      </div>
+      <table id="mat-table">
+        <thead><tr><th class="num">#</th><th>Material</th><th>Responsável</th><th>Prazo</th><th>Status</th><th>Observação</th></tr></thead>
+        <tbody>${matRows}</tbody>
+      </table>
+    </div>`:''}
   </div>
   <footer>Gerado em ${now} · Cia de Talentos</footer>
 </div>
@@ -2373,6 +2425,16 @@ function generateCronogramaHTML(project, etapas, atividades) {
       document.getElementById('view-'+btn.dataset.view).classList.add('active');
     });
   });
+  // Filtros de materiais
+  (function(){
+    var search=document.getElementById('mat-search'); if(!search)return;
+    var chips=document.querySelectorAll('[data-mf]');
+    var rows=document.querySelectorAll('#mat-table tbody tr');
+    var activeF='all',searchT='';
+    function applyMat(){rows.forEach(function(r){var ms=activeF==='all'||r.dataset.status===activeF;var mt=r.dataset.search.includes(searchT);r.style.display=(ms&&mt)?'':'none';});}
+    chips.forEach(function(c){c.addEventListener('click',function(){chips.forEach(function(x){x.classList.remove('active');});c.classList.add('active');activeF=c.dataset.mf;applyMat();});});
+    search.addEventListener('input',function(){searchT=search.value.toLowerCase();applyMat();});
+  })();
 <\/script>
 </body>
 </html>`;
@@ -2439,6 +2501,17 @@ footer{text-align:center;color:var(--muted);font-size:0.78rem;margin-top:8px;}
 .cal-day.no-stage{background:#eef0f3;color:var(--muted);font-weight:400;}
 .cal-day.weekend-no-stage{background:#f6f7f9;color:#b7bcc4;font-weight:400;}
 .cal-day.is-holiday{outline:2px solid #d64545;outline-offset:-2px;}
+.progress-bar-wrap{margin-bottom:18px;}
+.progress-row{display:flex;justify-content:space-between;font-size:0.8rem;color:var(--muted);margin-bottom:6px;}
+.progress-row b{color:var(--accent);}
+.progress-track{height:10px;background:#e2e8f0;border-radius:99px;overflow:hidden;}
+.progress-fill{height:100%;border-radius:99px;}
+.alert-box{background:#fdf3dc;border:1px solid #e3a429;border-radius:10px;padding:14px 18px;margin-bottom:18px;font-size:0.84rem;line-height:1.55;color:#5c4008;}
+.alert-box strong{color:#3d2a05;}
+.mat-controls{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;}
+.mat-chip{border:1px solid var(--line);background:#f8fafc;color:var(--muted);padding:6px 14px;border-radius:99px;font-size:0.8rem;font-weight:600;cursor:pointer;}
+.mat-chip.active{background:var(--accent);border-color:var(--accent);color:#fff;}
+.mat-search{flex:1 1 200px;padding:7px 12px;border:1px solid var(--line);border-radius:99px;font-size:0.84rem;outline:none;}
 @media(max-width:900px){.calendar-grid{grid-template-columns:repeat(2,1fr);}}
 @media(max-width:600px){.calendar-grid{grid-template-columns:1fr;}}
 @media(max-width:720px){.gantt-label{width:130px;flex:0 0 130px;font-size:.68rem;}}`;
@@ -2464,12 +2537,14 @@ footer{text-align:center;color:var(--muted);font-size:0.78rem;margin-top:8px;}
       <div class="subtitle" id="subtitle"></div>
       <div class="badge-row" id="badges"></div>
     </header>
+    <div id="alert-box"></div>
     <div class="card">
-      <div class="view-switch">
+      <div class="view-switch" id="view-switch">
         <button class="view-btn active" data-view="timeline">Linha do tempo</button>
         <button class="view-btn" data-view="calendar">Calend&#225;rio</button>
       </div>
       <div class="view-panel active" id="view-timeline">
+        <div id="progress-et"></div>
         <h2>Linha do tempo do processo</h2>
         <div id="gantt"></div>
         <h2 style="margin-top:32px">Etapas do processo</h2>
@@ -2482,6 +2557,20 @@ footer{text-align:center;color:var(--muted);font-size:0.78rem;margin-top:8px;}
         <h2>Calend&#225;rio do processo</h2>
         <div class="calendar-legend" id="cal-legend"></div>
         <div class="calendar-grid" id="cal-grid"></div>
+      </div>
+      <div class="view-panel" id="view-materiais" style="display:none">
+        <div id="progress-mat"></div>
+        <div class="mat-controls">
+          <input class="mat-search" id="mat-search" type="text" placeholder="Buscar material&#8230;">
+          <button class="mat-chip active" data-mf="all">Todos</button>
+          <button class="mat-chip" data-mf="pendente">&#128308; Pendente</button>
+          <button class="mat-chip" data-mf="parcial">&#128993; Parcial</button>
+          <button class="mat-chip" data-mf="enviado">&#128994; Enviado</button>
+        </div>
+        <table id="mat-table">
+          <thead><tr><th class="num">#</th><th>Material</th><th>Respons&#225;vel</th><th>Prazo</th><th>Status</th><th>Observa&#231;&#227;o</th></tr></thead>
+          <tbody id="mat-body"></tbody>
+        </table>
       </div>
     </div>
     <footer>Atualizado em <span id="updated-at"></span> &#183; Cia de Talentos</footer>
@@ -2500,7 +2589,7 @@ footer{text-align:center;color:var(--muted);font-size:0.78rem;margin-top:8px;}
   function dFmt(d){return String(d.getDate()).padStart(2,'0')+'/'+String(d.getMonth()+1).padStart(2,'0')+'/'+d.getFullYear();}
   function diffDays(s,e){return Math.round((pd(e)-pd(s))/86400000);}
 
-  function renderAll(etapas,atividades){
+  function renderAll(etapas,atividades,materiais,alertNote){
     var allDates=etapas.flatMap(function(e){return[pd(e.inicio),pd(e.termino)];}).filter(Boolean);
     if(!allDates.length){
       document.getElementById('loading').style.display='none';
@@ -2619,6 +2708,46 @@ footer{text-align:center;color:var(--muted);font-size:0.78rem;margin-top:8px;}
     }
     document.getElementById('cal-grid').innerHTML=calHtml;
 
+    // ── Progresso etapas ───────────────────────────────────────────────────────
+    var etDone=etapas.filter(function(e){return e.status==='concluido';}).length;
+    var etPct=etapas.length?Math.round(etDone/etapas.length*100):0;
+    document.getElementById('progress-et').innerHTML=etapas.length?
+      '<div class="progress-bar-wrap"><div class="progress-row"><span>'+etDone+'/'+etapas.length+' etapas concluídas</span><b>'+etPct+'%</b></div><div class="progress-track"><div class="progress-fill" style="width:'+etPct+'%;background:#4f46e5"></div></div></div>':'';
+
+    // ── Alerta ─────────────────────────────────────────────────────────────────
+    var alertEl=document.getElementById('alert-box');
+    if(alertNote&&alertNote.trim()){
+      alertEl.innerHTML='<div class="alert-box"><strong>&#9888;&#65039; Ponto de atenção:</strong> '+alertNote.replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</div>';
+    }
+
+    // ── Materiais ──────────────────────────────────────────────────────────────
+    var mats=materiais||[];
+    if(mats.length){
+      var sw=document.getElementById('view-switch');
+      var matBtn=document.createElement('button');
+      matBtn.className='view-btn'; matBtn.dataset.view='materiais';
+      matBtn.innerHTML='&#128230; Materiais';
+      sw.appendChild(matBtn);
+      document.getElementById('view-materiais').style.display='';
+      var stMatMap={pendente:'🔴 Pendente',parcial:'🟡 Parcial',enviado:'🟢 Enviado'};
+      var matDone=mats.filter(function(m){return m.status==='enviado';}).length;
+      var matPct=mats.length?Math.round(matDone/mats.length*100):0;
+      document.getElementById('progress-mat').innerHTML='<div class="progress-bar-wrap"><div class="progress-row"><span>'+matDone+'/'+mats.length+' materiais recebidos</span><b>'+matPct+'%</b></div><div class="progress-track"><div class="progress-fill" style="width:'+matPct+'%;background:#10b981"></div></div></div>';
+      var matTbody=document.getElementById('mat-body');
+      function fmt2(s){if(!s)return'—';var p=String(s).split('-');return p[2]+'/'+p[1]+'/'+p[0];}
+      matTbody.innerHTML=mats.map(function(m,i){
+        return '<tr data-status="'+(m.status||'pendente')+'" data-search="'+(m.nome+' '+m.resp+' '+m.obs).toLowerCase()+'"><td class="num center">'+(i+1)+'</td><td>'+m.nome+'</td><td>'+(m.resp||'—')+'</td><td>'+fmt2(m.prazo)+'</td><td>'+(stMatMap[m.status||'pendente']||'🔴 Pendente')+'</td><td>'+(m.obs||'')+'</td></tr>';
+      }).join('');
+      // filtros
+      var chips=document.querySelectorAll('[data-mf]');
+      var matSearch=document.getElementById('mat-search');
+      var matRows=matTbody.querySelectorAll('tr');
+      var activeF='all',searchT='';
+      function applyMat(){matRows.forEach(function(r){var ms=activeF==='all'||r.dataset.status===activeF;var mt=r.dataset.search.includes(searchT);r.style.display=(ms&&mt)?'':'none';});}
+      chips.forEach(function(c){c.addEventListener('click',function(){chips.forEach(function(x){x.classList.remove('active');});c.classList.add('active');activeF=c.dataset.mf;applyMat();});});
+      matSearch.addEventListener('input',function(){searchT=matSearch.value.toLowerCase();applyMat();});
+    }
+
     // ── Header dinâmico ────────────────────────────────────────────────────────
     var pi=etapas.filter(function(e){return e.inicio;})[0];
     var pf=etapas.filter(function(e){return e.termino;}).slice(-1)[0];
@@ -2629,7 +2758,8 @@ footer{text-align:center;color:var(--muted);font-size:0.78rem;margin-top:8px;}
       (VAGAS?'<div class="badge"><b>'+VAGAS+'</b>Vagas</div>':'')+
       '<div class="badge"><b>'+etapas.length+'</b>Etapas</div>'+
       '<div class="badge"><b>'+totalDays+'</b>Dias corridos</div>'+
-      (totalUtil!==null?'<div class="badge"><b>'+totalUtil+'</b>Dias úteis</div>':'');
+      (totalUtil!==null?'<div class="badge"><b>'+totalUtil+'</b>Dias úteis</div>':'')+
+      (etapas.length?'<div class="badge"><b>'+etPct+'%</b>Concluído</div>':'');
     document.getElementById('updated-at').textContent=new Date().toLocaleString('pt-BR');
     document.getElementById('loading').style.display='none';
     document.getElementById('app').style.display='block';
@@ -2653,7 +2783,9 @@ footer{text-align:center;color:var(--muted);font-size:0.78rem;margin-top:8px;}
     }
     var etapas=data.etapas||[];
     var atividades=data.atividades||{};
-    renderAll(etapas,atividades);
+    var materiais=data.materiais||[];
+    var alertNote=data.alertNote||'';
+    renderAll(etapas,atividades,materiais,alertNote);
   }
 
   loadData().catch(function(e){
@@ -9601,6 +9733,32 @@ function PulseEditModal({
       pulseData
     });
   }
+  // Callback chamado pelo CronogramaModal ao salvar — sincroniza apenas as datas
+  // de volta para a Pulse (etapas com tipo='pulse' e id='ph_N')
+  async function handleCronSync(phaseSyncUpdates) {
+    const newPhases = {};
+    PHASES.forEach(ph => {
+      const upd = phaseSyncUpdates[ph.key];
+      newPhases[ph.key] = {
+        ...phases[ph.key],
+        ...(upd ? { start: upd.start || phases[ph.key].start, end: upd.end || phases[ph.key].end } : {})
+      };
+    });
+    setPhases(newPhases);
+    const fA = analysts.filter(a => a.trim());
+    const fPh = {};
+    PHASES.forEach(ph => {
+      const pc = analysts.map((a, i) => a.trim() ? newPhases[ph.key].pcts[i] || 0 : null).filter(p => p !== null);
+      fPh[ph.key] = { ...newPhases[ph.key], pcts: pc };
+    });
+    await onSave({
+      ...project,
+      title: title.trim(), client: client.trim(), status,
+      ciclo: ciclo.trim(), ka: ka.trim(), solucao: normFrente(solucao),
+      head1: head1.trim(), head2: head2.trim(), head3: head3.trim(),
+      analysts: fA, phases: fPh, pulseData
+    });
+  }
 
   // Shared input classes
   const cls = 'w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-200';
@@ -9926,7 +10084,7 @@ function PulseEditModal({
       disabled: !title.trim() || saving,
       className: "bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white px-5 py-2 rounded-lg text-sm font-semibold"
     }, saving ? '⏳ Salvando...' : '💾 Salvar'))),
-    showCronograma && React.createElement(CronogramaModal, { project, phases, onClose: () => setShowCronograma(false) })));
+    showCronograma && React.createElement(CronogramaModal, { project, phases, onClose: () => setShowCronograma(false), onPhasesSync: handleCronSync })));
   }
   return /*#__PURE__*/React.createElement("div", {
     className: "modal-overlay",
@@ -10141,14 +10299,16 @@ function PulseEditModal({
     disabled: !title.trim() || saving,
     className: "bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white px-5 py-2 rounded-lg text-sm font-semibold transition flex items-center gap-2"
   }, saving ? '⏳ Salvando...' : '💾 Salvar'))),
-  showCronograma && React.createElement(CronogramaModal, { project, phases, onClose: () => setShowCronograma(false) })));
+  showCronograma && React.createElement(CronogramaModal, { project, phases, onClose: () => setShowCronograma(false), onPhasesSync: handleCronSync })));
 }
 
 // ─── Cronograma Modal ─────────────────────────────────────────────────────────
-function CronogramaModal({ project, phases, onClose }) {
+function CronogramaModal({ project, phases, onClose, onPhasesSync }) {
   const [cronTab, setCronTab] = useState('edit');
   const [etapas, setEtapas] = useState([]);
   const [atividades, setAtividades] = useState({});
+  const [materiais, setMateriais] = useState([]);
+  const [alertNote, setAlertNote] = useState('');
   const [expandedEtapa, setExpandedEtapa] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -10166,10 +10326,17 @@ function CronogramaModal({ project, phases, onClose }) {
 
   function buildEtapasFromPhases(ph) {
     const result = [];
+    // Etapas EB pré-carregadas (sem data) — sempre antes das fases Pulse
+    const EB_DEFAULTS = [
+      { id: 'eb_0', nome: 'Kick-off',                cor: '#7c3aed', tipo: 'eb' },
+      { id: 'eb_1', nome: 'Hotsite',                 cor: '#0ea5e9', tipo: 'eb' },
+      { id: 'eb_2', nome: 'Estratégia de Atração',   cor: '#10b981', tipo: 'eb' },
+    ];
+    EB_DEFAULTS.forEach(eb => result.push({ ...eb, inicio: '', termino: '', obs: '', status: 'aguardando' }));
     PHASES.forEach((p, i) => {
       const d = ph?.[p.key] || {};
       if (!d.start && !d.end) return;
-      result.push({ id: `ph_${i}`, nome: p.label, inicio: d.start || '', termino: d.end || '', cor: CRONOGRAMA_COLORS[i % CRONOGRAMA_COLORS.length], tipo: 'pulse', obs: '' });
+      result.push({ id: `ph_${i}`, nome: p.label, inicio: d.start || '', termino: d.end || '', cor: CRONOGRAMA_COLORS[i % CRONOGRAMA_COLORS.length], tipo: 'pulse', obs: '', status: 'aguardando' });
     });
     return result;
   }
@@ -10184,11 +10351,11 @@ function CronogramaModal({ project, phases, onClose }) {
         if (cancelled) return;
         setCronExists(exists);
         if (exists) {
-          const { etapas: e, atividades: a } = await readCronogramaExcel(token, CRONOGRAMA_SITE_URL, excelRel);
+          const { etapas: e, atividades: a, materiais: m, alertNote: an } = await readCronogramaExcel(token, CRONOGRAMA_SITE_URL, excelRel);
           if (cancelled) return;
-          setEtapas(e); setAtividades(a);
+          setEtapas(e); setAtividades(a); setMateriais(m || []); setAlertNote(an || '');
         } else {
-          setEtapas(buildEtapasFromPhases(phases)); setAtividades({});
+          setEtapas(buildEtapasFromPhases(phases)); setAtividades({}); setMateriais([]); setAlertNote('');
         }
       } catch(e) { if (!cancelled) setError('Erro ao carregar: ' + e.message); }
       finally { if (!cancelled) setLoading(false); }
@@ -10202,9 +10369,9 @@ function CronogramaModal({ project, phases, onClose }) {
     try {
       const token = await acquireTokenForResource(APP_CONFIG.clientId, APP_CONFIG.tenantId, CRONOGRAMA_SCOPE);
       // 1. Salva Excel (fonte de verdade para o editor recarregar)
-      await saveCronogramaExcel(token, CRONOGRAMA_SITE_URL, CRONOGRAMA_FOLDER_REL, excelName, etapas, atividades);
+      await saveCronogramaExcel(token, CRONOGRAMA_SITE_URL, CRONOGRAMA_FOLDER_REL, excelName, etapas, atividades, materiais, alertNote);
       // 2. Salva JSON (fonte de dados para o HTML dinâmico via Power Automate)
-      const cronData = { project, etapas, atividades, savedAt: new Date().toISOString() };
+      const cronData = { project, etapas, atividades, materiais, alertNote, savedAt: new Date().toISOString() };
       const jsonBytes = new TextEncoder().encode(JSON.stringify(cronData));
       await spUploadFile(token, CRONOGRAMA_SITE_URL, CRONOGRAMA_FOLDER_REL, jsonName, jsonBytes);
       // 3. Gera HTML dinâmico — busca dados via Power Automate (sem CORS, sem token no cliente)
@@ -10212,8 +10379,31 @@ function CronogramaModal({ project, phases, onClose }) {
       const htmlBytes = new TextEncoder().encode(html);
       await spUploadFile(token, CRONOGRAMA_SITE_URL, CRONOGRAMA_FOLDER_REL, htmlName, htmlBytes);
       setCronExists(true);
-      setMsg(`Salvo! Compartilhe o link do arquivo "${htmlName}" na pasta Cronogramas do SharePoint com o cliente.`);
-      setTimeout(() => setMsg(''), 8000);
+      // Sincroniza datas das etapas Pulse de volta para a Pulse
+      if (onPhasesSync) {
+        const phaseSyncUpdates = {};
+        etapas.forEach(e => {
+          if (e.tipo === 'pulse' && e.id && e.id.startsWith('ph_')) {
+            const idx = parseInt(e.id.replace('ph_', ''), 10);
+            if (!isNaN(idx) && idx >= 0 && idx < PHASES.length) {
+              phaseSyncUpdates[PHASES[idx].key] = { start: e.inicio, end: e.termino };
+            }
+          }
+        });
+        if (Object.keys(phaseSyncUpdates).length > 0) {
+          try {
+            await onPhasesSync(phaseSyncUpdates);
+            setMsg(`Salvo e datas sincronizadas com a Pulse! Compartilhe o link "${htmlName}" com o cliente.`);
+          } catch(syncErr) {
+            setMsg(`Cronograma salvo, mas erro ao sincronizar com Pulse: ${syncErr.message}`);
+          }
+        } else {
+          setMsg(`Salvo! Compartilhe o link do arquivo "${htmlName}" na pasta Cronogramas do SharePoint com o cliente.`);
+        }
+      } else {
+        setMsg(`Salvo! Compartilhe o link do arquivo "${htmlName}" na pasta Cronogramas do SharePoint com o cliente.`);
+      }
+      setTimeout(() => setMsg(''), 10000);
     } catch(e) { setError('Erro ao salvar: ' + e.message); }
     finally { setSaving(false); }
   }
@@ -10244,9 +10434,66 @@ function CronogramaModal({ project, phases, onClose }) {
 
   const iCls = 'border border-slate-300 rounded-lg px-2 py-1.5 text-xs focus:ring-1 focus:ring-indigo-200 w-full';
 
+  // Materiais CRUD
+  function addMaterial() {
+    const id = `m_${Date.now()}`;
+    setMateriais(prev => [...prev, { id, nome: '', resp: '', prazo: '', status: 'pendente', obs: '' }]);
+  }
+  function updMaterial(id, field, val) { setMateriais(prev => prev.map(m => m.id === id ? { ...m, [field]: val } : m)); }
+  function remMaterial(id) { setMateriais(prev => prev.filter(m => m.id !== id)); }
+
+  function renderMateriais() {
+    const stMap = { pendente: '🔴 Pendente', parcial: '🟡 Parcial', enviado: '🟢 Enviado' };
+    const matTotal = materiais.length;
+    const matDone  = materiais.filter(m => m.status === 'enviado').length;
+    const matPct   = matTotal ? Math.round(matDone / matTotal * 100) : 0;
+    return React.createElement('div', { className: 'space-y-2' },
+      // Barra de progresso
+      matTotal > 0 && React.createElement('div', { className: 'mb-3' },
+        React.createElement('div', { className: 'flex items-center justify-between mb-1' },
+          React.createElement('span', { className: 'text-xs font-semibold text-slate-500' }, `Recebido — ${matDone}/${matTotal} materiais`),
+          React.createElement('span', { className: 'text-xs font-bold text-emerald-600' }, `${matPct}%`)
+        ),
+        React.createElement('div', { className: 'w-full bg-slate-100 rounded-full h-2' },
+          React.createElement('div', { className: 'bg-emerald-500 h-2 rounded-full transition-all', style: { width: `${matPct}%` } })
+        )
+      ),
+      materiais.length === 0 && React.createElement('p', { className: 'text-sm text-slate-400 italic py-4 text-center' }, 'Nenhum material. Clique em "+ Material" para adicionar.'),
+      ...materiais.map((m, idx) =>
+        React.createElement('div', { key: m.id, className: 'flex items-center gap-2 border border-slate-200 rounded-xl px-3 py-2 bg-slate-50' },
+          React.createElement('span', { className: 'text-xs font-bold text-slate-400 w-5 shrink-0' }, idx + 1),
+          React.createElement('input', { type: 'text', value: m.nome, onChange: ev => updMaterial(m.id, 'nome', ev.target.value), placeholder: 'Material', className: iCls + ' flex-1' }),
+          React.createElement('input', { type: 'text', value: m.resp, onChange: ev => updMaterial(m.id, 'resp', ev.target.value), placeholder: 'Responsável', className: iCls + ' w-28 shrink-0' }),
+          React.createElement('input', { type: 'date', value: m.prazo, onChange: ev => updMaterial(m.id, 'prazo', ev.target.value), className: iCls + ' w-32 shrink-0', title: 'Prazo limite' }),
+          React.createElement('select', { value: m.status, onChange: ev => updMaterial(m.id, 'status', ev.target.value), className: iCls + ' w-28 shrink-0' },
+            React.createElement('option', { value: 'pendente' }, '🔴 Pendente'),
+            React.createElement('option', { value: 'parcial' },  '🟡 Parcial'),
+            React.createElement('option', { value: 'enviado' },  '🟢 Enviado')
+          ),
+          React.createElement('input', { type: 'text', value: m.obs, onChange: ev => updMaterial(m.id, 'obs', ev.target.value), placeholder: 'Observação', className: iCls + ' w-40 shrink-0' }),
+          React.createElement('button', { onClick: () => remMaterial(m.id), className: 'text-red-300 hover:text-red-500 text-xs px-1 shrink-0' }, '✕')
+        )
+      ),
+      React.createElement('button', { onClick: addMaterial, className: 'w-full text-sm text-emerald-600 border border-dashed border-emerald-300 rounded-xl py-2.5 hover:bg-emerald-50 transition mt-1' }, '+ Material')
+    );
+  }
+
   // Edit tab content
   function renderEdit() {
+    const total = etapas.length;
+    const done  = etapas.filter(e => e.status === 'concluido').length;
+    const pct   = total ? Math.round(done / total * 100) : 0;
     return React.createElement('div', { className: 'space-y-2' },
+      // Barra de progresso
+      total > 0 && React.createElement('div', { className: 'mb-3' },
+        React.createElement('div', { className: 'flex items-center justify-between mb-1' },
+          React.createElement('span', { className: 'text-xs font-semibold text-slate-500' }, `Progresso — ${done}/${total} etapas concluídas`),
+          React.createElement('span', { className: 'text-xs font-bold text-indigo-600' }, `${pct}%`)
+        ),
+        React.createElement('div', { className: 'w-full bg-slate-100 rounded-full h-2' },
+          React.createElement('div', { className: 'bg-indigo-500 h-2 rounded-full transition-all', style: { width: `${pct}%` } })
+        )
+      ),
       etapas.length === 0 && React.createElement('p', { className: 'text-sm text-slate-400 italic py-4 text-center' }, 'Nenhuma etapa. Clique em "+ Nova etapa" para começar.'),
       ...etapas.map((e, idx) => {
         const atvs = atividades[e.id] || [];
@@ -10300,8 +10547,8 @@ function CronogramaModal({ project, phases, onClose }) {
   // Preview tab content — iframe with generated HTML
   const previewHtml = useMemo(() => {
     if (etapas.length === 0) return '<html><body style="font-family:sans-serif;padding:20px;color:#64748b"><p>Sem etapas cadastradas para visualizar.</p></body></html>';
-    return generateCronogramaHTML(project, etapas, atividades);
-  }, [etapas, atividades, project]);
+    return generateCronogramaHTML(project, etapas, atividades, materiais, alertNote);
+  }, [etapas, atividades, materiais, alertNote, project]);
 
   return React.createElement('div', { className: 'modal-overlay', style: { zIndex: 9999 }, onClick: onClose },
     React.createElement('div', { className: 'bg-white rounded-2xl shadow-2xl w-full max-w-5xl max-h-[95vh] flex flex-col mx-4', style: { zIndex: 10000 }, onClick: e => e.stopPropagation() },
@@ -10315,7 +10562,9 @@ function CronogramaModal({ project, phases, onClose }) {
       ),
       // Tabs
       React.createElement('div', { className: 'px-6 pt-3 pb-0 border-b border-slate-100 flex gap-4 shrink-0' },
-        React.createElement('button', { onClick: () => setCronTab('edit'), className: `text-sm font-semibold pb-2.5 border-b-2 transition ${cronTab === 'edit' ? 'border-indigo-600 text-indigo-700' : 'border-transparent text-slate-500 hover:text-slate-700'}` }, '✏️ Editar'),
+        React.createElement('button', { onClick: () => setCronTab('edit'), className: `text-sm font-semibold pb-2.5 border-b-2 transition ${cronTab === 'edit' ? 'border-indigo-600 text-indigo-700' : 'border-transparent text-slate-500 hover:text-slate-700'}` }, '✏️ Etapas'),
+        React.createElement('button', { onClick: () => setCronTab('materiais'), className: `text-sm font-semibold pb-2.5 border-b-2 transition ${cronTab === 'materiais' ? 'border-indigo-600 text-indigo-700' : 'border-transparent text-slate-500 hover:text-slate-700'}` }, '📦 Materiais'),
+        React.createElement('button', { onClick: () => setCronTab('atencao'), className: `text-sm font-semibold pb-2.5 border-b-2 transition ${cronTab === 'atencao' ? 'border-indigo-600 text-indigo-700' : 'border-transparent text-slate-500 hover:text-slate-700'}` }, '⚠️ Pontos de Atenção'),
         React.createElement('button', { onClick: () => setCronTab('preview'), className: `text-sm font-semibold pb-2.5 border-b-2 transition ${cronTab === 'preview' ? 'border-indigo-600 text-indigo-700' : 'border-transparent text-slate-500 hover:text-slate-700'}` }, '👁 Visualizar')
       ),
       // Content
@@ -10327,6 +10576,16 @@ function CronogramaModal({ project, phases, onClose }) {
         ),
         !loading && msg && React.createElement('div', { className: 'bg-green-50 border border-green-200 rounded-xl px-4 py-3 text-sm text-green-700 mb-3' }, msg),
         !loading && cronTab === 'edit' && renderEdit(),
+        !loading && cronTab === 'materiais' && renderMateriais(),
+        !loading && cronTab === 'atencao' && React.createElement('div', { className: 'space-y-3' },
+          React.createElement('p', { className: 'text-xs text-slate-500' }, 'Texto exibido em destaque no cronograma publicado. Use para registrar alertas, decisões importantes ou mudanças de prazo.'),
+          React.createElement('textarea', {
+            value: alertNote, onChange: ev => setAlertNote(ev.target.value),
+            placeholder: 'Ex: Com o KV deslocado de 10/08 para 12/08, a programação do Hotsite foi comprimida para 3 dias úteis...',
+            className: 'w-full border border-slate-300 rounded-xl px-3 py-2.5 text-sm focus:ring-1 focus:ring-indigo-200 resize-none',
+            rows: 6
+          })
+        ),
         !loading && cronTab === 'preview' && React.createElement('iframe', {
           key: etapas.map(e => `${e.id}|${e.inicio}|${e.termino}|${e.status||''}`).join('/') + Object.keys(atividades).length,
           srcDoc: previewHtml,
