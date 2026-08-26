@@ -1412,6 +1412,21 @@ const NPS_CAND_EXCEL_REL      = '/sites/Public/Documentos Partilhados/CIA/GeralC
 // Arquivo de tabulação classificada (output da skill tabula-pesquisa-candidatos)
 const CAND_CLASSIFIED_REL     = '/sites/Public/Documentos Partilhados/CIA/GeralCT/Indicadores CT/Bases dos projetos/Bases de vagas/Analise_Pesquisa_Candidatos_Completo.xlsx';
 const SM_CAND_ID = '418486361';
+// ─── SurveyMonkey: Pesquisa de Satisfação Programa EB ────────────────────────
+const SM_EB_ID = '528240801';
+const SM_EB_QUESTIONS = {
+  '299727026': 'Entregas do projeto',
+  '299727027': 'Aderência à sua empresa',
+  '299727028': 'Aporte consultivo',
+  '299727001': 'Condução do projeto'
+};
+// choice_id → peso (1–5)
+const SM_EB_CHOICES = {
+  '2090074696':1,'2090074697':2,'2090074698':3,'2090074699':4,'2090074700':5,
+  '2090074702':1,'2090074703':2,'2090074704':3,'2090074705':4,'2090074706':5,
+  '2090074708':1,'2090074709':2,'2090074710':3,'2090074711':4,'2090074712':5,
+  '2090074426':1,'2090074427':2,'2090074428':3,'2090074429':4,'2090074430':5
+};
 const SM_CAND_NPS_QID = '245841662';
 const SM_CAND_IMPR_QID = '245840107';
 const SM_CAND_IMPR_CHOICES = {'1739125395':1,'1739125396':2,'1739125397':3,'1739125398':4,'1739125399':5};
@@ -3542,6 +3557,49 @@ function _isSpWritable(k) {
   if (_spValidFields.size === 0) return true; // fallback: inclui tudo se não carregou
   const resolved = _resolveFieldName(k);
   return _spValidFields.has(resolved) || _spValidFields.has(k);
+}
+
+// ─── EB satisfaction survey helper ────────────────────────────────────────────
+// Loads SM responses for SM_EB_ID and returns long-form rows matching the CLI Excel format
+async function loadEBSMResponses() {
+  const colResp = await smFetch('/surveys/' + SM_EB_ID + '/collectors?per_page=100');
+  const collMap = {};
+  (colResp.data || []).forEach(c => { collMap[c.id] = c.name || ''; });
+  const firstResp = await smFetch('/surveys/' + SM_EB_ID + '/responses/bulk?per_page=100&page=1');
+  const total = firstResp.total || 0;
+  const totalPages = Math.ceil(total / 100);
+  const allData = [...(firstResp.data || [])];
+  for (let p = 2; p <= totalPages; p++) {
+    const r = await smFetch('/surveys/' + SM_EB_ID + '/responses/bulk?per_page=100&page=' + p);
+    allData.push(...(r.data || []));
+    if (p % 10 === 0 && p < totalPages) await new Promise(res => setTimeout(res, 300));
+  }
+  const rows = [];
+  for (const resp of allData) {
+    const programa = collMap[resp.collector_id] || '';
+    const date = (resp.date_created || '').slice(0, 10);
+    for (const page of (resp.pages || [])) {
+      for (const q of (page.questions || [])) {
+        const qLabel = SM_EB_QUESTIONS[q.id];
+        if (!qLabel) continue;
+        for (const ans of (q.answers || [])) {
+          const weight = SM_EB_CHOICES[ans.choice_id];
+          if (!weight) continue;
+          rows.push({
+            'CÓDIGO': '',
+            'PROCESSO SELETIVO': programa,
+            'TIPO DE PESQUISA': 'Pesquisa de Satisfação Programa EB',
+            'PERGUNTA': qLabel,
+            'CLASSIFICACAO': String(weight),
+            'IMPORTANCIA': '',
+            'RESPOSTA SIMPLES': '',
+            'RESPOSTA': ''
+          });
+        }
+      }
+    }
+  }
+  return rows;
 }
 
 // ─── Candidate survey helpers ──────────────────────────────────────────────────────
@@ -14183,8 +14241,11 @@ function NpsView({
     setExcelLoading(true);
     setExcelError(null);
     try {
-      const data = await fetchExcelSheet(clientId, tenantId, NPS_CLI_REL, null);
-      setExcelData(data);
+      const [data, ebRows] = await Promise.all([
+        fetchExcelSheet(clientId, tenantId, NPS_CLI_REL, null),
+        loadEBSMResponses().catch(() => [])
+      ]);
+      setExcelData([...(data || []), ...(ebRows || [])]);
       setExcelLoaded(true);
     } catch (e) {
       setExcelError(e.message);
@@ -14392,7 +14453,8 @@ function NpsView({
         impRows: {},
         benDist: {},
         type: null,
-        total: 0
+        total: 0,
+        tipos: new Set()
       };
       const cls = String(row['CLASSIFICACAO'] || '').trim();
       const imp = String(row['IMPORTANCIA'] || '').trim();
@@ -14401,6 +14463,8 @@ function NpsView({
         processo: row['PROCESSO SELETIVO'] || '',
         tipo: row['TIPO DE PESQUISA'] || ''
       };
+      const tipoPes = String(row['TIPO DE PESQUISA'] || '').trim();
+      if (tipoPes) pergMap[perg].tipos.add(tipoPes);
       const isBen = plNorm.includes('benefici');
       if (isBen && ['1', '2', '3'].includes(imp)) {
         const opt = String(row['RESPOSTA SIMPLES'] || row['RESPOSTA'] || '').trim();
@@ -14434,6 +14498,7 @@ function NpsView({
     }
     return Object.entries(pergMap).filter(([, d]) => d.type !== null).map(([perg, d]) => {
       const alvo = getAlvo(perg);
+      const isEB = [...d.tipos].some(t => /\beb\b|employer[\s_]branding|programa[\s_-]*eb/i.test(t));
       if (d.type === 'beneficios') {
         const IMP_COLORS = {
           1: '#f59e0b',
@@ -14451,6 +14516,7 @@ function NpsView({
         return {
           perg,
           alvo,
+          isEB,
           type: 'beneficios',
           opts,
           total: d.total,
@@ -14471,6 +14537,7 @@ function NpsView({
         return {
           perg,
           alvo,
+          isEB,
           type: 'classificacao',
           dist,
           total: totalR,
@@ -14494,6 +14561,7 @@ function NpsView({
         return {
           perg,
           alvo,
+          isEB,
           type: 'importancia',
           dist,
           total: totalR,
@@ -14888,7 +14956,12 @@ function NpsView({
   }, "✕")), !excelLoading && !excelError && excelData !== null && questionCharts.length === 0 && /*#__PURE__*/React.createElement("p", {
     className: "text-slate-400 text-sm py-4 text-center"
   }, "Nenhuma questão de avaliação detectada."), questionCharts.length > 0 && (() => {
-    const visCharts = fAlvo ? questionCharts.filter(q => q.alvo === fAlvo) : questionCharts;
+    let visCharts = fAlvo ? questionCharts.filter(q => q.alvo === fAlvo) : questionCharts;
+    if (fFrente.length > 0) {
+      visCharts = visCharts.filter(q =>
+        (fFrente.includes('eb') && q.isEB) || (fFrente.includes('as') && !q.isEB)
+      );
+    }
     return /*#__PURE__*/React.createElement("div", {
       className: "grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4"
     }, visCharts.map(chart => {
@@ -14914,9 +14987,13 @@ function NpsView({
           className: "flex items-start justify-between gap-2 mb-1"
         }, /*#__PURE__*/React.createElement("div", {
           className: "text-xs font-semibold text-slate-700 leading-snug flex-1"
-        }, perg), /*#__PURE__*/React.createElement("span", {
-          className: "text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500 shrink-0 font-medium"
-        }, alvo)), /*#__PURE__*/React.createElement("div", {
+        }, perg), /*#__PURE__*/React.createElement("div", {
+          className: "flex items-center gap-1 shrink-0"
+        }, chart.isEB && /*#__PURE__*/React.createElement("span", {
+          className: "text-[10px] px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-600 font-bold"
+        }, "EB"), /*#__PURE__*/React.createElement("span", {
+          className: "text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500 font-medium"
+        }, alvo))), /*#__PURE__*/React.createElement("div", {
           className: "flex items-center gap-4 mb-3 text-xs text-slate-400"
         }, /*#__PURE__*/React.createElement("span", null, total, " escolhas"), /*#__PURE__*/React.createElement("span", {
           className: "flex items-center gap-2"
@@ -14990,9 +15067,13 @@ function NpsView({
           WebkitBoxOrient: 'vertical',
           overflow: 'hidden'
         }
-      }, perg), /*#__PURE__*/React.createElement("span", {
-        className: "text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500 shrink-0 font-medium whitespace-nowrap"
-      }, alvo)), /*#__PURE__*/React.createElement("div", {
+      }, perg), /*#__PURE__*/React.createElement("div", {
+        className: "flex items-center gap-1 shrink-0"
+      }, chart.isEB && /*#__PURE__*/React.createElement("span", {
+        className: "text-[10px] px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-600 font-bold"
+      }, "EB"), /*#__PURE__*/React.createElement("span", {
+        className: "text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500 font-medium whitespace-nowrap"
+      }, alvo))), /*#__PURE__*/React.createElement("div", {
         className: "flex items-center justify-between mb-3"
       }, /*#__PURE__*/React.createElement("span", {
         className: "text-xs text-slate-400"
