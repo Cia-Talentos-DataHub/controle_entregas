@@ -6881,6 +6881,10 @@ function App() {
 
   // ── Parceiros module ──
   if (module === 'parceiros') {
+    if (accessLevel !== null && accessLevel >= 3) {
+      setModule(null);
+      return null;
+    }
     return React.createElement("div", { className: "min-h-screen bg-slate-50" },
       React.createElement(AppHeader, {
         view: view, setView: setView, authState: authState, onSignOut: signOut,
@@ -7246,7 +7250,86 @@ function ParceirosView({ projects, token }) {
     });
   }
 
-  // ── Exports ──
+  // ── Exports + bulk import ──
+  async function downloadAlocTemplate() {
+    try {
+      const XLSX = await loadXLSX();
+      const example = [{
+        'Parceiro':'Nome do Parceiro (exato)',
+        'Projeto':'Nome do Projeto (exato)',
+        'Atividade':'Nome da Atividade (exato)',
+        'Data':'DD/MM/AAAA',
+        'Período':'Manhã',
+        'Frequência':1
+      }];
+      const ws = XLSX.utils.json_to_sheet(example);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Alocações');
+      XLSX.writeFile(wb, 'modelo_alocacoes.xlsx');
+    } catch(e) { setError('Erro: '+e.message); }
+  }
+
+  const [uploadingAloc, setUploadingAloc] = React.useState(false);
+
+  async function uploadAlocacoesExcel(file) {
+    if (!file) return;
+    setUploadingAloc(true);
+    try {
+      const XLSX = await loadXLSX();
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf);
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws);
+      let count = 0, erros = [];
+      for (const row of rows) {
+        try {
+          const parcNome = (row['Parceiro']||'').trim();
+          const projNome = (row['Projeto']||'').trim();
+          const atividadeNome = (row['Atividade']||'').trim();
+          const dataRaw = row['Data']||'';
+          const periodo = row['Período']||row['Periodo']||'Integral';
+          const frequencia = Number(row['Frequência']||row['Frequencia']||1);
+          if (!parcNome||!projNome||!atividadeNome||!dataRaw) { erros.push(`Linha incompleta: ${JSON.stringify(row)}`); continue; }
+          // Parse date dd/mm/aaaa or ISO
+          let dataISO = '';
+          if (typeof dataRaw === 'number') {
+            // Excel serial date
+            const d = new Date(Math.round((dataRaw-25569)*86400*1000)); dataISO = d.toISOString().slice(0,10);
+          } else {
+            const s = String(dataRaw).trim();
+            if (s.match(/^\d{2}\/\d{2}\/\d{4}$/)) { const [d,m,y]=s.split('/'); dataISO=`${y}-${m}-${d}`; }
+            else if (s.match(/^\d{4}-\d{2}-\d{2}/)) dataISO = s.slice(0,10);
+            else { erros.push(`Data inválida: ${s}`); continue; }
+          }
+          const parc = parceiros.find(p=>p.Title.toLowerCase()===parcNome.toLowerCase());
+          const proj = projects.find(p=>(p.title||'').toLowerCase()===projNome.toLowerCase());
+          const atv = atividades.find(a=>a.Title.toLowerCase()===atividadeNome.toLowerCase());
+          const valorAtiv = atv ? (atv.Valor||0) : 0;
+          const body = {
+            __metadata:{type:alocEntityType},
+            Title:`${parcNome} — ${projNome}`,
+            Parceiro:parc?parc.Title:parcNome,
+            ParceiroId:parc?String(parc.Id):'',
+            Projeto:proj?proj.title:projNome,
+            ProjetoSpId:proj&&proj.spId?String(proj.spId):'',
+            Atividade:atividadeNome, DataAtividade:dataISO,
+            Periodo:periodo, Frequencia:frequencia,
+            ValorAtividade:valorAtiv, ValorDia:valorAtiv*frequencia
+          };
+          await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Alocacao')/items`, {
+            method:'POST', headers:{'Content-Type':'application/json;odata=verbose'}, body:JSON.stringify(body)
+          });
+          count++;
+        } catch(rowErr) { erros.push(rowErr.message); }
+      }
+      let msg = `${count} alocação(ões) importada(s).`;
+      if (erros.length) msg += `\n\nAtenção — ${erros.length} erro(s):\n${erros.slice(0,5).join('\n')}`;
+      alert(msg);
+      await loadAll();
+    } catch(e) { setError('Erro ao importar: '+e.message); }
+    setUploadingAloc(false);
+  }
+
   async function exportAlocacoesXLSX() {
     try {
       const XLSX = await loadXLSX();
@@ -7721,7 +7804,14 @@ function ParceirosView({ projects, token }) {
           CE('button',{onClick:()=>{setShowBulkEdit(s=>!s);},className:'px-3 py-1.5 text-xs border border-amber-200 text-amber-700 rounded-lg hover:bg-amber-50 transition'},showBulkEdit?'✕ Cancelar edição':'✏️ Editar seleção'),
           CE('button',{onClick:bulkDelete,disabled:bulkDeleting,className:'px-3 py-1.5 text-xs bg-red-500 hover:bg-red-600 text-white rounded-lg transition disabled:opacity-40'},bulkDeleting?'⏳...':'🗑️ Excluir seleção')
         ),
-        CE('button',{onClick:exportAlocacoesXLSX,className:'px-3 py-2 text-xs border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 transition ml-auto'},'⬇ Excel')
+        CE('div',{className:'flex gap-2 ml-auto'},
+          CE('button',{onClick:downloadAlocTemplate,className:'px-3 py-2 text-xs border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 transition'},'⬇ Modelo'),
+          CE('label',{className:`px-3 py-2 text-xs border rounded-lg cursor-pointer transition ${uploadingAloc?'border-slate-200 text-slate-400':'border-indigo-200 text-indigo-600 hover:bg-indigo-50'}`},
+            uploadingAloc?'⏳ Importando...':'⬆ Importar',
+            CE('input',{type:'file',accept:'.xlsx,.xls',className:'hidden',disabled:uploadingAloc,onChange:e=>{if(e.target.files[0]){uploadAlocacoesExcel(e.target.files[0]);e.target.value='';}}})
+          ),
+          CE('button',{onClick:exportAlocacoesXLSX,className:'px-3 py-2 text-xs border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 transition'},'⬇ Excel')
+        )
       ),
 
       // Bulk edit form
@@ -7733,9 +7823,12 @@ function ParceirosView({ projects, token }) {
             CE('option',{value:''},'— manter —'),['Manhã','Tarde','Integral'].map(p=>CE('option',{key:p,value:p},p))
           )
         ),
-        CE('div',{className:'w-40'},
+        CE('div',{className:'w-56'},
           CE('label',{className:labelCls},'Atividade'),
-          CE('input',{type:'text',className:inputCls,placeholder:'— manter —',value:bulkEditForm.atividade,onChange:e=>setBulkEditForm(f=>({...f,atividade:e.target.value}))})
+          CE('select',{className:inputCls,value:bulkEditForm.atividade,onChange:e=>setBulkEditForm(f=>({...f,atividade:e.target.value}))},
+            CE('option',{value:''},'— manter —'),
+            atividades.map(a=>CE('option',{key:a.Id,value:a.Title},a.Title))
+          )
         ),
         CE('div',{className:'w-28'},
           CE('label',{className:labelCls},'Frequência'),
@@ -8405,7 +8498,7 @@ function HomeScreen({
   }, "Dashboard de pessoas cadastradas no ATS Globe: perfil demográfico, diversidade, formação, candidaturas e processos seletivos."), /*#__PURE__*/React.createElement("div", {
     className: "mt-6 flex items-center text-sm font-semibold text-violet-600 group-hover:text-violet-700"
   }, "Abrir ", /*#__PURE__*/React.createElement("span", { className: "ml-1.5" }, "→"))),
-  /*#__PURE__*/React.createElement("button", {
+  fullAccess && /*#__PURE__*/React.createElement("button", {
     onClick: () => onSelect('parceiros'),
     className: "group bg-white rounded-2xl border-2 border-slate-200 hover:border-teal-400 hover:shadow-xl transition-all p-8 text-left"
   }, /*#__PURE__*/React.createElement("div", {
