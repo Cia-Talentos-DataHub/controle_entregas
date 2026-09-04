@@ -1427,6 +1427,83 @@ const SM_EB_CHOICES = {
   '2090074708':1,'2090074709':2,'2090074710':3,'2090074711':4,'2090074712':5,
   '2090074426':1,'2090074427':2,'2090074428':3,'2090074429':4,'2090074430':5
 };
+// Pesquisa unificada Seleção + EB (Oficial) — ID 527832652
+const SM_UNIF_ID = '527832652';
+// question_id → { label, isEB }
+const SM_UNIF_QUESTIONS = {
+  // Bloco EB
+  '294662592': { label: 'Criação', isEB: true },
+  '294662593': { label: 'Atração & Performance', isEB: true },
+  '294662594': { label: 'Consultoria em EB', isEB: true },
+  // Bloco Seleção
+  '294662563': { label: 'Plataforma de inscrição', isEB: false },
+  '294662577': { label: 'Assessments / testes online', isEB: false },
+  '294662578': { label: 'Metodologia e atividades para dinâmicas de grupo e painéis', isEB: false },
+  '294662579': { label: 'Qualidade dos candidatos finalistas', isEB: false },
+  '294662580': { label: 'Qualidade dos relatórios com indicadores do processo seletivo', isEB: false },
+  // Bloco Time — GSC
+  '294662567': { label: 'Gestão do projeto', isEB: false },
+  '294662568': { label: 'Atendimento e relacionamento', isEB: false },
+  // Bloco Time — Head
+  '294662571': { label: 'Domínio e execução do projeto', isEB: false },
+  '294662574': { label: 'Atendimento e relacionamento', isEB: false },
+  '294662573': { label: 'Aporte consultivo (dados mercado, público, tendências, estratégia etc.)', isEB: false },
+  '294662572': { label: 'Capacidade de propor soluções para os desafios e imprevistos', isEB: false },
+  // Bloco Time — Consultores
+  '294662582': { label: 'Aporte consultivo no consenso', isEB: false },
+  '294662587': { label: 'Domínio das atividades da etapa de avaliação comportamental', isEB: false },
+  '294662586': { label: 'Atendimento e relacionamento com RH e Gestores da empresa', isEB: false },
+  '294662585': { label: 'Capacidade de lidar com imprevistos e propor soluções', isEB: false },
+  '294662584': { label: 'Atendimento, cuidado e atenção com os candidatos', isEB: false },
+  // Bloco Time — Analista
+  '294662589': { label: 'Atendimento / relacionamento', isEB: false },
+  '294662591': { label: 'Qualidade dos relatórios e análises', isEB: false }
+};
+// choice_id → peso (1–5) para todas as perguntas da pesquisa unificada
+const SM_UNIF_CHOICES = {
+  // Criação
+  '2057239541':1,'2057239542':2,'2057239543':3,'2057239544':4,'2057239545':5,
+  // Atração & Performance
+  '2057239549':1,'2057239550':2,'2057239551':3,'2057239552':4,'2057239553':5,
+  // Consultoria em EB
+  '2057239557':1,'2057239558':2,'2057239559':3,'2057239560':4,'2057239561':5,
+  // Plataforma de inscrição
+  '2057239251':1,'2057239252':2,'2057239253':3,'2057239254':4,'2057239255':5,
+  // Assessments
+  '2057239372':1,'2057239373':2,'2057239374':3,'2057239375':4,'2057239376':5,
+  // Metodologia
+  '2057239387':1,'2057239388':2,'2057239389':3,'2057239390':4,'2057239391':5,
+  // Qualidade candidatos
+  '2057239402':1,'2057239403':2,'2057239404':3,'2057239405':4,'2057239406':5,
+  // Qualidade relatórios processo
+  '2057239417':1,'2057239418':2,'2057239419':3,'2057239420':4,'2057239421':5,
+  // Gestão do projeto (GSC)
+  '2057239268':1,'2057239269':2,'2057239270':3,'2057239271':4,'2057239272':5,
+  // Atendimento e rel (GSC)
+  '2057239283':1,'2057239284':2,'2057239285':3,'2057239286':4,'2057239287':5,
+  // Domínio e execução (Head)
+  '2057239299':1,'2057239300':2,'2057239301':3,'2057239302':4,'2057239303':5,
+  // Atendimento e rel (Head)
+  '2057239344':1,'2057239357':2,'2057239358':3,'2057239359':4,'2057239360':5,
+  // Aporte consultivo (Head)
+  '2057239329':1,'2057239330':2,'2057239331':3,'2057239332':4,'2057239333':5,
+  // Capacidade de propor soluções (Head)
+  '2057239314':1,'2057239315':2,'2057239316':3,'2057239317':4,'2057239318':5,
+  // Aporte consultivo no consenso (Consultores)
+  '2057239433':1,'2057239434':2,'2057239435':3,'2057239436':4,'2057239437':5,
+  // Domínio atividades comportamental (Consultores)
+  '2057239493':1,'2057239494':2,'2057239495':3,'2057239496':4,'2057239497':5,
+  // Atendimento RH e Gestores (Consultores)
+  '2057239478':1,'2057239479':2,'2057239480':3,'2057239481':4,'2057239482':5,
+  // Capacidade imprevistos (Consultores)
+  '2057239463':1,'2057239464':2,'2057239465':3,'2057239466':4,'2057239467':5,
+  // Atendimento candidatos (Consultores)
+  '2057239448':1,'2057239449':2,'2057239450':3,'2057239451':4,'2057239452':5,
+  // Atendimento/rel (Analista)
+  '2057239509':1,'2057239510':2,'2057239511':3,'2057239512':4,'2057239513':5,
+  // Qualidade relatórios análises (Analista)
+  '2057239524':1,'2057239525':2,'2057239526':3,'2057239527':4,'2057239528':5
+};
 const SM_CAND_NPS_QID = '245841662';
 const SM_CAND_IMPR_QID = '245840107';
 const SM_CAND_IMPR_CHOICES = {'1739125395':1,'1739125396':2,'1739125397':3,'1739125398':4,'1739125399':5};
@@ -3590,6 +3667,47 @@ async function loadEBSMResponses() {
             'PROCESSO SELETIVO': programa,
             'TIPO DE PESQUISA': 'Pesquisa de Satisfação Programa EB',
             'PERGUNTA': qLabel,
+            'CLASSIFICACAO': String(weight),
+            'IMPORTANCIA': '',
+            'RESPOSTA SIMPLES': '',
+            'RESPOSTA': ''
+          });
+        }
+      }
+    }
+  }
+  return rows;
+}
+
+// Loads SM responses for SM_UNIF_ID and returns long-form rows matching the CLI Excel format
+async function loadUnifiedSMResponses() {
+  const colResp = await smFetch('/surveys/' + SM_UNIF_ID + '/collectors?per_page=100');
+  const collMap = {};
+  (colResp.data || []).forEach(c => { collMap[c.id] = c.name || ''; });
+  const firstResp = await smFetch('/surveys/' + SM_UNIF_ID + '/responses/bulk?per_page=100&page=1');
+  const total = firstResp.total || 0;
+  const totalPages = Math.ceil(total / 100);
+  const allData = [...(firstResp.data || [])];
+  for (let p = 2; p <= totalPages; p++) {
+    const r = await smFetch('/surveys/' + SM_UNIF_ID + '/responses/bulk?per_page=100&page=' + p);
+    allData.push(...(r.data || []));
+    if (p % 10 === 0 && p < totalPages) await new Promise(res => setTimeout(res, 300));
+  }
+  const rows = [];
+  for (const resp of allData) {
+    const programa = collMap[resp.collector_id] || '';
+    for (const page of (resp.pages || [])) {
+      for (const q of (page.questions || [])) {
+        const qInfo = SM_UNIF_QUESTIONS[q.id];
+        if (!qInfo) continue;
+        for (const ans of (q.answers || [])) {
+          const weight = SM_UNIF_CHOICES[ans.choice_id];
+          if (!weight) continue;
+          rows.push({
+            'CÓDIGO': '',
+            'PROCESSO SELETIVO': programa,
+            'TIPO DE PESQUISA': qInfo.isEB ? 'Pesquisa de Satisfação Programa EB' : 'Pesquisa de Satisfação Cliente A&S',
+            'PERGUNTA': qInfo.label,
             'CLASSIFICACAO': String(weight),
             'IMPORTANCIA': '',
             'RESPOSTA SIMPLES': '',
@@ -14241,11 +14359,12 @@ function NpsView({
     setExcelLoading(true);
     setExcelError(null);
     try {
-      const [data, ebRows] = await Promise.all([
+      const [data, ebRows, unifRows] = await Promise.all([
         fetchExcelSheet(clientId, tenantId, NPS_CLI_REL, null),
-        loadEBSMResponses().catch(() => [])
+        loadEBSMResponses().catch(() => []),
+        loadUnifiedSMResponses().catch(() => [])
       ]);
-      setExcelData([...(data || []), ...(ebRows || [])]);
+      setExcelData([...(data || []), ...(ebRows || []), ...(unifRows || [])]);
       setExcelLoaded(true);
     } catch (e) {
       setExcelError(e.message);
