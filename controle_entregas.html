@@ -115,6 +115,8 @@ const ANALYST_KEYS = Array.from({
   length: MAX_ANALYSTS
 }, (_, i) => `Analista_${i + 1}`);
 const SP_SITE_URL = 'https://ciadetalentos-my.sharepoint.com/personal/automacoes_fpa_ciadetalentos_com';
+// Site das listas de parceiros (lucas_moreira tem permissão de owner aqui)
+const SP_PARC_SITE_URL = 'https://ciadetalentos-my.sharepoint.com/personal/lucas_moreira_ciadetalentos_com';
 const SP_LIST_NAME = 'List_Pulse';
 const SP_TEAM_LIST = 'List_Pulse_Equipe';
 const SP_SCOPE = 'https://ciadetalentos-my.sharepoint.com/.default';
@@ -6877,6 +6879,20 @@ function App() {
     );
   }
 
+  // ── Parceiros module ──
+  if (module === 'parceiros') {
+    return React.createElement("div", { className: "min-h-screen bg-slate-50" },
+      React.createElement(AppHeader, {
+        view: view, setView: setView, authState: authState, onSignOut: signOut,
+        projectCount: projects.length, loading: loading,
+        onRefresh: () => loadAll(authState.token),
+        module: module, onHome: () => setModule(null),
+        onBackupDownload: handleBackupDownload, onBackupUpload: handleBackupUpload
+      }),
+      React.createElement(ParceirosView, { projects: projects, token: authState.token })
+    );
+  }
+
   // ── Gestão module ──
   // Entity-aware data: switch between Analistas and Heads
   const isHeadView = entityView === 'head';
@@ -7029,7 +7045,7 @@ function AppHeader({
     className: "w-7 h-7 bg-indigo-600 rounded-lg flex items-center justify-center text-white text-xs font-bold"
   }, "CT"), /*#__PURE__*/React.createElement("span", {
     className: "text-base font-bold text-slate-800"
-  }, module === 'pulse' ? 'Pulse' : module === 'gestao' ? 'Gestão A&S' : module === 'calendar' ? 'Calendário' : module === 'analytics' ? 'Analytics' : module === 'clientes' ? 'Clientes × Frentes' : module === 'nps' ? 'NPS' : module === 'cx' ? 'CX — Analytics' : module === 'cx_atend' ? 'CX — Atendimento' : module === 'escopo' ? 'Vagas: Escopo, Requisitos e Remuneração' : module === 'inscricoes' ? 'Pessoas Inscritas' : module === 'globe_fotografia' ? 'Globe Fotografia' : MODULE_CONFIGS[module]?.label || 'Alocação'), module === 'gestao' && projectCount > 0 && /*#__PURE__*/React.createElement("span", {
+  }, module === 'pulse' ? 'Pulse' : module === 'gestao' ? 'Gestão A&S' : module === 'calendar' ? 'Calendário' : module === 'analytics' ? 'Analytics' : module === 'clientes' ? 'Clientes × Frentes' : module === 'nps' ? 'NPS' : module === 'cx' ? 'CX — Analytics' : module === 'cx_atend' ? 'CX — Atendimento' : module === 'escopo' ? 'Vagas: Escopo, Requisitos e Remuneração' : module === 'inscricoes' ? 'Pessoas Inscritas' : module === 'globe_fotografia' ? 'Globe Fotografia' : module === 'parceiros' ? 'Painel de Parceiros' : MODULE_CONFIGS[module]?.label || 'Alocação'), module === 'gestao' && projectCount > 0 && /*#__PURE__*/React.createElement("span", {
     className: "bg-indigo-100 text-indigo-700 text-xs px-2 py-0.5 rounded-full"
   }, projectCount, " proj.")), module === 'gestao' && /*#__PURE__*/React.createElement("nav", {
     className: "flex gap-1 flex-wrap flex-1 items-center"
@@ -7043,7 +7059,7 @@ function AppHeader({
     key: e,
     onClick: () => setEntityView(e),
     className: `px-3 py-1 rounded-md text-xs font-semibold transition ${entityView === e ? 'bg-white shadow text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`
-  }, e === 'analyst' ? '👤 Analistas' : '🎯 Heads')))), (module === 'pulse' || module === 'calendar' || module === 'analytics' || module === 'nps' || module === 'clientes' || module === 'cx' || module === 'cx_atend' || module === 'globe_fotografia') && /*#__PURE__*/React.createElement("div", {
+  }, e === 'analyst' ? '👤 Analistas' : '🎯 Heads')))), (module === 'pulse' || module === 'calendar' || module === 'analytics' || module === 'nps' || module === 'clientes' || module === 'cx' || module === 'cx_atend' || module === 'globe_fotografia' || module === 'parceiros') && /*#__PURE__*/React.createElement("div", {
     className: "flex-1"
   }), /*#__PURE__*/React.createElement("div", {
     className: "flex items-center gap-2 ml-auto shrink-0"
@@ -7090,6 +7106,326 @@ function AppHeader({
     onClick: onSignOut,
     className: "text-xs text-slate-400 hover:text-red-500 border border-slate-200 hover:border-red-200 px-2.5 py-1.5 rounded-lg transition"
   }, "Sair")))));
+}
+
+// ─── Painel de Controle de Parceiros ─────────────────────────────────────────
+function ParceirosView({ projects, token }) {
+  const [tab, setTab] = React.useState('alocacoes');
+  const [parceiros, setParceiros] = React.useState([]);
+  const [alocacoes, setAlocacoes] = React.useState([]);
+  const [loading, setLoading] = React.useState(false);
+  const [error, setError] = React.useState(null);
+  const [selectedProject, setSelectedProject] = React.useState('');
+  const [showForm, setShowForm] = React.useState(false);
+  const [saving, setSaving] = React.useState(false);
+  const [form, setForm] = React.useState({ parceiro: '', parceiroId: '', atividade: '', data: '', periodo: 'Integral', frequencia: 1 });
+  const [ganttRange, setGanttRange] = React.useState('month');
+  const [entityType, setEntityType] = React.useState('');
+
+  const PARC_SITE = SP_PARC_SITE_URL;
+  const DAY_W = 28, DAY_MS = 86400000;
+
+  React.useEffect(() => { if (token) loadAll(); }, [token]);
+
+  async function loadAll() {
+    setLoading(true); setError(null);
+    try {
+      const [pRes, aRes, tRes] = await Promise.all([
+        spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros')/items?$select=Id,Title,Telefone,Email,Estado,Ingles,AutodeclaracaoRacial&$top=500&$orderby=Title`),
+        spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Alocacao')/items?$select=Id,Title,Parceiro,ParceiroId,Projeto,ProjetoSpId,Atividade,DataAtividade,Periodo,Frequencia&$top=2000&$orderby=DataAtividade`),
+        spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Alocacao')?$select=ListItemEntityTypeFullName`)
+      ]);
+      setParceiros(pRes.value || []);
+      setAlocacoes(aRes.value || []);
+      if (tRes && tRes.ListItemEntityTypeFullName) setEntityType(tRes.ListItemEntityTypeFullName);
+    } catch (e) { setError(e.message); }
+    setLoading(false);
+  }
+
+  async function saveAlocacao() {
+    if (!form.parceiro || !form.atividade || !form.data || !selectedProject) return;
+    setSaving(true);
+    try {
+      const proj = projects.find(p => (p.spId && String(p.spId) === selectedProject) || p.id === selectedProject);
+      const body = {
+        __metadata: { type: entityType },
+        Title: `${form.parceiro} — ${proj ? proj.title : selectedProject}`,
+        Parceiro: form.parceiro,
+        ParceiroId: String(form.parceiroId),
+        Projeto: proj ? proj.title : selectedProject,
+        ProjetoSpId: proj && proj.spId ? String(proj.spId) : selectedProject,
+        Atividade: form.atividade,
+        DataAtividade: form.data,
+        Periodo: form.periodo,
+        Frequencia: Number(form.frequencia) || 1
+      };
+      await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Alocacao')/items`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json;odata=verbose', 'X-HTTP-Method': 'POST' }
+        , body: JSON.stringify(body)
+      });
+      setShowForm(false);
+      setForm({ parceiro: '', parceiroId: '', atividade: '', data: '', periodo: 'Integral', frequencia: 1 });
+      await loadAll();
+    } catch (e) { setError(e.message); }
+    setSaving(false);
+  }
+
+  // Filtered allocations for table
+  const projAlocacoes = React.useMemo(() => {
+    if (!selectedProject) return alocacoes;
+    return alocacoes.filter(a => a.ProjetoSpId === selectedProject || a.Projeto === selectedProject);
+  }, [alocacoes, selectedProject]);
+
+  const activeProjects = React.useMemo(() =>
+    [...projects].sort((a, b) => (a.title || '').localeCompare(b.title || '')), [projects]);
+
+  // Gantt
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const rangeMs = ganttRange === 'week' ? 7 * DAY_MS : ganttRange === 'month' ? 30 * DAY_MS : 90 * DAY_MS;
+  const gStart = new Date(today.getTime() - 7 * DAY_MS);
+  const gEnd = new Date(gStart.getTime() + rangeMs + 7 * DAY_MS);
+  const gDays = Math.round((gEnd - gStart) / DAY_MS) + 1;
+  const gW = gDays * DAY_W;
+
+  function dayOff(dateStr) {
+    const d = new Date(dateStr); d.setHours(0, 0, 0, 0);
+    return Math.round((d - gStart) / DAY_MS);
+  }
+
+  const ganttRows = React.useMemo(() => {
+    const map = {};
+    for (const a of alocacoes) {
+      if (!a.DataAtividade) continue;
+      const off = dayOff(a.DataAtividade);
+      if (off < 0 || off > gDays) continue;
+      if (!map[a.Parceiro]) map[a.Parceiro] = [];
+      map[a.Parceiro].push(a);
+    }
+    return Object.entries(map).sort((x, y) => x[0].localeCompare(y[0]));
+  }, [alocacoes, ganttRange]);
+
+  const projColors = React.useMemo(() => {
+    const COLORS = ['#6366f1','#0ea5e9','#f59e0b','#10b981','#ec4899','#8b5cf6','#ef4444','#14b8a6','#f97316','#64748b'];
+    const map = {}; let i = 0;
+    for (const a of alocacoes) {
+      if (a.Projeto && !map[a.Projeto]) { map[a.Projeto] = COLORS[i % COLORS.length]; i++; }
+    }
+    return map;
+  }, [alocacoes]);
+
+  const { dayCols, dayNums, monthMarks, todayLine } = React.useMemo(() => {
+    let dc = '', dn = '', mm = '', curM = -1;
+    for (let d = 0; d < gDays; d++) {
+      const dt = new Date(gStart.getTime() + d * DAY_MS);
+      const wd = dt.getDay(); const isWe = wd === 0 || wd === 6;
+      dc += `<div class="day-col${isWe ? ' we' : ''}" style="left:${d * DAY_W}px;width:${DAY_W}px"></div>`;
+      dn += `<span class="day-n" style="left:${d * DAY_W}px">${dt.getDate()}</span>`;
+      if (dt.getMonth() !== curM) {
+        curM = dt.getMonth();
+        const mon = dt.toLocaleString('pt-BR', { month: 'short' }).toUpperCase();
+        mm += `<span class="month-mark" style="left:${d * DAY_W}px">${mon} ${dt.getFullYear()}</span>`;
+      }
+    }
+    const tOff = Math.round((today - gStart) / DAY_MS);
+    const tl = tOff >= 0 && tOff <= gDays ? `<div class="today-l" style="left:${tOff * DAY_W}px"></div>` : '';
+    return { dayCols: dc, dayNums: dn, monthMarks: mm, todayLine: tl };
+  }, [ganttRange]);
+
+  const CE = React.createElement;
+
+  return CE('div', { className: 'fade-in max-w-screen-2xl mx-auto px-4 pb-10 mt-4 space-y-4' },
+    // Error banner
+    error && CE('div', { className: 'bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-700 flex items-center justify-between' },
+      CE('span', null, error),
+      CE('button', { onClick: () => setError(null), className: 'ml-2 text-red-400 hover:text-red-600 font-bold' }, '✕')
+    ),
+    // Tabs + reload
+    CE('div', { className: 'flex items-center justify-between flex-wrap gap-3' },
+      CE('div', { className: 'flex gap-1 bg-white border border-slate-200 rounded-xl p-1' },
+        [['alocacoes', '📋 Alocações'], ['gantt', '📅 Gantt']].map(([k, l]) =>
+          CE('button', {
+            key: k, onClick: () => setTab(k),
+            className: `px-4 py-1.5 rounded-lg text-sm font-medium transition ${tab === k ? 'bg-indigo-600 text-white shadow' : 'text-slate-500 hover:text-slate-700'}`
+          }, l)
+        )
+      ),
+      CE('button', {
+        onClick: loadAll, disabled: loading,
+        className: 'text-xs border border-slate-200 rounded-lg px-3 py-1.5 text-slate-500 hover:text-indigo-600 transition disabled:opacity-40'
+      }, loading ? '⏳ Carregando...' : '🔄 Atualizar')
+    ),
+    // ── Alocações tab ──
+    tab === 'alocacoes' && CE('div', { className: 'space-y-4' },
+      // Toolbar
+      CE('div', { className: 'flex items-center gap-3 flex-wrap' },
+        CE('select', {
+          className: 'border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white min-w-[260px] max-w-xs',
+          value: selectedProject,
+          onChange: e => { setSelectedProject(e.target.value); setShowForm(false); }
+        },
+          CE('option', { value: '' }, '— Todos os projetos —'),
+          activeProjects.map(p => CE('option', { key: p.id, value: p.spId ? String(p.spId) : p.id },
+            (p.title || '') + (p.client ? ` — ${p.client}` : '')))
+        ),
+        selectedProject && CE('button', {
+          onClick: () => setShowForm(s => !s),
+          className: `px-4 py-2 text-sm font-medium rounded-lg transition ${showForm ? 'bg-slate-100 text-slate-700' : 'bg-indigo-600 hover:bg-indigo-700 text-white'}`
+        }, showForm ? '✕ Cancelar' : '+ Nova alocação')
+      ),
+      // Form
+      showForm && CE('div', { className: 'bg-white border border-slate-200 rounded-xl p-5 grid grid-cols-2 gap-4 md:grid-cols-3' },
+        // Parceiro
+        CE('div', null,
+          CE('label', { className: 'text-xs font-semibold text-slate-600 block mb-1' }, 'Parceiro'),
+          CE('select', {
+            className: 'w-full border border-slate-200 rounded-lg px-3 py-2 text-sm',
+            value: form.parceiroId,
+            onChange: e => { const p = parceiros.find(x => String(x.Id) === e.target.value); setForm(f => ({ ...f, parceiroId: e.target.value, parceiro: p ? p.Title : '' })); }
+          },
+            CE('option', { value: '' }, 'Selecione...'),
+            parceiros.map(p => CE('option', { key: p.Id, value: p.Id }, p.Title))
+          )
+        ),
+        // Atividade
+        CE('div', null,
+          CE('label', { className: 'text-xs font-semibold text-slate-600 block mb-1' }, 'Atividade'),
+          CE('input', {
+            type: 'text', placeholder: 'Ex: Entrevista de seleção',
+            className: 'w-full border border-slate-200 rounded-lg px-3 py-2 text-sm',
+            value: form.atividade,
+            onChange: e => setForm(f => ({ ...f, atividade: e.target.value }))
+          })
+        ),
+        // Data
+        CE('div', null,
+          CE('label', { className: 'text-xs font-semibold text-slate-600 block mb-1' }, 'Data'),
+          CE('input', {
+            type: 'date',
+            className: 'w-full border border-slate-200 rounded-lg px-3 py-2 text-sm',
+            value: form.data,
+            onChange: e => setForm(f => ({ ...f, data: e.target.value }))
+          })
+        ),
+        // Período
+        CE('div', null,
+          CE('label', { className: 'text-xs font-semibold text-slate-600 block mb-1' }, 'Período'),
+          CE('select', {
+            className: 'w-full border border-slate-200 rounded-lg px-3 py-2 text-sm',
+            value: form.periodo,
+            onChange: e => setForm(f => ({ ...f, periodo: e.target.value }))
+          }, ['Manhã', 'Tarde', 'Integral'].map(p => CE('option', { key: p, value: p }, p)))
+        ),
+        // Frequência
+        CE('div', null,
+          CE('label', { className: 'text-xs font-semibold text-slate-600 block mb-1' }, 'Frequência'),
+          CE('input', {
+            type: 'number', min: 1,
+            className: 'w-full border border-slate-200 rounded-lg px-3 py-2 text-sm',
+            value: form.frequencia,
+            onChange: e => setForm(f => ({ ...f, frequencia: e.target.value }))
+          })
+        ),
+        // Save
+        CE('div', { className: 'flex items-end' },
+          CE('button', {
+            onClick: saveAlocacao,
+            disabled: saving || !form.parceiro || !form.atividade || !form.data,
+            className: 'w-full px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-lg transition disabled:opacity-40'
+          }, saving ? '⏳ Salvando...' : '✓ Salvar')
+        )
+      ),
+      // Table
+      CE('div', { className: 'bg-white border border-slate-200 rounded-xl overflow-hidden' },
+        CE('table', { className: 'w-full text-sm' },
+          CE('thead', null,
+            CE('tr', { className: 'border-b border-slate-100 bg-slate-50' },
+              ['Parceiro', 'Projeto', 'Atividade', 'Data', 'Período', 'Freq.'].map(h =>
+                CE('th', { key: h, className: 'text-left px-4 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wide' }, h)
+              )
+            )
+          ),
+          CE('tbody', null,
+            projAlocacoes.length === 0
+              ? CE('tr', null, CE('td', { colSpan: 6, className: 'text-center py-12 text-slate-400' }, 'Nenhuma alocação encontrada.'))
+              : projAlocacoes.map(a => CE('tr', { key: a.Id, className: 'border-b border-slate-50 hover:bg-slate-50 transition' },
+                  CE('td', { className: 'px-4 py-2.5 font-medium text-slate-800' }, a.Parceiro),
+                  CE('td', { className: 'px-4 py-2.5 text-slate-600 text-xs' }, a.Projeto),
+                  CE('td', { className: 'px-4 py-2.5 text-slate-600' }, a.Atividade),
+                  CE('td', { className: 'px-4 py-2.5 text-slate-600 whitespace-nowrap' },
+                    a.DataAtividade ? new Date(a.DataAtividade).toLocaleDateString('pt-BR') : '—'),
+                  CE('td', { className: 'px-4 py-2.5' },
+                    CE('span', {
+                      className: `text-xs px-2 py-0.5 rounded-full font-medium ${a.Periodo === 'Integral' ? 'bg-indigo-100 text-indigo-700' : a.Periodo === 'Manhã' ? 'bg-amber-100 text-amber-700' : 'bg-sky-100 text-sky-700'}`
+                    }, a.Periodo || '—')
+                  ),
+                  CE('td', { className: 'px-4 py-2.5 text-slate-600' }, a.Frequencia || 1)
+                ))
+          )
+        )
+      )
+    ),
+    // ── Gantt tab ──
+    tab === 'gantt' && CE('div', { className: 'space-y-3' },
+      // Range buttons
+      CE('div', { className: 'flex gap-1' },
+        [['week', '7 dias'], ['month', '30 dias'], ['3months', '90 dias']].map(([k, l]) =>
+          CE('button', {
+            key: k, onClick: () => setGanttRange(k),
+            className: `px-3 py-1.5 text-xs font-medium rounded-lg border transition ${ganttRange === k ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 border-slate-200 hover:border-indigo-300'}`
+          }, l)
+        )
+      ),
+      ganttRows.length === 0
+        ? CE('div', { className: 'text-center py-16 text-slate-400' }, 'Nenhuma alocação no período visível.')
+        : CE('div', { className: 'gantt-scroll' },
+            CE('div', { className: 'gantt-inner', style: { width: `${gW}px` } },
+              // Ruler
+              CE('div', { className: 'gantt-row ruler' },
+                CE('div', { className: 'gantt-label text-xs font-bold text-slate-500 uppercase tracking-wide' }, 'Parceiro'),
+                CE('div', { className: 'gantt-track', dangerouslySetInnerHTML: { __html: dayCols + dayNums + monthMarks + todayLine } })
+              ),
+              // Data rows
+              ...ganttRows.map(([parceiro, alocs]) =>
+                CE('div', { key: parceiro, className: 'gantt-row' },
+                  CE('div', { className: 'gantt-label', title: parceiro }, parceiro),
+                  CE('div', { className: 'gantt-track', style: { position: 'relative', height: 36 } },
+                    CE('div', { dangerouslySetInnerHTML: { __html: dayCols + todayLine } }),
+                    ...alocs.map(a => {
+                      const off = dayOff(a.DataAtividade);
+                      if (off < 0 || off > gDays) return null;
+                      const color = projColors[a.Projeto] || '#6366f1';
+                      const label = `${a.Atividade || ''}${a.Frequencia > 1 ? ` ×${a.Frequencia}` : ''}`;
+                      return CE('div', {
+                        key: a.Id,
+                        title: `${a.Projeto}\n${a.Atividade}\n${a.Periodo}${a.Frequencia > 1 ? ` ×${a.Frequencia}` : ''}`,
+                        style: {
+                          position: 'absolute', left: `${off * DAY_W + 2}px`, top: 5,
+                          width: `${DAY_W - 4}px`, height: 26, background: color,
+                          borderRadius: 5, display: 'flex', alignItems: 'center',
+                          paddingLeft: 5, overflow: 'hidden', cursor: 'default', zIndex: 2
+                        }
+                      }, CE('span', { style: { fontSize: 9, color: '#fff', fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } }, label));
+                    }).filter(Boolean)
+                  )
+                )
+              ),
+              // Legend row
+              CE('div', { className: 'gantt-row', style: { borderTop: '2px solid var(--line)', minHeight: 44 } },
+                CE('div', { className: 'gantt-label text-xs font-bold text-slate-400 uppercase' }, 'Legenda'),
+                CE('div', { style: { display: 'flex', alignItems: 'center', gap: 14, padding: '10px 14px', flexWrap: 'wrap' } },
+                  ...Object.entries(projColors).map(([proj, color]) =>
+                    CE('div', { key: proj, style: { display: 'flex', alignItems: 'center', gap: 5 } },
+                      CE('div', { style: { width: 10, height: 10, borderRadius: 2, background: color, flexShrink: 0 } }),
+                      CE('span', { style: { fontSize: 11, color: '#475569' } }, proj)
+                    )
+                  )
+                )
+              )
+            )
+          )
+    )
+  );
 }
 
 // ─── Home Screen (module selector, shown after login) ────────────────────────
@@ -7357,6 +7693,24 @@ function HomeScreen({
     className: "text-sm text-slate-500 leading-relaxed"
   }, "Dashboard de pessoas cadastradas no ATS Globe: perfil demográfico, diversidade, formação, candidaturas e processos seletivos."), /*#__PURE__*/React.createElement("div", {
     className: "mt-6 flex items-center text-sm font-semibold text-violet-600 group-hover:text-violet-700"
+  }, "Abrir ", /*#__PURE__*/React.createElement("span", { className: "ml-1.5" }, "→"))),
+  /*#__PURE__*/React.createElement("button", {
+    onClick: () => onSelect('parceiros'),
+    className: "group bg-white rounded-2xl border-2 border-slate-200 hover:border-teal-400 hover:shadow-xl transition-all p-8 text-left"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "w-14 h-14 bg-teal-100 rounded-2xl flex items-center justify-center mb-5 group-hover:bg-teal-200 transition-colors"
+  }, /*#__PURE__*/React.createElement("svg", {
+    xmlns: "http://www.w3.org/2000/svg", className: "w-7 h-7 text-teal-600",
+    fill: "none", viewBox: "0 0 24 24", stroke: "currentColor", strokeWidth: "1.8"
+  }, /*#__PURE__*/React.createElement("path", {
+    strokeLinecap: "round", strokeLinejoin: "round",
+    d: "M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"
+  }))), /*#__PURE__*/React.createElement("h2", {
+    className: "text-xl font-bold text-slate-900 mb-2"
+  }, "Parceiros"), /*#__PURE__*/React.createElement("p", {
+    className: "text-sm text-slate-500 leading-relaxed"
+  }, "Gestão de alocação de consultores parceiros freelas em projetos, com visão de calendário Gantt."), /*#__PURE__*/React.createElement("div", {
+    className: "mt-6 flex items-center text-sm font-semibold text-teal-600 group-hover:text-teal-700"
   }, "Abrir ", /*#__PURE__*/React.createElement("span", { className: "ml-1.5" }, "→"))),
   Object.values(MODULE_CONFIGS).filter(cfg => fullAccess || cfg.key === 'cd' && isCandD || cfg.key === 'fi' && isLatam || cfg.key === 'eb' && isEB).map(cfg => {
     const colors = {
