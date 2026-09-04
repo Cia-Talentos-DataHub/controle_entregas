@@ -7111,7 +7111,7 @@ function AppHeader({
 // ─── Painel de Controle de Parceiros ─────────────────────────────────────────
 function ParceirosView({ projects, token }) {
   const CE = React.createElement;
-  const { useState, useEffect, useMemo, useRef, useCallback } = React;
+  const { useState, useEffect, useMemo, useRef } = React;
 
   const [tab, setTab] = useState('alocacoes');
   const [parceiros, setParceiros] = useState([]);
@@ -7125,24 +7125,30 @@ function ParceirosView({ projects, token }) {
   const [formMode, setFormMode] = useState('single');
   const [form, setForm] = useState({ parceiroId:'', parceiro:'', atividadeId:'', atividade:'', valorAtividade:0, data:'', dataFim:'', periodo:'Integral', frequencia:1 });
   const [saving, setSaving] = useState(false);
-  const [gradeView, setGradeView] = useState('day'); // 'day'|'week'|'month'
   const [gradeStart, setGradeStart] = useState(() => { const d=new Date(); d.setDate(d.getDate()-3); return d.toISOString().slice(0,10); });
   const [gradeEnd, setGradeEnd] = useState(() => { const d=new Date(); d.setDate(d.getDate()+27); return d.toISOString().slice(0,10); });
   const [alocEntityType, setAlocEntityType] = useState('');
   const [parcEntityType, setParcEntityType] = useState('');
   const [ativEntityType, setAtivEntityType] = useState('');
-  // Edit alocação
+  // Alocação edit/delete/bulk
   const [editingAloc, setEditingAloc] = useState(null);
   const [editAlocForm, setEditAlocForm] = useState({});
   const [savingEdit, setSavingEdit] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
-  // Gestão parceiros
+  const [selectedAlocIds, setSelectedAlocIds] = useState(new Set());
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [showBulkEdit, setShowBulkEdit] = useState(false);
+  const [bulkEditForm, setBulkEditForm] = useState({ periodo:'', atividade:'', frequencia:'' });
+  const [savingBulk, setSavingBulk] = useState(false);
+  // Parceiros
   const [editingParc, setEditingParc] = useState(null);
   const [editParcForm, setEditParcForm] = useState({});
   const [savingParc, setSavingParc] = useState(false);
+  const [deletingParcId, setDeletingParcId] = useState(null);
   const [parcFilter, setParcFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
-  // Gestão atividades
+  const [uploadingParc, setUploadingParc] = useState(false);
+  // Atividades
   const [editingAtiv, setEditingAtiv] = useState(null);
   const [editAtivForm, setEditAtivForm] = useState({});
   const [savingAtiv, setSavingAtiv] = useState(false);
@@ -7150,13 +7156,14 @@ function ParceirosView({ projects, token }) {
   const [newAtivForm, setNewAtivForm] = useState({ titulo:'', valor:'' });
   const [savingNewAtiv, setSavingNewAtiv] = useState(false);
   const [uploadingAtiv, setUploadingAtiv] = useState(false);
-  // Dashboard filters
+  // Dashboard
   const [dashCiclo, setDashCiclo] = useState('');
   const [dashFrom, setDashFrom] = useState('');
   const [dashTo, setDashTo] = useState('');
   const [dashProject, setDashProject] = useState('');
   const [dashPerson, setDashPerson] = useState('');
-  const [dashGroupBy, setDashGroupBy] = useState('month'); // 'day'|'week'|'month'
+  const [dashGroupBy, setDashGroupBy] = useState('month');
+  const [dashAtivGroupBy, setDashAtivGroupBy] = useState('total');
 
   const PARC_SITE = SP_PARC_SITE_URL;
   const DAY_MS = 86400000;
@@ -7198,12 +7205,18 @@ function ParceirosView({ projects, token }) {
     let al = alocacoes;
     if (cicloFilter) {
       const projNames = new Set(filteredProjects.map(p=>p.title));
-      const projSpIds = new Set(filteredProjects.map(p=>p.spId ? String(p.spId) : null).filter(Boolean));
-      al = al.filter(a => projNames.has(a.Projeto) || projSpIds.has(a.ProjetoSpId));
+      const projSpIds = new Set(filteredProjects.map(p=>p.spId?String(p.spId):null).filter(Boolean));
+      al = al.filter(a=>projNames.has(a.Projeto)||projSpIds.has(a.ProjetoSpId));
     }
-    if (selectedProject) al = al.filter(a => a.ProjetoSpId===selectedProject || a.Projeto===selectedProject);
+    if (selectedProject) al = al.filter(a=>a.ProjetoSpId===selectedProject||a.Projeto===selectedProject);
     return al;
   }, [alocacoes, selectedProject, cicloFilter, filteredProjects]);
+
+  const parcStatusMap = useMemo(() => {
+    const m = {};
+    for (const p of parceiros) m[p.Title] = p.Status;
+    return m;
+  }, [parceiros]);
 
   const filteredParceiros = useMemo(() => {
     let ps = parceiros;
@@ -7212,7 +7225,17 @@ function ParceirosView({ projects, token }) {
     return ps;
   }, [parceiros, parcFilter, statusFilter]);
 
-  // ── XLSX loader helper ──
+  const expiringCount = useMemo(() => {
+    const now = new Date(); now.setHours(0,0,0,0);
+    const soon = new Date(now.getTime() + 7*DAY_MS);
+    return parceiros.filter(p => {
+      if (!p.Vigencia || p.Vigencia.toLowerCase()==='indeterminado') return false;
+      const v = new Date(p.Vigencia);
+      return !isNaN(v) && v <= soon && v >= now;
+    }).length;
+  }, [parceiros]);
+
+  // ── XLSX loader ──
   async function loadXLSX() {
     if (window.XLSX) return window.XLSX;
     return new Promise((res,rej) => {
@@ -7223,26 +7246,97 @@ function ParceirosView({ projects, token }) {
     });
   }
 
-  // ── Excel export allocations ──
+  // ── Exports ──
   async function exportAlocacoesXLSX() {
     try {
       const XLSX = await loadXLSX();
       const rows = projAlocacoes.map(a => ({
-        'Parceiro': a.Parceiro||'', 'Projeto': a.Projeto||'', 'Atividade': a.Atividade||'',
-        'Data': a.DataAtividade ? new Date(a.DataAtividade).toLocaleDateString('pt-BR') : '',
-        'Período': a.Periodo||'', 'Frequência': a.Frequencia||1,
-        'Valor Atividade (R$)': a.ValorAtividade||0, 'Valor Dia (R$)': a.ValorDia||0
+        'Parceiro':a.Parceiro||'', 'Status':parcStatusMap[a.Parceiro]||'—', 'Projeto':a.Projeto||'',
+        'Atividade':a.Atividade||'', 'Data':a.DataAtividade?new Date(a.DataAtividade).toLocaleDateString('pt-BR'):'',
+        'Período':a.Periodo||'', 'Frequência':a.Frequencia||1,
+        'Valor Atividade (R$)':a.ValorAtividade||0, 'Valor Dia (R$)':a.ValorDia||0
       }));
-      const ws = XLSX.utils.json_to_sheet(rows);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, 'Alocações');
-      XLSX.writeFile(wb, `alocacoes_${new Date().toISOString().slice(0,10)}.xlsx`);
+      const ws=XLSX.utils.json_to_sheet(rows); const wb=XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb,ws,'Alocações'); XLSX.writeFile(wb,`alocacoes_${new Date().toISOString().slice(0,10)}.xlsx`);
     } catch(e) { setError('Erro ao exportar: '+e.message); }
   }
 
-  // ── Save allocation ──
+  async function exportParceirosXLSX() {
+    try {
+      const XLSX = await loadXLSX();
+      const rows = filteredParceiros.map(p => ({
+        'Nome':p.Title||'', 'Status':p.Status||'', 'Classificação':p.Classificacao||'',
+        'Atuação':p.Atuacao||'', 'Empresa':p.Empresa||'', 'CNPJ':p.CNPJ||'',
+        'Vigência':p.Vigencia||'', 'Data Início':p.DataInicio?new Date(p.DataInicio).toLocaleDateString('pt-BR'):'',
+        'Gestor':p.Gestor||'', 'Renovação':p.Renovacao||'', 'Telefone':p.Telefone||'',
+        'E-mail':p.Email||'', 'Estado':p.Estado||'', 'Inglês':p.Ingles||'',
+        'Autodeclaração Racial':p.AutodeclaracaoRacial||'', 'OBS':p.OBS||''
+      }));
+      const ws=XLSX.utils.json_to_sheet(rows); const wb=XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb,ws,'Parceiros'); XLSX.writeFile(wb,`parceiros_${new Date().toISOString().slice(0,10)}.xlsx`);
+    } catch(e) { setError('Erro ao exportar: '+e.message); }
+  }
+
+  async function downloadParcTemplate() {
+    try {
+      const XLSX = await loadXLSX();
+      const template = [{'Nome':'','Status':'Ativo','Classificação':'Pontual','Atuação':'','Empresa':'','CNPJ':'','Vigência':'indeterminado','Data Início':'','Gestor':'','Renovação':'','Telefone':'','E-mail':'','Estado':'','Inglês':'','Autodeclaração Racial':'','OBS':''}];
+      const ws=XLSX.utils.json_to_sheet(template); const wb=XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb,ws,'Parceiros'); XLSX.writeFile(wb,'modelo_parceiros.xlsx');
+    } catch(e) { setError('Erro: '+e.message); }
+  }
+
+  async function uploadParceirosExcel(file) {
+    if (!file) return;
+    setUploadingParc(true);
+    try {
+      const XLSX = await loadXLSX();
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf);
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws);
+      const existingByName = {};
+      for (const p of parceiros) existingByName[p.Title.toLowerCase().trim()] = p;
+      let updated=0, added=0;
+      for (const row of rows) {
+        const nome = (row['Nome']||row['Title']||row['NOME']||'').trim();
+        if (!nome) continue;
+        const body = {
+          __metadata:{type:parcEntityType},
+          Status:row['Status']||null, Classificacao:row['Classificação']||row['Classificacao']||null,
+          Atuacao:row['Atuação']||row['Atuacao']||null, Empresa:row['Empresa']||null,
+          CNPJ:row['CNPJ']||null, Vigencia:row['Vigência']||row['Vigencia']||null,
+          Gestor:row['Gestor']||null, Renovacao:row['Renovação']||row['Renovacao']||null,
+          Telefone:row['Telefone']||null, Email:row['E-mail']||row['Email']||null,
+          Estado:row['Estado']||null, Ingles:row['Inglês']||row['Ingles']||null,
+          AutodeclaracaoRacial:row['Autodeclaração Racial']||row['AutodeclaracaoRacial']||null,
+          OBS:row['OBS']||null
+        };
+        const existing = existingByName[nome.toLowerCase()];
+        if (existing) {
+          await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros')/items(${existing.Id})`, {
+            method:'POST', headers:{'X-HTTP-Method':'MERGE','IF-MATCH':'*','Content-Type':'application/json;odata=verbose'},
+            body:JSON.stringify(body)
+          });
+          updated++;
+        } else {
+          body.Title = nome;
+          await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros')/items`, {
+            method:'POST', headers:{'Content-Type':'application/json;odata=verbose'},
+            body:JSON.stringify(body)
+          });
+          added++;
+        }
+      }
+      alert(`Importação concluída: ${updated} atualizado(s), ${added} adicionado(s).`);
+      await loadAll();
+    } catch(e) { setError('Erro ao importar: '+e.message); }
+    setUploadingParc(false);
+  }
+
+  // ── Alocação CRUD ──
   async function saveAlocacao() {
-    if (!form.parceiroId || !form.atividade || !form.data || !selectedProject) return;
+    if (!form.parceiroId || !form.atividadeId || !form.data || !selectedProject) return;
     setSaving(true);
     try {
       const proj = projects.find(p=>(p.spId&&String(p.spId)===selectedProject)||p.id===selectedProject);
@@ -7251,9 +7345,9 @@ function ParceirosView({ projects, token }) {
         let cur=new Date(form.data+'T12:00:00'); const end=new Date(form.dataFim+'T12:00:00');
         while(cur<=end){ dates.push(cur.toISOString().slice(0,10)); cur=new Date(cur.getTime()+DAY_MS); }
       } else { dates=[form.data]; }
-      const valorAtiv = Number(form.valorAtividade)||0;
+      const valorAtiv=Number(form.valorAtividade)||0;
       for (const d of dates) {
-        const freq = Number(form.frequencia)||1;
+        const freq=Number(form.frequencia)||1;
         const body = {
           __metadata:{type:alocEntityType},
           Title:`${form.parceiro} — ${proj?proj.title:selectedProject}`,
@@ -7264,8 +7358,7 @@ function ParceirosView({ projects, token }) {
           Frequencia:freq, ValorAtividade:valorAtiv, ValorDia:valorAtiv*freq
         };
         await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Alocacao')/items`, {
-          method:'POST', headers:{'Content-Type':'application/json;odata=verbose'},
-          body:JSON.stringify(body)
+          method:'POST', headers:{'Content-Type':'application/json;odata=verbose'}, body:JSON.stringify(body)
         });
       }
       setShowForm(false);
@@ -7287,13 +7380,46 @@ function ParceirosView({ projects, token }) {
     setDeletingId(null);
   }
 
+  async function bulkDelete() {
+    if (!selectedAlocIds.size || !window.confirm(`Excluir ${selectedAlocIds.size} alocação(ões)?`)) return;
+    setBulkDeleting(true);
+    try {
+      for (const id of selectedAlocIds) {
+        await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Alocacao')/items(${id})`, {
+          method:'POST', headers:{'X-HTTP-Method':'DELETE','IF-MATCH':'*','Content-Type':'application/json;odata=verbose'}
+        });
+      }
+      setSelectedAlocIds(new Set()); await loadAll();
+    } catch(e) { setError(e.message); }
+    setBulkDeleting(false);
+  }
+
+  async function bulkEdit() {
+    if (!selectedAlocIds.size) return;
+    setSavingBulk(true);
+    try {
+      for (const id of selectedAlocIds) {
+        const patch = {__metadata:{type:alocEntityType}};
+        if (bulkEditForm.periodo) patch.Periodo = bulkEditForm.periodo;
+        if (bulkEditForm.atividade) patch.Atividade = bulkEditForm.atividade;
+        if (bulkEditForm.frequencia) patch.Frequencia = Number(bulkEditForm.frequencia);
+        await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Alocacao')/items(${id})`, {
+          method:'POST', headers:{'X-HTTP-Method':'MERGE','IF-MATCH':'*','Content-Type':'application/json;odata=verbose'},
+          body:JSON.stringify(patch)
+        });
+      }
+      setSelectedAlocIds(new Set()); setShowBulkEdit(false); setBulkEditForm({periodo:'',atividade:'',frequencia:''});
+      await loadAll();
+    } catch(e) { setError(e.message); }
+    setSavingBulk(false);
+  }
+
   async function saveEditAloc() {
     if (!editingAloc) return;
     setSavingEdit(true);
     try {
-      const valorAtiv = Number(editAlocForm.valorAtividade)||0;
-      const freq = Number(editAlocForm.frequencia)||1;
-      const body = {__metadata:{type:alocEntityType}, Atividade:editAlocForm.atividade, DataAtividade:editAlocForm.data, Periodo:editAlocForm.periodo, Frequencia:freq, ValorAtividade:valorAtiv, ValorDia:valorAtiv*freq};
+      const valorAtiv=Number(editAlocForm.valorAtividade)||0; const freq=Number(editAlocForm.frequencia)||1;
+      const body={__metadata:{type:alocEntityType},Atividade:editAlocForm.atividade,DataAtividade:editAlocForm.data,Periodo:editAlocForm.periodo,Frequencia:freq,ValorAtividade:valorAtiv,ValorDia:valorAtiv*freq};
       await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Alocacao')/items(${editingAloc.Id})`, {
         method:'POST', headers:{'X-HTTP-Method':'MERGE','IF-MATCH':'*','Content-Type':'application/json;odata=verbose'},
         body:JSON.stringify(body)
@@ -7305,16 +7431,24 @@ function ParceirosView({ projects, token }) {
 
   function openEditAloc(a) {
     setEditingAloc(a);
-    setEditAlocForm({atividade:a.Atividade||'', data:a.DataAtividade?a.DataAtividade.slice(0,10):'', periodo:a.Periodo||'Integral', frequencia:a.Frequencia||1, valorAtividade:a.ValorAtividade||0});
+    setEditAlocForm({atividade:a.Atividade||'',data:a.DataAtividade?a.DataAtividade.slice(0,10):'',periodo:a.Periodo||'Integral',frequencia:a.Frequencia||1,valorAtividade:a.ValorAtividade||0});
   }
 
-  // ── Partners edit ──
+  function toggleSelectAloc(id) {
+    setSelectedAlocIds(prev => { const s=new Set(prev); s.has(id)?s.delete(id):s.add(id); return s; });
+  }
+  function toggleSelectAll() {
+    if (selectedAlocIds.size===projAlocacoes.length) setSelectedAlocIds(new Set());
+    else setSelectedAlocIds(new Set(projAlocacoes.map(a=>a.Id)));
+  }
+
+  // ── Parceiros CRUD ──
   async function saveEditParc() {
     if (!editingParc) return;
     setSavingParc(true);
     try {
-      const f = editParcForm;
-      const body = {__metadata:{type:parcEntityType}, Telefone:f.telefone||null, Email:f.email||null, Estado:f.estado||null, Ingles:f.ingles||null, AutodeclaracaoRacial:f.autodeclaracaoRacial||null, Status:f.status||'Inativo', Atuacao:f.atuacao||null, Empresa:f.empresa||null, CNPJ:f.cnpj||null, Vigencia:f.vigencia||null, Classificacao:f.classificacao||null, DataInicio:f.dataInicio||null, Gestor:f.gestor||null, OBS:f.obs||null, Renovacao:f.renovacao||null};
+      const f=editParcForm;
+      const body={__metadata:{type:parcEntityType},Telefone:f.telefone||null,Email:f.email||null,Estado:f.estado||null,Ingles:f.ingles||null,AutodeclaracaoRacial:f.autodeclaracaoRacial||null,Status:f.status||'Inativo',Atuacao:f.atuacao||null,Empresa:f.empresa||null,CNPJ:f.cnpj||null,Vigencia:f.vigencia||null,Classificacao:f.classificacao||null,DataInicio:f.dataInicio||null,Gestor:f.gestor||null,OBS:f.obs||null,Renovacao:f.renovacao||null};
       await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros')/items(${editingParc.Id})`, {
         method:'POST', headers:{'X-HTTP-Method':'MERGE','IF-MATCH':'*','Content-Type':'application/json;odata=verbose'},
         body:JSON.stringify(body)
@@ -7326,7 +7460,19 @@ function ParceirosView({ projects, token }) {
 
   function openEditParc(p) {
     setEditingParc(p);
-    setEditParcForm({telefone:p.Telefone||'', email:p.Email||'', estado:p.Estado||'', ingles:p.Ingles||'', autodeclaracaoRacial:p.AutodeclaracaoRacial||'', status:p.Status||'Inativo', atuacao:p.Atuacao||'', empresa:p.Empresa||'', cnpj:p.CNPJ||'', vigencia:p.Vigencia||'', classificacao:p.Classificacao||'', dataInicio:p.DataInicio?p.DataInicio.slice(0,10):'', gestor:p.Gestor||'', obs:p.OBS||'', renovacao:p.Renovacao||''});
+    setEditParcForm({telefone:p.Telefone||'',email:p.Email||'',estado:p.Estado||'',ingles:p.Ingles||'',autodeclaracaoRacial:p.AutodeclaracaoRacial||'',status:p.Status||'Inativo',atuacao:p.Atuacao||'',empresa:p.Empresa||'',cnpj:p.CNPJ||'',vigencia:p.Vigencia||'',classificacao:p.Classificacao||'',dataInicio:p.DataInicio?p.DataInicio.slice(0,10):'',gestor:p.Gestor||'',obs:p.OBS||'',renovacao:p.Renovacao||''});
+  }
+
+  async function deleteParc(id) {
+    if (!window.confirm('Remover este parceiro? Esta ação não pode ser desfeita.')) return;
+    setDeletingParcId(id);
+    try {
+      await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros')/items(${id})`, {
+        method:'POST', headers:{'X-HTTP-Method':'DELETE','IF-MATCH':'*','Content-Type':'application/json;odata=verbose'}
+      });
+      await loadAll();
+    } catch(e) { setError(e.message); }
+    setDeletingParcId(null);
   }
 
   // ── Atividades CRUD ──
@@ -7334,11 +7480,8 @@ function ParceirosView({ projects, token }) {
     if (!editingAtiv) return;
     setSavingAtiv(true);
     try {
-      const body = {__metadata:{type:ativEntityType}, Title:editAtivForm.titulo, Valor:Number(editAtivForm.valor)||0};
-      await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Atividades')/items(${editingAtiv.Id})`, {
-        method:'POST', headers:{'X-HTTP-Method':'MERGE','IF-MATCH':'*','Content-Type':'application/json;odata=verbose'},
-        body:JSON.stringify(body)
-      });
+      const body={__metadata:{type:ativEntityType},Title:editAtivForm.titulo,Valor:Number(editAtivForm.valor)||0};
+      await spFetch(token,`${PARC_SITE}/_api/web/lists/getbytitle('List_Atividades')/items(${editingAtiv.Id})`,{method:'POST',headers:{'X-HTTP-Method':'MERGE','IF-MATCH':'*','Content-Type':'application/json;odata=verbose'},body:JSON.stringify(body)});
       setEditingAtiv(null); await loadAll();
     } catch(e) { setError(e.message); }
     setSavingAtiv(false);
@@ -7348,9 +7491,7 @@ function ParceirosView({ projects, token }) {
     if (!window.confirm('Excluir esta atividade?')) return;
     setDeletingAtivId(id);
     try {
-      await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Atividades')/items(${id})`, {
-        method:'POST', headers:{'X-HTTP-Method':'DELETE','IF-MATCH':'*','Content-Type':'application/json;odata=verbose'}
-      });
+      await spFetch(token,`${PARC_SITE}/_api/web/lists/getbytitle('List_Atividades')/items(${id})`,{method:'POST',headers:{'X-HTTP-Method':'DELETE','IF-MATCH':'*','Content-Type':'application/json;odata=verbose'}});
       await loadAll();
     } catch(e) { setError(e.message); }
     setDeletingAtivId(null);
@@ -7360,11 +7501,8 @@ function ParceirosView({ projects, token }) {
     if (!newAtivForm.titulo) return;
     setSavingNewAtiv(true);
     try {
-      const body = {__metadata:{type:ativEntityType}, Title:newAtivForm.titulo, Valor:Number(newAtivForm.valor)||0};
-      await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Atividades')/items`, {
-        method:'POST', headers:{'Content-Type':'application/json;odata=verbose'},
-        body:JSON.stringify(body)
-      });
+      const body={__metadata:{type:ativEntityType},Title:newAtivForm.titulo,Valor:Number(newAtivForm.valor)||0};
+      await spFetch(token,`${PARC_SITE}/_api/web/lists/getbytitle('List_Atividades')/items`,{method:'POST',headers:{'Content-Type':'application/json;odata=verbose'},body:JSON.stringify(body)});
       setNewAtivForm({titulo:'',valor:''}); await loadAll();
     } catch(e) { setError(e.message); }
     setSavingNewAtiv(false);
@@ -7372,166 +7510,185 @@ function ParceirosView({ projects, token }) {
 
   async function downloadAtivTemplate() {
     try {
-      const XLSX = await loadXLSX();
-      const ws = XLSX.utils.json_to_sheet([{Atividade:'', Valor_R$:0}]);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, 'Atividades');
-      XLSX.writeFile(wb, 'modelo_atividades.xlsx');
-    } catch(e) { setError('Erro ao gerar template: '+e.message); }
+      const XLSX=await loadXLSX();
+      const ws=XLSX.utils.json_to_sheet([{Atividade:'',Valor_R$:0}]); const wb=XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb,ws,'Atividades'); XLSX.writeFile(wb,'modelo_atividades.xlsx');
+    } catch(e) { setError('Erro: '+e.message); }
   }
 
   async function uploadAtivExcel(file) {
     if (!file) return;
     setUploadingAtiv(true);
     try {
-      const XLSX = await loadXLSX();
-      const buf = await file.arrayBuffer();
-      const wb = XLSX.read(buf);
-      const ws = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(ws);
+      const XLSX=await loadXLSX(); const buf=await file.arrayBuffer(); const wb=XLSX.read(buf);
+      const ws=wb.Sheets[wb.SheetNames[0]]; const rows=XLSX.utils.sheet_to_json(ws);
       let count=0;
       for (const row of rows) {
-        const titulo = row['Atividade']||row['Title']||row['ATIVIDADE']||'';
-        const valor = Number(row['Valor_R$']||row['Valor']||row['VALOR']||0);
+        const titulo=row['Atividade']||row['Title']||row['ATIVIDADE']||'';
+        const valor=Number(row['Valor_R$']||row['Valor']||row['VALOR']||0);
         if (!titulo) continue;
-        const body = {__metadata:{type:ativEntityType}, Title:titulo, Valor:valor};
-        await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Atividades')/items`, {
-          method:'POST', headers:{'Content-Type':'application/json;odata=verbose'},
-          body:JSON.stringify(body)
-        });
+        const body={__metadata:{type:ativEntityType},Title:titulo,Valor:valor};
+        await spFetch(token,`${PARC_SITE}/_api/web/lists/getbytitle('List_Atividades')/items`,{method:'POST',headers:{'Content-Type':'application/json;odata=verbose'},body:JSON.stringify(body)});
         count++;
       }
-      alert(`${count} atividade(s) importada(s) com sucesso.`);
-      await loadAll();
+      alert(`${count} atividade(s) importada(s).`); await loadAll();
     } catch(e) { setError('Erro ao importar: '+e.message); }
     setUploadingAtiv(false);
   }
 
-  // ── Grade (Gantt replacement) ──
+  // ── Grade helpers ──
   const gradeCols = useMemo(() => {
-    const s = new Date(gradeStart+'T12:00:00');
-    const e = new Date(gradeEnd+'T12:00:00');
-    const cols = [];
-    if (gradeView==='day') {
-      let cur=new Date(s);
-      while(cur<=e){ cols.push({key:cur.toISOString().slice(0,10), label:cur.getDate()+' '+['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'][cur.getDay()], isWe:cur.getDay()===0||cur.getDay()===6}); cur=new Date(cur.getTime()+DAY_MS); }
-    } else if (gradeView==='week') {
-      let cur=new Date(s);
-      while(cur<=e){
-        const y=cur.getFullYear(); const wStart=new Date(cur); wStart.setDate(cur.getDate()-cur.getDay()+1);
-        const key=`${y}-W${String(Math.ceil((((cur-new Date(y,0,1))/DAY_MS)+1)/7)).padStart(2,'0')}`;
-        if(!cols.find(c=>c.key===key)) cols.push({key, label:`${wStart.getDate().toString().padStart(2,'0')}/${(wStart.getMonth()+1).toString().padStart(2,'0')}`});
-        cur=new Date(cur.getTime()+DAY_MS);
-      }
-    } else {
-      let cur=new Date(s.getFullYear(),s.getMonth(),1);
-      while(cur<=e){
-        const key=`${cur.getFullYear()}-${String(cur.getMonth()+1).padStart(2,'0')}`;
-        if(!cols.find(c=>c.key===key)) cols.push({key, label:cur.toLocaleString('pt-BR',{month:'short',year:'2-digit'}).toUpperCase()});
-        cur=new Date(cur.getFullYear(),cur.getMonth()+1,1);
-      }
+    const s=new Date(gradeStart+'T12:00:00'); const e=new Date(gradeEnd+'T12:00:00'); const cols=[];
+    let cur=new Date(s);
+    while(cur<=e){
+      cols.push({key:cur.toISOString().slice(0,10), label:cur.getDate()+' '+['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'][cur.getDay()], isWe:cur.getDay()===0||cur.getDay()===6});
+      cur=new Date(cur.getTime()+DAY_MS);
     }
     return cols;
-  }, [gradeStart, gradeEnd, gradeView]);
-
-  function dateToColKey(dateStr) {
-    const d = new Date(dateStr+'T12:00:00');
-    if (gradeView==='day') return dateStr.slice(0,10);
-    if (gradeView==='week') {
-      const y=d.getFullYear();
-      return `${y}-W${String(Math.ceil((((d-new Date(y,0,1))/DAY_MS)+1)/7)).padStart(2,'0')}`;
-    }
-    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
-  }
+  }, [gradeStart, gradeEnd]);
 
   const gradeData = useMemo(() => {
-    const map = {};
-    const s = new Date(gradeStart+'T00:00:00');
-    const e = new Date(gradeEnd+'T23:59:59');
+    const map={};
+    const s=new Date(gradeStart+'T00:00:00'); const e=new Date(gradeEnd+'T23:59:59');
     for (const a of projAlocacoes) {
       if (!a.DataAtividade) continue;
-      const d = new Date(a.DataAtividade+'T12:00:00');
+      const d=new Date(a.DataAtividade+'T12:00:00');
       if (d<s||d>e) continue;
       if (!map[a.Parceiro]) map[a.Parceiro]={};
-      const k = dateToColKey(a.DataAtividade);
+      const k=a.DataAtividade.slice(0,10);
       if (!map[a.Parceiro][k]) map[a.Parceiro][k]=[];
       map[a.Parceiro][k].push(a);
     }
     return map;
-  }, [projAlocacoes, gradeStart, gradeEnd, gradeView, gradeCols]);
+  }, [projAlocacoes, gradeStart, gradeEnd]);
 
   const gradeParceiros = useMemo(() => Object.keys(gradeData).sort(), [gradeData]);
 
   function periodoBadge(periodo) {
-    if (periodo==='Manhã') return {label:'M', cls:'bg-amber-100 text-amber-800 border-amber-200'};
-    if (periodo==='Tarde') return {label:'T', cls:'bg-sky-100 text-sky-800 border-sky-200'};
-    return {label:'I', cls:'bg-indigo-100 text-indigo-800 border-indigo-200'};
+    if (periodo==='Manhã') return {label:'M',cls:'bg-amber-100 text-amber-800 border-amber-200'};
+    if (periodo==='Tarde') return {label:'T',cls:'bg-sky-100 text-sky-800 border-sky-200'};
+    return {label:'I',cls:'bg-indigo-100 text-indigo-800 border-indigo-200'};
   }
 
   // ── Dashboard ──
-  const dashAlocs = useMemo(() => {
-    let al = alocacoes;
-    if (dashCiclo) {
-      const ps = new Set(projects.filter(p=>p.ciclo===dashCiclo).map(p=>p.title));
-      const spIds = new Set(projects.filter(p=>p.ciclo===dashCiclo).map(p=>p.spId?String(p.spId):null).filter(Boolean));
-      al = al.filter(a=>ps.has(a.Projeto)||spIds.has(a.ProjetoSpId));
+  function dateToBucket(dateStr, groupBy) {
+    const d=new Date(dateStr+'T12:00:00');
+    if (groupBy==='day') return dateStr.slice(0,10);
+    if (groupBy==='week') {
+      const y=d.getFullYear(); const jan1=new Date(y,0,1);
+      const wn=Math.ceil(((d-jan1)/DAY_MS+1)/7);
+      return `${y}-W${String(wn).padStart(2,'0')}`;
     }
-    if (dashFrom) al = al.filter(a=>a.DataAtividade&&a.DataAtividade>=dashFrom);
-    if (dashTo) al = al.filter(a=>a.DataAtividade&&a.DataAtividade<=dashTo);
-    if (dashProject) al = al.filter(a=>a.Projeto===dashProject||a.ProjetoSpId===dashProject);
-    if (dashPerson) al = al.filter(a=>a.Parceiro===dashPerson);
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+  }
+
+  const dashAlocs = useMemo(() => {
+    let al=alocacoes;
+    if (dashCiclo) {
+      const ps=new Set(projects.filter(p=>p.ciclo===dashCiclo).map(p=>p.title));
+      const spIds=new Set(projects.filter(p=>p.ciclo===dashCiclo).map(p=>p.spId?String(p.spId):null).filter(Boolean));
+      al=al.filter(a=>ps.has(a.Projeto)||spIds.has(a.ProjetoSpId));
+    }
+    if (dashFrom) al=al.filter(a=>a.DataAtividade&&a.DataAtividade>=dashFrom);
+    if (dashTo) al=al.filter(a=>a.DataAtividade&&a.DataAtividade<=dashTo);
+    if (dashProject) al=al.filter(a=>a.Projeto===dashProject||a.ProjetoSpId===dashProject);
+    if (dashPerson) al=al.filter(a=>a.Parceiro===dashPerson);
     return al;
   }, [alocacoes, dashCiclo, dashFrom, dashTo, dashProject, dashPerson, projects]);
 
   const dashMetrics = useMemo(() => {
-    const totalCusto = dashAlocs.reduce((s,a)=>s+(a.ValorDia||0),0);
-    const byProj={}, byPerson={}, byAtiv={}, byTime={};
+    const totalCusto=dashAlocs.reduce((s,a)=>s+(a.ValorDia||0),0);
+    const byProj={}, byPerson={}, byAtiv={}, byTime={}, byPeriodo={};
     for (const a of dashAlocs) {
-      if (a.Projeto) { byProj[a.Projeto]=(byProj[a.Projeto]||{count:0,custo:0}); byProj[a.Projeto].count++; byProj[a.Projeto].custo+=(a.ValorDia||0); }
-      if (a.Parceiro) { byPerson[a.Parceiro]=(byPerson[a.Parceiro]||{count:0,custo:0}); byPerson[a.Parceiro].count++; byPerson[a.Parceiro].custo+=(a.ValorDia||0); }
-      if (a.Atividade) { byAtiv[a.Atividade]=(byAtiv[a.Atividade]||0)+1; }
+      // by project: unique people + cost
+      if (a.Projeto) {
+        if (!byProj[a.Projeto]) byProj[a.Projeto]={people:new Set(),count:0,custo:0};
+        byProj[a.Projeto].people.add(a.Parceiro); byProj[a.Projeto].count++; byProj[a.Projeto].custo+=(a.ValorDia||0);
+      }
+      // by person
+      if (a.Parceiro) {
+        if (!byPerson[a.Parceiro]) byPerson[a.Parceiro]={count:0,custo:0};
+        byPerson[a.Parceiro].count++; byPerson[a.Parceiro].custo+=(a.ValorDia||0);
+      }
+      // by atividade
+      if (a.Atividade) byAtiv[a.Atividade]=(byAtiv[a.Atividade]||0)+1;
+      // by periodo
+      if (a.Periodo) byPeriodo[a.Periodo]=(byPeriodo[a.Periodo]||{people:new Set(),count:0}),
+        byPeriodo[a.Periodo].people.add(a.Parceiro), byPeriodo[a.Periodo].count++;
+      // by time
       if (a.DataAtividade) {
-        const d=new Date(a.DataAtividade+'T12:00:00');
-        let tk;
-        if (dashGroupBy==='day') tk=a.DataAtividade.slice(0,10);
-        else if (dashGroupBy==='week') { const y=d.getFullYear(); tk=`${y}-W${String(Math.ceil((((d-new Date(y,0,1))/DAY_MS)+1)/7)).padStart(2,'0')}`; }
-        else tk=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
-        byTime[tk]=(byTime[tk]||{count:0,custo:0}); byTime[tk].count++; byTime[tk].custo+=(a.ValorDia||0);
+        const tk=dateToBucket(a.DataAtividade, dashGroupBy);
+        if (!byTime[tk]) byTime[tk]={people:new Set(),count:0,custo:0};
+        byTime[tk].people.add(a.Parceiro); byTime[tk].count++; byTime[tk].custo+=(a.ValorDia||0);
       }
     }
-    return {totalCusto, byProj, byPerson, byAtiv, byTime};
-  }, [dashAlocs, dashGroupBy]);
+    // Atividade by time for frequency chart
+    const byAtivTime={};
+    for (const a of dashAlocs) {
+      if (!a.Atividade) continue;
+      if (!byAtivTime[a.Atividade]) byAtivTime[a.Atividade]={};
+      const tk=dateToBucket(a.DataAtividade||'', dashAtivGroupBy!=='total'?dashAtivGroupBy:'day');
+      byAtivTime[a.Atividade][tk]=(byAtivTime[a.Atividade][tk]||0)+1;
+    }
+    // Normalize atividade by time period
+    const distinctBuckets=new Set(dashAlocs.map(a=>a.DataAtividade?dateToBucket(a.DataAtividade, dashAtivGroupBy!=='total'?dashAtivGroupBy:'day'):'').filter(Boolean)).size||1;
+    const byAtivNorm={};
+    for (const [atv,cnt] of Object.entries(byAtiv)) {
+      byAtivNorm[atv]=dashAtivGroupBy==='total'?cnt:parseFloat((cnt/distinctBuckets).toFixed(2));
+    }
+    return {totalCusto,byProj,byPerson,byAtiv,byAtivNorm,byTime,byPeriodo};
+  }, [dashAlocs, dashGroupBy, dashAtivGroupBy]);
 
-  // ── Mini bar chart SVG ──
-  function BarChart({data, valueKey='value', labelKey='label', color='#6366f1', height=160}) {
-    if (!data.length) return CE('div',{className:'text-center py-6 text-sm text-slate-400'},'Sem dados');
+  // ── Chart components (defined inside component so they can be used with CE) ──
+  function VBarChart({data,valueKey='value',labelKey='label',color='#6366f1',height=140,fmt}) {
+    if (!data||!data.length) return CE('div',{className:'text-center py-6 text-sm text-slate-400'},'Sem dados');
     const max=Math.max(...data.map(d=>d[valueKey]),1);
-    const bw=36, gap=10, pad=40;
-    const w=Math.max(data.length*(bw+gap)+gap+pad, 200);
-    const fmt=v=>v>=1000?`R$${(v/1000).toFixed(1)}k`:(v>0?`R$${v.toFixed(0)}`:`${v}`);
+    const fmtV=fmt||(v=>v>=1000?`${(v/1000).toFixed(1)}k`:String(v%1===0?v:v.toFixed(1)));
+    const bw=32, gap=8, padX=8;
+    const w=Math.max(data.length*(bw+gap)+padX*2,120);
     return CE('div',{style:{overflowX:'auto'}},
-      CE('svg',{width:w,height:height+50,style:{minWidth:200}},
+      CE('svg',{width:w,height:height+36},
         CE('g',null,...data.map((d,i)=>{
-          const bh=Math.max(Math.round(d[valueKey]/max*(height-20)),d[valueKey]>0?4:0);
-          const x=pad/2+gap+i*(bw+gap);
-          const y=height-bh;
+          const bh=Math.max(Math.round(d[valueKey]/max*(height-16)),d[valueKey]>0?3:0);
+          const x=padX+i*(bw+gap);
           return CE('g',{key:i},
-            CE('rect',{x,y,width:bw,height:bh,fill:color,rx:4,opacity:0.85}),
-            bh>0&&CE('text',{x:x+bw/2,y:y-4,textAnchor:'middle',fontSize:9,fill:'#334155',fontWeight:'bold'},fmt(d[valueKey])),
-            CE('text',{x:x+bw/2,y:height+14,textAnchor:'middle',fontSize:9,fill:'#64748b'},
-              (d[labelKey]||'').length>8?(d[labelKey]||'').slice(0,8)+'…':(d[labelKey]||''))
+            CE('rect',{x,y:height-bh,width:bw,height:bh,fill:color,rx:3,opacity:0.85}),
+            bh>12&&CE('text',{x:x+bw/2,y:height-bh-3,textAnchor:'middle',fontSize:9,fill:'#1e293b',fontWeight:'bold'},fmtV(d[valueKey])),
+            CE('text',{x:x+bw/2,y:height+12,textAnchor:'middle',fontSize:8,fill:'#64748b'},(d[labelKey]||'').slice(0,6)),
+            CE('title',null,`${d[labelKey]||''}: ${fmtV(d[valueKey])}`)
           );
         })),
-        CE('line',{x1:pad/2,y1:height,x2:w-gap,y2:height,stroke:'#e2e8f0',strokeWidth:1})
+        CE('line',{x1:padX,y1:height,x2:w-padX,y2:height,stroke:'#e2e8f0',strokeWidth:1})
       )
     );
   }
 
-  const inputCls = 'w-full border border-slate-200 rounded-lg px-3 py-2 text-sm';
-  const labelCls = 'text-xs font-semibold text-slate-600 block mb-1';
+  function HBarChart({data,valueKey='value',labelKey='label',color='#6366f1',barH=22,fmt}) {
+    if (!data||!data.length) return CE('div',{className:'text-center py-6 text-sm text-slate-400'},'Sem dados');
+    const max=Math.max(...data.map(d=>d[valueKey]),1);
+    const fmtV=fmt||(v=>v>=1000?`R$${(v/1000).toFixed(1)}k`:(v>0?`R${String(v%1===0?v:v.toFixed(1))}`:`${v}`));
+    const labelW=140, barMaxW=220, gap=6, padY=4;
+    const h=data.length*(barH+gap)+padY*2;
+    return CE('svg',{width:labelW+barMaxW+60,height:h},
+      ...data.map((d,i)=>{
+        const bw=Math.max(Math.round(d[valueKey]/max*barMaxW),d[valueKey]>0?3:0);
+        const y=padY+i*(barH+gap);
+        const lbl=(d[labelKey]||'').length>18?(d[labelKey]||'').slice(0,17)+'…':(d[labelKey]||'');
+        return CE('g',{key:i},
+          CE('text',{x:labelW-4,y:y+barH/2+4,textAnchor:'end',fontSize:10,fill:'#475569'},lbl),
+          CE('rect',{x:labelW,y,width:bw,height:barH,fill:color,rx:3,opacity:0.85}),
+          bw>30&&CE('text',{x:labelW+bw-4,y:y+barH/2+4,textAnchor:'end',fontSize:9,fill:'#fff',fontWeight:'bold'},fmtV(d[valueKey])),
+          bw<=30&&CE('text',{x:labelW+bw+4,y:y+barH/2+4,fontSize:9,fill:'#475569'},fmtV(d[valueKey])),
+          CE('title',null,`${d[labelKey]||''}: ${fmtV(d[valueKey])}`)
+        );
+      })
+    );
+  }
 
-  return CE('div', {className:'fade-in max-w-screen-2xl mx-auto px-4 pb-10 mt-4 space-y-4'},
-    // Error
+  const inputCls='w-full border border-slate-200 rounded-lg px-3 py-2 text-sm';
+  const labelCls='text-xs font-semibold text-slate-600 block mb-1';
+
+  return CE('div',{className:'fade-in max-w-screen-2xl mx-auto px-4 pb-10 mt-4 space-y-4'},
     error && CE('div',{className:'bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-700 flex items-center justify-between'},
       CE('span',null,error), CE('button',{onClick:()=>setError(null),className:'ml-2 text-red-400 hover:text-red-600 font-bold'},'✕')
     ),
@@ -7544,26 +7701,51 @@ function ParceirosView({ projects, token }) {
         )
       ),
       CE('div',{className:'flex items-center gap-2'},
-        ciclos.length>0 && CE('select',{className:'border border-slate-200 rounded-lg px-3 py-1.5 text-sm bg-white',value:cicloFilter,onChange:e=>{setCicloFilter(e.target.value);setSelectedProject('');}},
-          CE('option',{value:''},'Todos os ciclos'), ciclos.map(c=>CE('option',{key:c,value:c},c))
+        ciclos.length>0&&CE('select',{className:'border border-slate-200 rounded-lg px-3 py-1.5 text-sm bg-white',value:cicloFilter,onChange:e=>{setCicloFilter(e.target.value);setSelectedProject('');}},
+          CE('option',{value:''},'Todos os ciclos'),ciclos.map(c=>CE('option',{key:c,value:c},c))
         ),
         CE('button',{onClick:loadAll,disabled:loading,className:'text-xs border border-slate-200 rounded-lg px-3 py-1.5 text-slate-500 hover:text-indigo-600 transition disabled:opacity-40'},loading?'⏳ Carregando...':'🔄 Atualizar')
       )
     ),
 
-    // ══════════ ALOCAÇÕES tab ══════════
-    tab==='alocacoes' && CE('div',{className:'space-y-4'},
+    // ══════════ ALOCAÇÕES ══════════
+    tab==='alocacoes'&&CE('div',{className:'space-y-4'},
       CE('div',{className:'flex items-center gap-3 flex-wrap'},
-        CE('select',{className:'border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white min-w-[260px] max-w-xs',value:selectedProject,onChange:e=>{setSelectedProject(e.target.value);setShowForm(false);}},
+        CE('select',{className:'border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white min-w-[260px] max-w-xs',value:selectedProject,onChange:e=>{setSelectedProject(e.target.value);setShowForm(false);setSelectedAlocIds(new Set());}},
           CE('option',{value:''},'— Todos os projetos —'),
           filteredProjects.map(p=>CE('option',{key:p.id,value:p.spId?String(p.spId):p.id},(p.title||'')+(p.client?` — ${p.client}`:'')))
         ),
-        selectedProject && CE('button',{onClick:()=>setShowForm(s=>!s),className:`px-4 py-2 text-sm font-medium rounded-lg transition ${showForm?'bg-slate-100 text-slate-700':'bg-indigo-600 hover:bg-indigo-700 text-white'}`},showForm?'✕ Cancelar':'+ Nova alocação'),
-        CE('button',{onClick:exportAlocacoesXLSX,className:'px-3 py-2 text-xs border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 transition ml-auto'},'⬇ Exportar Excel')
+        selectedProject&&CE('button',{onClick:()=>setShowForm(s=>!s),className:`px-4 py-2 text-sm font-medium rounded-lg transition ${showForm?'bg-slate-100 text-slate-700':'bg-indigo-600 hover:bg-indigo-700 text-white'}`},showForm?'✕ Cancelar':'+ Nova alocação'),
+        selectedAlocIds.size>0&&CE('div',{className:'flex items-center gap-2 ml-auto'},
+          CE('span',{className:'text-xs text-slate-500'},`${selectedAlocIds.size} selecionada(s)`),
+          CE('button',{onClick:()=>{setShowBulkEdit(s=>!s);},className:'px-3 py-1.5 text-xs border border-amber-200 text-amber-700 rounded-lg hover:bg-amber-50 transition'},showBulkEdit?'✕ Cancelar edição':'✏️ Editar seleção'),
+          CE('button',{onClick:bulkDelete,disabled:bulkDeleting,className:'px-3 py-1.5 text-xs bg-red-500 hover:bg-red-600 text-white rounded-lg transition disabled:opacity-40'},bulkDeleting?'⏳...':'🗑️ Excluir seleção')
+        ),
+        CE('button',{onClick:exportAlocacoesXLSX,className:'px-3 py-2 text-xs border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 transition ml-auto'},'⬇ Excel')
       ),
 
-      // FORM NOVA ALOCAÇÃO
-      showForm && CE('div',{className:'bg-white border border-slate-200 rounded-xl p-5 space-y-4'},
+      // Bulk edit form
+      showBulkEdit&&selectedAlocIds.size>0&&CE('div',{className:'bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-end gap-3 flex-wrap'},
+        CE('div',{className:'text-xs font-semibold text-amber-800 self-center mr-2'},`Editar ${selectedAlocIds.size} alocações (preencha só o que deseja alterar):`),
+        CE('div',{className:'w-36'},
+          CE('label',{className:labelCls},'Período'),
+          CE('select',{className:inputCls,value:bulkEditForm.periodo,onChange:e=>setBulkEditForm(f=>({...f,periodo:e.target.value}))},
+            CE('option',{value:''},'— manter —'),['Manhã','Tarde','Integral'].map(p=>CE('option',{key:p,value:p},p))
+          )
+        ),
+        CE('div',{className:'w-40'},
+          CE('label',{className:labelCls},'Atividade'),
+          CE('input',{type:'text',className:inputCls,placeholder:'— manter —',value:bulkEditForm.atividade,onChange:e=>setBulkEditForm(f=>({...f,atividade:e.target.value}))})
+        ),
+        CE('div',{className:'w-28'},
+          CE('label',{className:labelCls},'Frequência'),
+          CE('input',{type:'number',min:1,className:inputCls,placeholder:'— manter —',value:bulkEditForm.frequencia,onChange:e=>setBulkEditForm(f=>({...f,frequencia:e.target.value}))})
+        ),
+        CE('button',{onClick:bulkEdit,disabled:savingBulk,className:'px-4 py-2 bg-green-600 text-white text-sm rounded-lg disabled:opacity-40'},savingBulk?'⏳...':'✓ Aplicar')
+      ),
+
+      // New allocation form
+      showForm&&CE('div',{className:'bg-white border border-slate-200 rounded-xl p-5 space-y-4'},
         CE('div',{className:'flex gap-2 mb-1'},
           CE('span',{className:'text-xs font-semibold text-slate-500 self-center mr-1'},'Modo:'),
           ['single','range'].map(m=>CE('button',{key:m,onClick:()=>setFormMode(m),className:`px-3 py-1 text-xs rounded-lg border transition ${formMode===m?'bg-indigo-600 text-white border-indigo-600':'text-slate-600 border-slate-200 hover:border-indigo-300'}`},m==='single'?'Data única':'Período (de/até)'))
@@ -7575,21 +7757,21 @@ function ParceirosView({ projects, token }) {
               CE('option',{value:''},'Selecione...'),
               parceiros.map(p=>CE('option',{key:p.Id,value:p.Id},`${p.Title}${p.Status!=='Ativo'?' ⚠️':''}`))
             ),
-            isSelectedInativo && CE('div',{className:'mt-1.5 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5'},'⚠️ Este parceiro não está ativo.')
+            isSelectedInativo&&CE('div',{className:'mt-1.5 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5'},'⚠️ Este parceiro não está ativo.')
           ),
           CE('div',{className:'col-span-2 md:col-span-1'},
             CE('label',{className:labelCls},'Atividade'),
             CE('select',{className:inputCls,value:form.atividadeId,onChange:e=>{const at=atividades.find(a=>String(a.Id)===e.target.value);setForm(f=>({...f,atividadeId:e.target.value,atividade:at?at.Title:'',valorAtividade:at?at.Valor:0}));}},
               CE('option',{value:''},'Selecione...'),
-              atividades.map(a=>CE('option',{key:a.Id,value:a.Id},`${a.Title}${a.Valor?` — R$${a.Valor}`:''}`)
-            )),
-            form.atividadeId && CE('div',{className:'mt-1 text-xs text-slate-500'},`Valor: R$ ${Number(form.valorAtividade).toFixed(2)}`)
+              atividades.map(a=>CE('option',{key:a.Id,value:a.Id},`${a.Title}${a.Valor?` — R$${a.Valor}`:''}`))
+            ),
+            form.atividadeId&&CE('div',{className:'mt-1 text-xs text-slate-500'},`Valor: R$ ${Number(form.valorAtividade).toFixed(2)}`)
           ),
           CE('div',null,
             CE('label',{className:labelCls},formMode==='range'?'Data início':'Data'),
             CE('input',{type:'date',className:inputCls,value:form.data,onChange:e=>setForm(f=>({...f,data:e.target.value}))})
           ),
-          formMode==='range' && CE('div',null,
+          formMode==='range'&&CE('div',null,
             CE('label',{className:labelCls},'Data fim'),
             CE('input',{type:'date',className:inputCls,value:form.dataFim,min:form.data,onChange:e=>setForm(f=>({...f,dataFim:e.target.value}))})
           ),
@@ -7603,14 +7785,9 @@ function ParceirosView({ projects, token }) {
             CE('label',{className:labelCls},formMode==='range'?'Freq./dia':'Frequência'),
             CE('input',{type:'number',min:1,className:inputCls,value:form.frequencia,onChange:e=>setForm(f=>({...f,frequencia:e.target.value}))})
           ),
-          form.valorAtividade>0 && CE('div',{className:'col-span-2 self-end'},
+          form.valorAtividade>0&&CE('div',{className:'col-span-2 self-end'},
             CE('div',{className:'text-xs text-green-700 bg-green-50 border border-green-100 rounded-lg px-3 py-2'},
               `Valor dia: R$ ${(Number(form.valorAtividade)*(Number(form.frequencia)||1)).toFixed(2)}`
-            )
-          ),
-          formMode==='range'&&form.data&&form.dataFim&&form.dataFim>=form.data && CE('div',{className:'col-span-2 self-end'},
-            CE('div',{className:'text-xs text-indigo-600 bg-indigo-50 border border-indigo-100 rounded-lg px-3 py-2'},
-              (()=>{ let n=0; let c=new Date(form.data+'T12:00:00'); const e=new Date(form.dataFim+'T12:00:00'); while(c<=e){n++;c=new Date(c.getTime()+DAY_MS);} return `${n} dia(s) — total previsto: R$ ${(Number(form.valorAtividade)*(Number(form.frequencia)||1)*n).toFixed(2)}`; })()
             )
           ),
           CE('div',{className:'self-end'},
@@ -7619,59 +7796,52 @@ function ParceirosView({ projects, token }) {
         )
       ),
 
-      // EDIT FORM
-      editingAloc && CE('div',{className:'bg-amber-50 border border-amber-200 rounded-xl p-4 grid grid-cols-2 gap-3 md:grid-cols-5'},
+      // Edit form
+      editingAloc&&CE('div',{className:'bg-amber-50 border border-amber-200 rounded-xl p-4 grid grid-cols-2 gap-3 md:grid-cols-5'},
         CE('div',{className:'col-span-5 text-sm font-semibold text-amber-800'},`✏️ Editando: ${editingAloc.Parceiro}`),
-        CE('div',null,
-          CE('label',{className:labelCls},'Atividade'),
-          CE('input',{type:'text',className:inputCls,value:editAlocForm.atividade,onChange:e=>setEditAlocForm(f=>({...f,atividade:e.target.value}))})
-        ),
-        CE('div',null,
-          CE('label',{className:labelCls},'Data'),
-          CE('input',{type:'date',className:inputCls,value:editAlocForm.data,onChange:e=>setEditAlocForm(f=>({...f,data:e.target.value}))})
-        ),
-        CE('div',null,
-          CE('label',{className:labelCls},'Período'),
-          CE('select',{className:inputCls,value:editAlocForm.periodo,onChange:e=>setEditAlocForm(f=>({...f,periodo:e.target.value}))},
-            ['Manhã','Tarde','Integral'].map(p=>CE('option',{key:p,value:p},p))
-          )
-        ),
-        CE('div',null,
-          CE('label',{className:labelCls},'Frequência'),
-          CE('input',{type:'number',min:1,className:inputCls,value:editAlocForm.frequencia,onChange:e=>setEditAlocForm(f=>({...f,frequencia:e.target.value}))})
-        ),
-        CE('div',null,
-          CE('label',{className:labelCls},'Valor Ativ. (R$)'),
-          CE('input',{type:'number',min:0,step:'0.01',className:inputCls,value:editAlocForm.valorAtividade,onChange:e=>setEditAlocForm(f=>({...f,valorAtividade:e.target.value}))})
-        ),
+        CE('div',null, CE('label',{className:labelCls},'Atividade'), CE('input',{type:'text',className:inputCls,value:editAlocForm.atividade,onChange:e=>setEditAlocForm(f=>({...f,atividade:e.target.value}))})),
+        CE('div',null, CE('label',{className:labelCls},'Data'), CE('input',{type:'date',className:inputCls,value:editAlocForm.data,onChange:e=>setEditAlocForm(f=>({...f,data:e.target.value}))})),
+        CE('div',null, CE('label',{className:labelCls},'Período'), CE('select',{className:inputCls,value:editAlocForm.periodo,onChange:e=>setEditAlocForm(f=>({...f,periodo:e.target.value}))},['Manhã','Tarde','Integral'].map(p=>CE('option',{key:p,value:p},p)))),
+        CE('div',null, CE('label',{className:labelCls},'Frequência'), CE('input',{type:'number',min:1,className:inputCls,value:editAlocForm.frequencia,onChange:e=>setEditAlocForm(f=>({...f,frequencia:e.target.value}))})),
+        CE('div',null, CE('label',{className:labelCls},'Vl. Atividade (R$)'), CE('input',{type:'number',min:0,step:'0.01',className:inputCls,value:editAlocForm.valorAtividade,onChange:e=>setEditAlocForm(f=>({...f,valorAtividade:e.target.value}))})),
         CE('div',{className:'col-span-2 flex gap-2 pt-1'},
           CE('button',{onClick:saveEditAloc,disabled:savingEdit,className:'px-4 py-2 bg-green-600 text-white text-sm rounded-lg disabled:opacity-40'},savingEdit?'⏳...':'✓ Salvar'),
           CE('button',{onClick:()=>setEditingAloc(null),className:'px-4 py-2 bg-white border border-slate-200 text-slate-600 text-sm rounded-lg hover:bg-slate-50'},'Cancelar')
         )
       ),
 
-      // TABLE
+      // Table
       CE('div',{className:'bg-white border border-slate-200 rounded-xl overflow-hidden'},
         CE('div',{className:'scroll-table'},
           CE('table',{className:'w-full text-sm'},
             CE('thead',null,
               CE('tr',{className:'border-b border-slate-100 bg-slate-50'},
-                ['Parceiro','Projeto','Atividade','Data','Período','Freq.','Vl. Atividade','Vl. Dia','Ações'].map(h=>
+                CE('th',{className:'px-3 py-2.5 w-8'},
+                  CE('input',{type:'checkbox',checked:selectedAlocIds.size===projAlocacoes.length&&projAlocacoes.length>0,onChange:toggleSelectAll,title:'Selecionar todos'})
+                ),
+                ['Parceiro','Status','Projeto','Atividade','Data','Período','Freq.','Vl. Atividade','Vl. Dia','Ações'].map(h=>
                   CE('th',{key:h,className:'text-left px-4 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap'},h)
                 )
               )
             ),
             CE('tbody',null,
               projAlocacoes.length===0
-                ? CE('tr',null,CE('td',{colSpan:9,className:'text-center py-12 text-slate-400'},'Nenhuma alocação encontrada.'))
-                : projAlocacoes.map(a=>CE('tr',{key:a.Id,className:`border-b border-slate-50 hover:bg-slate-50 transition ${editingAloc&&editingAloc.Id===a.Id?'bg-amber-50':''}`},
-                    CE('td',{className:'px-4 py-2.5 font-medium text-slate-800 whitespace-nowrap'},a.Parceiro),
-                    CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs max-w-[160px] truncate'},a.Projeto),
-                    CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs max-w-[180px] truncate'},a.Atividade),
-                    CE('td',{className:'px-4 py-2.5 text-slate-600 whitespace-nowrap text-xs'},a.DataAtividade?new Date(a.DataAtividade).toLocaleDateString('pt-BR'):'—'),
-                    CE('td',{className:'px-4 py-2.5'},
-                      CE('span',{className:`text-xs px-2 py-0.5 rounded-full font-medium ${a.Periodo==='Integral'?'bg-indigo-100 text-indigo-700':a.Periodo==='Manhã'?'bg-amber-100 text-amber-700':'bg-sky-100 text-sky-700'}`},a.Periodo||'—')
+                ?CE('tr',null,CE('td',{colSpan:11,className:'text-center py-12 text-slate-400'},'Nenhuma alocação encontrada.'))
+                :projAlocacoes.map(a=>{
+                  const status=parcStatusMap[a.Parceiro];
+                  const isAtivo=status==='Ativo';
+                  return CE('tr',{key:a.Id,className:`border-b border-slate-50 hover:bg-slate-50 transition ${selectedAlocIds.has(a.Id)?'bg-indigo-50':editingAloc&&editingAloc.Id===a.Id?'bg-amber-50':''}`},
+                    CE('td',{className:'px-3 py-2.5'},
+                      CE('input',{type:'checkbox',checked:selectedAlocIds.has(a.Id),onChange:()=>toggleSelectAloc(a.Id)})
                     ),
+                    CE('td',{className:'px-4 py-2.5 font-medium text-slate-800 whitespace-nowrap'},a.Parceiro),
+                    CE('td',{className:'px-4 py-2.5'},
+                      CE('span',{className:`text-xs px-1.5 py-0.5 rounded font-semibold ${isAtivo?'bg-green-100 text-green-700':'bg-red-100 text-red-600'}`},isAtivo?'Ativo':status||'?')
+                    ),
+                    CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs max-w-[150px] truncate'},a.Projeto),
+                    CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs max-w-[160px] truncate'},a.Atividade),
+                    CE('td',{className:'px-4 py-2.5 text-slate-600 whitespace-nowrap text-xs'},a.DataAtividade?new Date(a.DataAtividade).toLocaleDateString('pt-BR'):'—'),
+                    CE('td',{className:'px-4 py-2.5'},CE('span',{className:`text-xs px-2 py-0.5 rounded-full font-medium ${a.Periodo==='Integral'?'bg-indigo-100 text-indigo-700':a.Periodo==='Manhã'?'bg-amber-100 text-amber-700':'bg-sky-100 text-sky-700'}`},a.Periodo||'—')),
                     CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs text-center'},a.Frequencia||1),
                     CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs whitespace-nowrap'},a.ValorAtividade?`R$ ${Number(a.ValorAtividade).toFixed(2)}`:'—'),
                     CE('td',{className:'px-4 py-2.5 text-slate-800 text-xs font-semibold whitespace-nowrap'},a.ValorDia?`R$ ${Number(a.ValorDia).toFixed(2)}`:'—'),
@@ -7681,21 +7851,17 @@ function ParceirosView({ projects, token }) {
                         CE('button',{title:'Excluir',onClick:()=>deleteAlocacao(a.Id),disabled:deletingId===a.Id,className:'p-1 rounded hover:bg-red-100 text-red-500 transition disabled:opacity-40'},deletingId===a.Id?'⏳':'🗑️')
                       )
                     )
-                  ))
+                  );
+                })
             )
           )
         )
       )
     ),
 
-    // ══════════ GRADE tab ══════════
-    tab==='grade' && CE('div',{className:'space-y-3'},
+    // ══════════ GRADE ══════════
+    tab==='grade'&&CE('div',{className:'space-y-3'},
       CE('div',{className:'flex items-center gap-3 flex-wrap'},
-        CE('div',{className:'flex gap-1'},
-          [['day','Dia'],['week','Semana'],['month','Mês']].map(([k,l])=>
-            CE('button',{key:k,onClick:()=>setGradeView(k),className:`px-3 py-1.5 text-xs font-medium rounded-lg border transition ${gradeView===k?'bg-indigo-600 text-white border-indigo-600':'bg-white text-slate-600 border-slate-200 hover:border-indigo-300'}`},l)
-          )
-        ),
         CE('div',{className:'flex items-center gap-2 text-sm'},
           CE('label',{className:'text-xs text-slate-500'},'De:'),
           CE('input',{type:'date',className:'border border-slate-200 rounded-lg px-2 py-1 text-xs',value:gradeStart,onChange:e=>setGradeStart(e.target.value)}),
@@ -7703,19 +7869,19 @@ function ParceirosView({ projects, token }) {
           CE('input',{type:'date',className:'border border-slate-200 rounded-lg px-2 py-1 text-xs',value:gradeEnd,onChange:e=>setGradeEnd(e.target.value)})
         ),
         CE('div',{className:'flex items-center gap-4 text-xs ml-2'},
-          [['M','bg-amber-100 text-amber-800','Manhã'],['T','bg-sky-100 text-sky-800','Tarde'],['I','bg-indigo-100 text-indigo-800','Integral']].map(([l,cls,tip])=>
+          [['M','bg-amber-100 text-amber-800 border-amber-200','Manhã'],['T','bg-sky-100 text-sky-800 border-sky-200','Tarde'],['I','bg-indigo-100 text-indigo-800 border-indigo-200','Integral']].map(([l,cls,tip])=>
             CE('span',{key:l,className:`px-2 py-0.5 rounded-md border font-semibold ${cls}`,title:tip},l)
           )
         )
       ),
       gradeParceiros.length===0
-        ? CE('div',{className:'text-center py-16 text-slate-400'},'Nenhuma alocação no período visível.')
-        : CE('div',{className:'scroll-table'},
+        ?CE('div',{className:'text-center py-16 text-slate-400'},'Nenhuma alocação no período visível.')
+        :CE('div',{className:'scroll-table'},
             CE('table',{className:'text-xs border-collapse bg-white border border-slate-200 rounded-xl overflow-hidden'},
               CE('thead',null,
                 CE('tr',{className:'bg-slate-50 border-b border-slate-200'},
-                  CE('th',{className:'sticky left-0 bg-slate-50 z-10 px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap border-r border-slate-200 min-w-[180px]'},'Parceiro'),
-                  ...gradeCols.map(col=>CE('th',{key:col.key,className:`px-2 py-2.5 text-center font-semibold ${col.isWe?'text-slate-400 bg-slate-100':'text-slate-500'} border-l border-slate-100 min-w-[44px] whitespace-nowrap`},col.label))
+                  CE('th',{className:'sticky left-0 bg-slate-50 z-10 px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase border-r border-slate-200 min-w-[180px]'},'Parceiro'),
+                  ...gradeCols.map(col=>CE('th',{key:col.key,className:`px-1 py-2.5 text-center font-semibold ${col.isWe?'text-slate-400 bg-slate-100':'text-slate-500'} border-l border-slate-100 min-w-[44px] whitespace-nowrap`},col.label))
                 )
               ),
               CE('tbody',null,
@@ -7723,10 +7889,9 @@ function ParceirosView({ projects, token }) {
                   CE('td',{className:'sticky left-0 z-10 px-4 py-2 font-medium text-slate-800 whitespace-nowrap border-r border-slate-200',style:{background:pi%2===0?'#fff':'#f8fafc'}},parc),
                   ...gradeCols.map(col=>{
                     const alocs=(gradeData[parc]&&gradeData[parc][col.key])||[];
-                    if(!alocs.length) return CE('td',{key:col.key,className:`border-l border-slate-100 px-1 py-1 text-center ${col.isWe?'bg-slate-100/60':''}`,style:{minWidth:44}},
-                      CE('span',{className:'text-slate-200'},'·'));
-                    if(alocs.length===1){const b=periodoBadge(alocs[0].Periodo); return CE('td',{key:col.key,className:`border-l border-slate-100 px-1 py-1 text-center ${col.isWe?'bg-amber-50/30':''}`,style:{minWidth:44},title:`${alocs[0].Atividade||''} — ${alocs[0].Periodo||''}\n${alocs[0].Projeto||''}`},CE('span',{className:`inline-flex items-center justify-center w-7 h-7 rounded-md border text-xs font-bold ${b.cls}`},b.label));}
-                    return CE('td',{key:col.key,className:`border-l border-slate-100 px-1 py-1 text-center`,style:{minWidth:44},title:alocs.map(a=>`${a.Periodo}: ${a.Atividade}`).join('\n')},
+                    if (!alocs.length) return CE('td',{key:col.key,className:`border-l border-slate-100 px-1 py-1 text-center ${col.isWe?'bg-slate-100/60':''}`,style:{minWidth:44}},CE('span',{className:'text-slate-200'},'·'));
+                    if (alocs.length===1){const b=periodoBadge(alocs[0].Periodo);return CE('td',{key:col.key,className:`border-l border-slate-100 px-1 py-1 text-center ${col.isWe?'bg-amber-50/30':''}`,style:{minWidth:44},title:`${alocs[0].Atividade||''} — ${alocs[0].Periodo||''}\n${alocs[0].Projeto||''}`},CE('span',{className:`inline-flex items-center justify-center w-7 h-7 rounded-md border text-xs font-bold ${b.cls}`},b.label));}
+                    return CE('td',{key:col.key,className:'border-l border-slate-100 px-1 py-1 text-center',style:{minWidth:44},title:alocs.map(a=>`${a.Periodo}: ${a.Atividade}`).join('\n')},
                       CE('span',{className:'inline-flex items-center justify-center w-7 h-7 rounded-md border bg-purple-100 text-purple-800 border-purple-200 text-xs font-bold'},alocs.length)
                     );
                   })
@@ -7736,34 +7901,33 @@ function ParceirosView({ projects, token }) {
           )
     ),
 
-    // ══════════ PARCEIROS tab ══════════
-    tab==='parceiros' && CE('div',{className:'space-y-4'},
-      editingParc && CE('div',{className:'bg-indigo-50 border border-indigo-200 rounded-xl p-5 space-y-4'},
+    // ══════════ PARCEIROS ══════════
+    tab==='parceiros'&&CE('div',{className:'space-y-4'},
+      // KPI expiring
+      expiringCount>0&&CE('div',{className:'bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 flex items-center gap-3'},
+        CE('span',{className:'text-2xl'},'⚠️'),
+        CE('div',null,
+          CE('div',{className:'text-sm font-semibold text-amber-800'},`${expiringCount} contrato(s) vencendo em até 7 dias`),
+          CE('div',{className:'text-xs text-amber-600'},'Verifique os contratos com vigência próxima do vencimento.')
+        )
+      ),
+      // Edit panel
+      editingParc&&CE('div',{className:'bg-indigo-50 border border-indigo-200 rounded-xl p-5 space-y-4'},
         CE('div',{className:'flex items-center justify-between'},
           CE('h3',{className:'font-semibold text-indigo-800'},`✏️ Editando: ${editingParc.Title}`),
           CE('button',{onClick:()=>setEditingParc(null),className:'text-indigo-400 hover:text-indigo-700 font-bold text-lg'},'✕')
         ),
         CE('div',{className:'grid grid-cols-2 gap-3 md:grid-cols-3'},
           [
-            ['status','Status',null,['Ativo','Inativo']],
-            ['classificacao','Classificação',null,null],
-            ['atuacao','Atuação',null,null],
-            ['empresa','Empresa',null,null],
-            ['cnpj','CNPJ',null,null],
-            ['dataInicio','Data Início','date',null],
-            ['vigencia','Vigência',null,null],
-            ['gestor','Gestor',null,null],
-            ['telefone','Telefone',null,null],
-            ['email','E-mail','email',null],
-            ['estado','Estado (UF)',null,null],
-            ['ingles','Inglês',null,null],
-            ['autodeclaracaoRacial','Autodecl. Racial',null,null],
-            ['renovacao','Renovação',null,null],
+            ['status','Status',null,['Ativo','Inativo']],['classificacao','Classificação',null,null],['atuacao','Atuação',null,null],
+            ['empresa','Empresa',null,null],['cnpj','CNPJ',null,null],['dataInicio','Data Início','date',null],
+            ['vigencia','Vigência',null,null],['gestor','Gestor',null,null],['telefone','Telefone',null,null],
+            ['email','E-mail','email',null],['estado','Estado (UF)',null,null],['ingles','Inglês',null,null],
+            ['autodeclaracaoRacial','Autodecl. Racial',null,null],['renovacao','Renovação',null,null],
           ].map(([key,label,type,opts])=>CE('div',{key},
             CE('label',{className:labelCls},label),
-            opts
-              ? CE('select',{className:inputCls,value:editParcForm[key]||'',onChange:e=>setEditParcForm(f=>({...f,[key]:e.target.value}))},opts.map(o=>CE('option',{key:o,value:o},o)))
-              : CE('input',{type:type||'text',className:inputCls,value:editParcForm[key]||'',onChange:e=>setEditParcForm(f=>({...f,[key]:e.target.value}))})
+            opts?CE('select',{className:inputCls,value:editParcForm[key]||'',onChange:e=>setEditParcForm(f=>({...f,[key]:e.target.value}))},opts.map(o=>CE('option',{key:o,value:o},o)))
+              :CE('input',{type:type||'text',className:inputCls,value:editParcForm[key]||'',onChange:e=>setEditParcForm(f=>({...f,[key]:e.target.value}))})
           )),
           CE('div',{className:'col-span-2 md:col-span-3'},
             CE('label',{className:labelCls},'OBS'),
@@ -7775,27 +7939,36 @@ function ParceirosView({ projects, token }) {
           CE('button',{onClick:()=>setEditingParc(null),className:'px-4 py-2 bg-white border border-slate-200 text-slate-600 text-sm rounded-lg hover:bg-slate-50'},'Cancelar')
         )
       ),
-      CE('div',{className:'flex gap-3 flex-wrap'},
+      // Filters + actions
+      CE('div',{className:'flex gap-2 flex-wrap items-center'},
         CE('input',{type:'text',placeholder:'Buscar por nome ou empresa...',className:'border border-slate-200 rounded-lg px-3 py-2 text-sm min-w-[220px]',value:parcFilter,onChange:e=>setParcFilter(e.target.value)}),
         CE('select',{className:'border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white',value:statusFilter,onChange:e=>setStatusFilter(e.target.value)},
           CE('option',{value:''},'Todos os status'),CE('option',{value:'Ativo'},'✅ Ativos'),CE('option',{value:'Inativo'},'⚪ Inativos')
         ),
-        CE('span',{className:'self-center text-xs text-slate-400'},`${filteredParceiros.length} parceiros`)
+        CE('span',{className:'self-center text-xs text-slate-400'},`${filteredParceiros.length} parceiros`),
+        CE('div',{className:'ml-auto flex gap-2'},
+          CE('button',{onClick:exportParceirosXLSX,className:'px-3 py-1.5 text-xs border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 transition'},'⬇ Exportar Excel'),
+          CE('button',{onClick:downloadParcTemplate,className:'px-3 py-1.5 text-xs border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 transition'},'⬇ Modelo Excel'),
+          CE('label',{className:`px-3 py-1.5 text-xs border rounded-lg cursor-pointer transition ${uploadingParc?'border-slate-200 text-slate-400':'border-indigo-200 text-indigo-600 hover:bg-indigo-50'}`},
+            uploadingParc?'⏳ Importando...':'⬆ Importar Excel',
+            CE('input',{type:'file',accept:'.xlsx,.xls',className:'hidden',disabled:uploadingParc,onChange:e=>{if(e.target.files[0]){uploadParceirosExcel(e.target.files[0]);e.target.value='';}}})
+          )
+        )
       ),
       CE('div',{className:'bg-white border border-slate-200 rounded-xl overflow-hidden'},
         CE('div',{className:'scroll-table'},
           CE('table',{className:'w-full text-sm'},
             CE('thead',null,
               CE('tr',{className:'border-b border-slate-100 bg-slate-50'},
-                ['Status','Nome','Classificação','Atuação','Empresa','Gestor','Data Início','Vigência','Renovação','Ação'].map(h=>
+                ['Status','Nome','Classificação','Atuação','Empresa','Gestor','Data Início','Vigência','Renovação','Ações'].map(h=>
                   CE('th',{key:h,className:'text-left px-4 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap'},h)
                 )
               )
             ),
             CE('tbody',null,
               filteredParceiros.length===0
-                ? CE('tr',null,CE('td',{colSpan:10,className:'text-center py-12 text-slate-400'},'Nenhum parceiro encontrado.'))
-                : filteredParceiros.map(p=>CE('tr',{key:p.Id,className:`border-b border-slate-50 hover:bg-slate-50 transition ${editingParc&&editingParc.Id===p.Id?'bg-indigo-50':''}`},
+                ?CE('tr',null,CE('td',{colSpan:10,className:'text-center py-12 text-slate-400'},'Nenhum parceiro encontrado.'))
+                :filteredParceiros.map(p=>CE('tr',{key:p.Id,className:`border-b border-slate-50 hover:bg-slate-50 transition ${editingParc&&editingParc.Id===p.Id?'bg-indigo-50':''}`},
                     CE('td',{className:'px-4 py-2.5'},CE('span',{className:`text-xs px-2 py-0.5 rounded-full font-semibold ${p.Status==='Ativo'?'bg-green-100 text-green-700':'bg-slate-100 text-slate-500'}`},p.Status||'—')),
                     CE('td',{className:'px-4 py-2.5 font-medium text-slate-800 whitespace-nowrap'},p.Title),
                     CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs'},p.Classificacao||'—'),
@@ -7803,9 +7976,14 @@ function ParceirosView({ projects, token }) {
                     CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs max-w-[160px] truncate'},p.Empresa||'—'),
                     CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs whitespace-nowrap'},p.Gestor||'—'),
                     CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs whitespace-nowrap'},p.DataInicio?new Date(p.DataInicio).toLocaleDateString('pt-BR'):'—'),
-                    CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs whitespace-nowrap'},p.Vigencia||'—'),
+                    CE('td',{className:'px-4 py-2.5 text-xs whitespace-nowrap '+(!p.Vigencia||p.Vigencia.toLowerCase()==='indeterminado'?'text-slate-500':(function(){var v=new Date(p.Vigencia);var now=new Date();now.setHours(0,0,0,0);var diff=(v-now)/DAY_MS;return diff<=7&&diff>=0?'font-bold text-red-600':diff<0?'text-slate-400 line-through':'text-slate-600';})())},p.Vigencia||'—'),
                     CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs'},p.Renovacao||'—'),
-                    CE('td',{className:'px-4 py-2.5'},CE('button',{onClick:()=>openEditParc(p),className:'p-1 rounded hover:bg-indigo-100 text-indigo-600 transition'},'✏️'))
+                    CE('td',{className:'px-4 py-2.5'},
+                      CE('div',{className:'flex gap-1.5'},
+                        CE('button',{onClick:()=>openEditParc(p),className:'p-1 rounded hover:bg-indigo-100 text-indigo-600 transition'},'✏️'),
+                        CE('button',{onClick:()=>deleteParc(p.Id),disabled:deletingParcId===p.Id,className:'p-1 rounded hover:bg-red-100 text-red-500 transition disabled:opacity-40'},deletingParcId===p.Id?'⏳':'🗑️')
+                      )
+                    )
                   ))
             )
           )
@@ -7813,19 +7991,18 @@ function ParceirosView({ projects, token }) {
       )
     ),
 
-    // ══════════ ATIVIDADES tab ══════════
-    tab==='atividades' && CE('div',{className:'space-y-4'},
+    // ══════════ ATIVIDADES ══════════
+    tab==='atividades'&&CE('div',{className:'space-y-4'},
       CE('div',{className:'flex items-center gap-3 flex-wrap justify-between'},
         CE('h2',{className:'text-base font-semibold text-slate-800'},'Gestão de Atividades'),
         CE('div',{className:'flex gap-2'},
-          CE('button',{onClick:downloadAtivTemplate,className:'px-3 py-1.5 text-xs border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 transition'},'⬇ Baixar modelo Excel'),
-          CE('label',{className:`px-3 py-1.5 text-xs border rounded-lg cursor-pointer transition ${uploadingAtiv?'border-slate-200 text-slate-400 bg-slate-50':'border-indigo-200 text-indigo-600 hover:bg-indigo-50'}`},
+          CE('button',{onClick:downloadAtivTemplate,className:'px-3 py-1.5 text-xs border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 transition'},'⬇ Baixar modelo'),
+          CE('label',{className:`px-3 py-1.5 text-xs border rounded-lg cursor-pointer transition ${uploadingAtiv?'border-slate-200 text-slate-400':'border-indigo-200 text-indigo-600 hover:bg-indigo-50'}`},
             uploadingAtiv?'⏳ Importando...':'⬆ Importar Excel',
             CE('input',{type:'file',accept:'.xlsx,.xls',className:'hidden',disabled:uploadingAtiv,onChange:e=>{if(e.target.files[0]){uploadAtivExcel(e.target.files[0]);e.target.value='';}}})
           )
         )
       ),
-      // Nova atividade
       CE('div',{className:'bg-white border border-slate-200 rounded-xl p-4 flex items-end gap-3 flex-wrap'},
         CE('div',{className:'flex-1 min-w-[200px]'},
           CE('label',{className:labelCls},'Nova atividade'),
@@ -7837,8 +8014,7 @@ function ParceirosView({ projects, token }) {
         ),
         CE('button',{onClick:saveNewAtiv,disabled:savingNewAtiv||!newAtivForm.titulo,className:'px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg transition disabled:opacity-40'},savingNewAtiv?'⏳ Salvando...':'+ Adicionar')
       ),
-      // Edit panel
-      editingAtiv && CE('div',{className:'bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-end gap-3 flex-wrap'},
+      editingAtiv&&CE('div',{className:'bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-end gap-3 flex-wrap'},
         CE('div',{className:'flex-1 min-w-[200px]'},
           CE('label',{className:labelCls},'Nome'),
           CE('input',{type:'text',className:inputCls,value:editAtivForm.titulo,onChange:e=>setEditAtivForm(f=>({...f,titulo:e.target.value}))})
@@ -7854,70 +8030,38 @@ function ParceirosView({ projects, token }) {
       ),
       CE('div',{className:'bg-white border border-slate-200 rounded-xl overflow-hidden'},
         CE('table',{className:'w-full text-sm'},
-          CE('thead',null,
-            CE('tr',{className:'border-b border-slate-100 bg-slate-50'},
-              ['Atividade','Valor (R$)','Ações'].map(h=>CE('th',{key:h,className:'text-left px-4 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wide'},h))
-            )
-          ),
+          CE('thead',null,CE('tr',{className:'border-b border-slate-100 bg-slate-50'},['Atividade','Valor (R$)','Ações'].map(h=>CE('th',{key:h,className:'text-left px-4 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wide'},h)))),
           CE('tbody',null,
-            atividades.length===0
-              ? CE('tr',null,CE('td',{colSpan:3,className:'text-center py-10 text-slate-400'},'Nenhuma atividade cadastrada.'))
-              : atividades.map(a=>CE('tr',{key:a.Id,className:`border-b border-slate-50 hover:bg-slate-50 ${editingAtiv&&editingAtiv.Id===a.Id?'bg-amber-50':''}`},
-                  CE('td',{className:'px-4 py-2.5 font-medium text-slate-800'},a.Title),
-                  CE('td',{className:'px-4 py-2.5 text-slate-600'},a.Valor?`R$ ${Number(a.Valor).toFixed(2)}`:'—'),
-                  CE('td',{className:'px-4 py-2.5'},
-                    CE('div',{className:'flex gap-1.5'},
-                      CE('button',{onClick:()=>{setEditingAtiv(a);setEditAtivForm({titulo:a.Title,valor:a.Valor||0});},className:'p-1 rounded hover:bg-amber-100 text-amber-600 transition'},'✏️'),
-                      CE('button',{onClick:()=>deleteAtividade(a.Id),disabled:deletingAtivId===a.Id,className:'p-1 rounded hover:bg-red-100 text-red-500 transition disabled:opacity-40'},deletingAtivId===a.Id?'⏳':'🗑️')
-                    )
-                  )
+            atividades.length===0?CE('tr',null,CE('td',{colSpan:3,className:'text-center py-10 text-slate-400'},'Nenhuma atividade.'))
+            :atividades.map(a=>CE('tr',{key:a.Id,className:`border-b border-slate-50 hover:bg-slate-50 ${editingAtiv&&editingAtiv.Id===a.Id?'bg-amber-50':''}`},
+                CE('td',{className:'px-4 py-2.5 font-medium text-slate-800'},a.Title),
+                CE('td',{className:'px-4 py-2.5 text-slate-600'},a.Valor?`R$ ${Number(a.Valor).toFixed(2)}`:'—'),
+                CE('td',{className:'px-4 py-2.5'},CE('div',{className:'flex gap-1.5'},
+                  CE('button',{onClick:()=>{setEditingAtiv(a);setEditAtivForm({titulo:a.Title,valor:a.Valor||0});},className:'p-1 rounded hover:bg-amber-100 text-amber-600 transition'},'✏️'),
+                  CE('button',{onClick:()=>deleteAtividade(a.Id),disabled:deletingAtivId===a.Id,className:'p-1 rounded hover:bg-red-100 text-red-500 transition disabled:opacity-40'},deletingAtivId===a.Id?'⏳':'🗑️')
                 ))
+              ))
           )
         )
       )
     ),
 
-    // ══════════ DASHBOARD tab ══════════
-    tab==='dashboard' && CE('div',{className:'space-y-5'},
-      // Filters
+    // ══════════ DASHBOARD ══════════
+    tab==='dashboard'&&CE('div',{className:'space-y-5'},
       CE('div',{className:'bg-white border border-slate-200 rounded-xl p-4 grid grid-cols-2 gap-3 md:grid-cols-5'},
-        CE('div',null,
-          CE('label',{className:labelCls},'Ciclo'),
-          CE('select',{className:inputCls,value:dashCiclo,onChange:e=>setDashCiclo(e.target.value)},
-            CE('option',{value:''},'Todos'),ciclos.map(c=>CE('option',{key:c,value:c},c))
-          )
-        ),
-        CE('div',null,
-          CE('label',{className:labelCls},'De'),
-          CE('input',{type:'date',className:inputCls,value:dashFrom,onChange:e=>setDashFrom(e.target.value)})
-        ),
-        CE('div',null,
-          CE('label',{className:labelCls},'Até'),
-          CE('input',{type:'date',className:inputCls,value:dashTo,onChange:e=>setDashTo(e.target.value)})
-        ),
-        CE('div',null,
-          CE('label',{className:labelCls},'Projeto'),
-          CE('select',{className:inputCls,value:dashProject,onChange:e=>setDashProject(e.target.value)},
-            CE('option',{value:''},'Todos'),
-            [...new Set(alocacoes.map(a=>a.Projeto).filter(Boolean))].sort().map(p=>CE('option',{key:p,value:p},p))
-          )
-        ),
-        CE('div',null,
-          CE('label',{className:labelCls},'Pessoa'),
-          CE('select',{className:inputCls,value:dashPerson,onChange:e=>setDashPerson(e.target.value)},
-            CE('option',{value:''},'Todas'),
-            parceiros.map(p=>CE('option',{key:p.Id,value:p.Title},p.Title))
-          )
-        )
+        CE('div',null,CE('label',{className:labelCls},'Ciclo'),CE('select',{className:inputCls,value:dashCiclo,onChange:e=>setDashCiclo(e.target.value)},CE('option',{value:''},'Todos'),ciclos.map(c=>CE('option',{key:c,value:c},c)))),
+        CE('div',null,CE('label',{className:labelCls},'De'),CE('input',{type:'date',className:inputCls,value:dashFrom,onChange:e=>setDashFrom(e.target.value)})),
+        CE('div',null,CE('label',{className:labelCls},'Até'),CE('input',{type:'date',className:inputCls,value:dashTo,onChange:e=>setDashTo(e.target.value)})),
+        CE('div',null,CE('label',{className:labelCls},'Projeto'),CE('select',{className:inputCls,value:dashProject,onChange:e=>setDashProject(e.target.value)},CE('option',{value:''},'Todos'),[...new Set(alocacoes.map(a=>a.Projeto).filter(Boolean))].sort().map(p=>CE('option',{key:p,value:p},p)))),
+        CE('div',null,CE('label',{className:labelCls},'Pessoa'),CE('select',{className:inputCls,value:dashPerson,onChange:e=>setDashPerson(e.target.value)},CE('option',{value:''},'Todas'),parceiros.map(p=>CE('option',{key:p.Id,value:p.Title},p.Title))))
       ),
 
-      // KPIs
       CE('div',{className:'grid grid-cols-2 gap-4 md:grid-cols-4'},
         [
           ['💰 Custo Total',`R$ ${dashMetrics.totalCusto.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}`,`${dashAlocs.length} alocações`,'bg-indigo-600'],
           ['📁 Projetos',Object.keys(dashMetrics.byProj).length,'com alocações','bg-emerald-600'],
           ['👥 Parceiros',Object.keys(dashMetrics.byPerson).length,'alocados','bg-sky-600'],
-          ['🎯 Atividades',Object.keys(dashMetrics.byAtiv).length,'tipos','bg-violet-600'],
+          ['🎯 Atividades',Object.keys(dashMetrics.byAtiv).length,'tipos usados','bg-violet-600'],
         ].map(([label,value,sub,bg])=>CE('div',{key:label,className:`${bg} rounded-xl p-4 text-white`},
           CE('div',{className:'text-xs font-medium opacity-80 mb-1'},label),
           CE('div',{className:'text-2xl font-bold leading-none mb-1'},value),
@@ -7925,63 +8069,75 @@ function ParceirosView({ projects, token }) {
         ))
       ),
 
-      // Charts grid
       CE('div',{className:'grid grid-cols-1 gap-5 md:grid-cols-2'},
-
-        // Custo por projeto
+        // Custo por projeto - horizontal
         CE('div',{className:'bg-white border border-slate-200 rounded-xl p-5'},
           CE('h3',{className:'text-sm font-semibold text-slate-700 mb-4'},'💰 Custo por Projeto'),
-          CE(BarChart,{
+          CE(HBarChart,{
             data:Object.entries(dashMetrics.byProj).sort((a,b)=>b[1].custo-a[1].custo).slice(0,10).map(([label,v])=>({label,value:v.custo})),
-            valueKey:'value',labelKey:'label',color:'#6366f1',height:160
+            color:'#6366f1', fmt:v=>v>=1000?`R$${(v/1000).toFixed(1)}k`:`R$${v.toFixed(0)}`
           })
         ),
 
-        // Custo por pessoa
+        // Custo por pessoa - horizontal
         CE('div',{className:'bg-white border border-slate-200 rounded-xl p-5'},
           CE('h3',{className:'text-sm font-semibold text-slate-700 mb-4'},'👤 Custo por Parceiro'),
-          CE(BarChart,{
+          CE(HBarChart,{
             data:Object.entries(dashMetrics.byPerson).sort((a,b)=>b[1].custo-a[1].custo).slice(0,10).map(([label,v])=>({label,value:v.custo})),
-            valueKey:'value',labelKey:'label',color:'#0ea5e9',height:160
+            color:'#0ea5e9', fmt:v=>v>=1000?`R$${(v/1000).toFixed(1)}k`:`R$${v.toFixed(0)}`
           })
         ),
 
-        // Alocações por atividade
+        // Pessoas alocadas por projeto - horizontal
         CE('div',{className:'bg-white border border-slate-200 rounded-xl p-5'},
-          CE('h3',{className:'text-sm font-semibold text-slate-700 mb-4'},'🎯 Alocações por Atividade'),
-          CE(BarChart,{
-            data:Object.entries(dashMetrics.byAtiv).sort((a,b)=>b[1]-a[1]).slice(0,10).map(([label,value])=>({label,value})),
-            valueKey:'value',labelKey:'label',color:'#8b5cf6',height:160
+          CE('h3',{className:'text-sm font-semibold text-slate-700 mb-4'},'📊 Pessoas Alocadas por Projeto'),
+          CE(HBarChart,{
+            data:Object.entries(dashMetrics.byProj).sort((a,b)=>b[1].people.size-a[1].people.size).slice(0,10).map(([label,v])=>({label,value:v.people.size})),
+            color:'#f59e0b', fmt:v=>String(v)
           })
         ),
 
-        // Por tempo
+        // Por período
         CE('div',{className:'bg-white border border-slate-200 rounded-xl p-5'},
-          CE('h3',{className:'text-sm font-semibold text-slate-700 mb-3'},
-            '📅 Alocações por ',
-            CE('span',{className:'inline-flex gap-1 ml-1'},
+          CE('h3',{className:'text-sm font-semibold text-slate-700 mb-4'},'🌅 Pessoas Alocadas por Período'),
+          CE(HBarChart,{
+            data:[['Manhã','#f59e0b'],['Tarde','#0ea5e9'],['Integral','#6366f1']].map(([label,color])=>({label,value:dashMetrics.byPeriodo[label]?dashMetrics.byPeriodo[label].people.size:0,color})).filter(d=>d.value>0),
+            color:'#6366f1', fmt:v=>String(v)
+          })
+        ),
+
+        // Por tempo (pessoas únicas)
+        CE('div',{className:'bg-white border border-slate-200 rounded-xl p-5 md:col-span-2'},
+          CE('h3',{className:'text-sm font-semibold text-slate-700 mb-3 flex items-center gap-2'},
+            '📅 Pessoas Alocadas por ',
+            CE('div',{className:'flex gap-1'},
               [['day','Dia'],['week','Sem.'],['month','Mês']].map(([k,l])=>CE('button',{key:k,onClick:()=>setDashGroupBy(k),className:`px-2 py-0.5 text-xs rounded border transition ${dashGroupBy===k?'bg-indigo-600 text-white border-indigo-600':'text-slate-500 border-slate-200 hover:border-indigo-300'}`},l))
             )
           ),
-          CE(BarChart,{
-            data:Object.entries(dashMetrics.byTime).sort((a,b)=>a[0].localeCompare(b[0])).map(([label,v])=>({label,value:v.count})),
-            valueKey:'value',labelKey:'label',color:'#10b981',height:160
+          CE(VBarChart,{
+            data:Object.entries(dashMetrics.byTime).sort((a,b)=>a[0].localeCompare(b[0])).map(([label,v])=>({label,value:v.people.size})),
+            color:'#10b981', height:160, fmt:v=>String(v)
+          })
+        ),
+
+        // Frequência por atividade - horizontal
+        CE('div',{className:'bg-white border border-slate-200 rounded-xl p-5 md:col-span-2'},
+          CE('h3',{className:'text-sm font-semibold text-slate-700 mb-3 flex items-center gap-2'},
+            '🎯 Frequência por Atividade',
+            CE('div',{className:'flex gap-1'},
+              [['total','Total'],['day','Média/dia'],['week','Média/sem'],['month','Média/mês']].map(([k,l])=>CE('button',{key:k,onClick:()=>setDashAtivGroupBy(k),className:`px-2 py-0.5 text-xs rounded border transition ${dashAtivGroupBy===k?'bg-violet-600 text-white border-violet-600':'text-slate-500 border-slate-200 hover:border-indigo-300'}`},l))
+            )
+          ),
+          CE(HBarChart,{
+            data:Object.entries(dashMetrics.byAtivNorm).sort((a,b)=>b[1]-a[1]).map(([label,value])=>({label,value})),
+            color:'#8b5cf6', barH:20,
+            fmt:v=>dashAtivGroupBy==='total'?String(v):v.toFixed(2)
           })
         )
-      ),
-
-      // Alocações por projeto (count)
-      CE('div',{className:'bg-white border border-slate-200 rounded-xl p-5'},
-        CE('h3',{className:'text-sm font-semibold text-slate-700 mb-4'},'📊 Número de Alocações por Projeto'),
-        CE(BarChart,{
-          data:Object.entries(dashMetrics.byProj).sort((a,b)=>b[1].count-a[1].count).map(([label,v])=>({label,value:v.count})),
-          valueKey:'value',labelKey:'label',color:'#f59e0b',height:160
-        })
       )
     )
   );
 }
-
 
 // ─── Home Screen (module selector, shown after login) ────────────────────────
 function HomeScreen({
