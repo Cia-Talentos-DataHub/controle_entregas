@@ -7111,113 +7111,167 @@ function AppHeader({
 // ─── Painel de Controle de Parceiros ─────────────────────────────────────────
 function ParceirosView({ projects, token }) {
   const CE = React.createElement;
-  const { useState, useEffect, useMemo, useRef } = React;
+  const { useState, useEffect, useMemo, useRef, useCallback } = React;
 
   const [tab, setTab] = useState('alocacoes');
   const [parceiros, setParceiros] = useState([]);
   const [alocacoes, setAlocacoes] = useState([]);
+  const [atividades, setAtividades] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [cicloFilter, setCicloFilter] = useState('');
   const [selectedProject, setSelectedProject] = useState('');
   const [showForm, setShowForm] = useState(false);
-  const [formMode, setFormMode] = useState('single'); // 'single' | 'range'
-  const [form, setForm] = useState({ parceiroId: '', parceiro: '', atividade: '', data: '', dataFim: '', periodo: 'Integral', frequencia: 1 });
+  const [formMode, setFormMode] = useState('single');
+  const [form, setForm] = useState({ parceiroId:'', parceiro:'', atividadeId:'', atividade:'', valorAtividade:0, data:'', dataFim:'', periodo:'Integral', frequencia:1 });
   const [saving, setSaving] = useState(false);
-  const [ganttRange, setGanttRange] = useState('month');
+  const [gradeView, setGradeView] = useState('day'); // 'day'|'week'|'month'
+  const [gradeStart, setGradeStart] = useState(() => { const d=new Date(); d.setDate(d.getDate()-3); return d.toISOString().slice(0,10); });
+  const [gradeEnd, setGradeEnd] = useState(() => { const d=new Date(); d.setDate(d.getDate()+27); return d.toISOString().slice(0,10); });
   const [alocEntityType, setAlocEntityType] = useState('');
   const [parcEntityType, setParcEntityType] = useState('');
+  const [ativEntityType, setAtivEntityType] = useState('');
   // Edit alocação
   const [editingAloc, setEditingAloc] = useState(null);
   const [editAlocForm, setEditAlocForm] = useState({});
   const [savingEdit, setSavingEdit] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
-  // Gestão de parceiros
+  // Gestão parceiros
   const [editingParc, setEditingParc] = useState(null);
   const [editParcForm, setEditParcForm] = useState({});
   const [savingParc, setSavingParc] = useState(false);
   const [parcFilter, setParcFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
+  // Gestão atividades
+  const [editingAtiv, setEditingAtiv] = useState(null);
+  const [editAtivForm, setEditAtivForm] = useState({});
+  const [savingAtiv, setSavingAtiv] = useState(false);
+  const [deletingAtivId, setDeletingAtivId] = useState(null);
+  const [newAtivForm, setNewAtivForm] = useState({ titulo:'', valor:'' });
+  const [savingNewAtiv, setSavingNewAtiv] = useState(false);
+  const [uploadingAtiv, setUploadingAtiv] = useState(false);
+  // Dashboard filters
+  const [dashCiclo, setDashCiclo] = useState('');
+  const [dashFrom, setDashFrom] = useState('');
+  const [dashTo, setDashTo] = useState('');
+  const [dashProject, setDashProject] = useState('');
+  const [dashPerson, setDashPerson] = useState('');
+  const [dashGroupBy, setDashGroupBy] = useState('month'); // 'day'|'week'|'month'
 
   const PARC_SITE = SP_PARC_SITE_URL;
-  const DAY_W = 28, DAY_MS = 86400000;
+  const DAY_MS = 86400000;
 
   useEffect(() => { if (token) loadAll(); }, [token]);
 
   async function loadAll() {
     setLoading(true); setError(null);
     try {
-      const [pRes, aRes, tRes, ptRes] = await Promise.all([
-        spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros')/items?$select=Id,Title,Telefone,Email,Estado,Ingles,AutodeclaracaoRacial,Status,Atuacao,Empresa,CNPJ,Vigencia&$top=500&$orderby=Title`),
-        spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Alocacao')/items?$select=Id,Title,Parceiro,ParceiroId,Projeto,ProjetoSpId,Atividade,DataAtividade,Periodo,Frequencia&$top=2000&$orderby=DataAtividade`),
+      const [pRes, aRes, atRes, tAloc, tParc, tAtiv] = await Promise.all([
+        spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros')/items?$select=Id,Title,Telefone,Email,Estado,Ingles,AutodeclaracaoRacial,Status,Atuacao,Empresa,CNPJ,Vigencia,Classificacao,DataInicio,Gestor,OBS,Renovacao&$top=500&$orderby=Title`),
+        spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Alocacao')/items?$select=Id,Title,Parceiro,ParceiroId,Projeto,ProjetoSpId,Atividade,DataAtividade,Periodo,Frequencia,ValorAtividade,ValorDia&$top=2000&$orderby=DataAtividade`),
+        spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Atividades')/items?$select=Id,Title,Valor&$top=200&$orderby=Title`),
         spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Alocacao')?$select=ListItemEntityTypeFullName`),
-        spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros')?$select=ListItemEntityTypeFullName`)
+        spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros')?$select=ListItemEntityTypeFullName`),
+        spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Atividades')?$select=ListItemEntityTypeFullName`)
       ]);
       setParceiros(pRes.value || []);
       setAlocacoes(aRes.value || []);
-      if (tRes && tRes.ListItemEntityTypeFullName) setAlocEntityType(tRes.ListItemEntityTypeFullName);
-      if (ptRes && ptRes.ListItemEntityTypeFullName) setParcEntityType(ptRes.ListItemEntityTypeFullName);
+      setAtividades(atRes.value || []);
+      if (tAloc && tAloc.ListItemEntityTypeFullName) setAlocEntityType(tAloc.ListItemEntityTypeFullName);
+      if (tParc && tParc.ListItemEntityTypeFullName) setParcEntityType(tParc.ListItemEntityTypeFullName);
+      if (tAtiv && tAtiv.ListItemEntityTypeFullName) setAtivEntityType(tAtiv.ListItemEntityTypeFullName);
     } catch (e) { setError(e.message); }
     setLoading(false);
   }
 
-  // Derived data
-  const ciclos = useMemo(() => [...new Set(projects.map(p => p.ciclo).filter(Boolean))].sort(), [projects]);
+  // ── Derived ──
+  const ciclos = useMemo(() => [...new Set(projects.map(p=>p.ciclo).filter(Boolean))].sort(), [projects]);
   const filteredProjects = useMemo(() => {
-    const ps = [...projects].sort((a, b) => (a.title || '').localeCompare(b.title || ''));
-    return cicloFilter ? ps.filter(p => p.ciclo === cicloFilter) : ps;
+    const ps = [...projects].sort((a,b)=>(a.title||'').localeCompare(b.title||''));
+    return cicloFilter ? ps.filter(p=>p.ciclo===cicloFilter) : ps;
   }, [projects, cicloFilter]);
 
-  const selectedParceiro = useMemo(() => parceiros.find(p => String(p.Id) === form.parceiroId), [parceiros, form.parceiroId]);
-  const isSelectedInativo = selectedParceiro && selectedParceiro.Status === 'Inativo';
+  const selectedParceiro = useMemo(() => parceiros.find(p=>String(p.Id)===form.parceiroId), [parceiros, form.parceiroId]);
+  const isSelectedInativo = selectedParceiro && selectedParceiro.Status !== 'Ativo';
 
   const projAlocacoes = useMemo(() => {
-    if (!selectedProject) return alocacoes;
-    return alocacoes.filter(a => a.ProjetoSpId === selectedProject || a.Projeto === selectedProject);
-  }, [alocacoes, selectedProject]);
+    let al = alocacoes;
+    if (cicloFilter) {
+      const projNames = new Set(filteredProjects.map(p=>p.title));
+      const projSpIds = new Set(filteredProjects.map(p=>p.spId ? String(p.spId) : null).filter(Boolean));
+      al = al.filter(a => projNames.has(a.Projeto) || projSpIds.has(a.ProjetoSpId));
+    }
+    if (selectedProject) al = al.filter(a => a.ProjetoSpId===selectedProject || a.Projeto===selectedProject);
+    return al;
+  }, [alocacoes, selectedProject, cicloFilter, filteredProjects]);
 
-  // Save new allocation(s)
+  const filteredParceiros = useMemo(() => {
+    let ps = parceiros;
+    if (statusFilter) ps = ps.filter(p=>p.Status===statusFilter);
+    if (parcFilter) { const f=parcFilter.toLowerCase(); ps=ps.filter(p=>(p.Title||'').toLowerCase().includes(f)||(p.Empresa||'').toLowerCase().includes(f)); }
+    return ps;
+  }, [parceiros, parcFilter, statusFilter]);
+
+  // ── XLSX loader helper ──
+  async function loadXLSX() {
+    if (window.XLSX) return window.XLSX;
+    return new Promise((res,rej) => {
+      const s=document.createElement('script');
+      s.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+      s.onload=()=>res(window.XLSX); s.onerror=rej;
+      document.head.appendChild(s);
+    });
+  }
+
+  // ── Excel export allocations ──
+  async function exportAlocacoesXLSX() {
+    try {
+      const XLSX = await loadXLSX();
+      const rows = projAlocacoes.map(a => ({
+        'Parceiro': a.Parceiro||'', 'Projeto': a.Projeto||'', 'Atividade': a.Atividade||'',
+        'Data': a.DataAtividade ? new Date(a.DataAtividade).toLocaleDateString('pt-BR') : '',
+        'Período': a.Periodo||'', 'Frequência': a.Frequencia||1,
+        'Valor Atividade (R$)': a.ValorAtividade||0, 'Valor Dia (R$)': a.ValorDia||0
+      }));
+      const ws = XLSX.utils.json_to_sheet(rows);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Alocações');
+      XLSX.writeFile(wb, `alocacoes_${new Date().toISOString().slice(0,10)}.xlsx`);
+    } catch(e) { setError('Erro ao exportar: '+e.message); }
+  }
+
+  // ── Save allocation ──
   async function saveAlocacao() {
     if (!form.parceiroId || !form.atividade || !form.data || !selectedProject) return;
     setSaving(true);
     try {
-      const proj = projects.find(p => (p.spId && String(p.spId) === selectedProject) || p.id === selectedProject);
-
+      const proj = projects.find(p=>(p.spId&&String(p.spId)===selectedProject)||p.id===selectedProject);
       let dates = [];
-      if (formMode === 'range' && form.dataFim && form.dataFim >= form.data) {
-        let cur = new Date(form.data + 'T12:00:00');
-        const end = new Date(form.dataFim + 'T12:00:00');
-        while (cur <= end) {
-          dates.push(cur.toISOString().slice(0, 10));
-          cur = new Date(cur.getTime() + DAY_MS);
-        }
-      } else {
-        dates = [form.data];
-      }
-
+      if (formMode==='range' && form.dataFim && form.dataFim>=form.data) {
+        let cur=new Date(form.data+'T12:00:00'); const end=new Date(form.dataFim+'T12:00:00');
+        while(cur<=end){ dates.push(cur.toISOString().slice(0,10)); cur=new Date(cur.getTime()+DAY_MS); }
+      } else { dates=[form.data]; }
+      const valorAtiv = Number(form.valorAtividade)||0;
       for (const d of dates) {
+        const freq = Number(form.frequencia)||1;
         const body = {
-          __metadata: { type: alocEntityType },
-          Title: `${form.parceiro} — ${proj ? proj.title : selectedProject}`,
-          Parceiro: form.parceiro,
-          ParceiroId: String(form.parceiroId),
-          Projeto: proj ? proj.title : selectedProject,
-          ProjetoSpId: proj && proj.spId ? String(proj.spId) : selectedProject,
-          Atividade: form.atividade,
-          DataAtividade: d,
-          Periodo: form.periodo,
-          Frequencia: Number(form.frequencia) || 1
+          __metadata:{type:alocEntityType},
+          Title:`${form.parceiro} — ${proj?proj.title:selectedProject}`,
+          Parceiro:form.parceiro, ParceiroId:String(form.parceiroId),
+          Projeto:proj?proj.title:selectedProject,
+          ProjetoSpId:proj&&proj.spId?String(proj.spId):selectedProject,
+          Atividade:form.atividade, DataAtividade:d, Periodo:form.periodo,
+          Frequencia:freq, ValorAtividade:valorAtiv, ValorDia:valorAtiv*freq
         };
         await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Alocacao')/items`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json;odata=verbose', 'X-HTTP-Method': 'POST' },
-          body: JSON.stringify(body)
+          method:'POST', headers:{'Content-Type':'application/json;odata=verbose'},
+          body:JSON.stringify(body)
         });
       }
       setShowForm(false);
-      setForm({ parceiroId: '', parceiro: '', atividade: '', data: '', dataFim: '', periodo: 'Integral', frequencia: 1 });
+      setForm({parceiroId:'',parceiro:'',atividadeId:'',atividade:'',valorAtividade:0,data:'',dataFim:'',periodo:'Integral',frequencia:1});
       await loadAll();
-    } catch (e) { setError(e.message); }
+    } catch(e) { setError(e.message); }
     setSaving(false);
   }
 
@@ -7226,11 +7280,10 @@ function ParceirosView({ projects, token }) {
     setDeletingId(id);
     try {
       await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Alocacao')/items(${id})`, {
-        method: 'POST',
-        headers: { 'X-HTTP-Method': 'DELETE', 'IF-MATCH': '*', 'Content-Type': 'application/json;odata=verbose' }
+        method:'POST', headers:{'X-HTTP-Method':'DELETE','IF-MATCH':'*','Content-Type':'application/json;odata=verbose'}
       });
       await loadAll();
-    } catch (e) { setError(e.message); }
+    } catch(e) { setError(e.message); }
     setDeletingId(null);
   }
 
@@ -7238,391 +7291,697 @@ function ParceirosView({ projects, token }) {
     if (!editingAloc) return;
     setSavingEdit(true);
     try {
-      const body = { __metadata: { type: alocEntityType }, Atividade: editAlocForm.atividade, DataAtividade: editAlocForm.data, Periodo: editAlocForm.periodo, Frequencia: Number(editAlocForm.frequencia) || 1 };
+      const valorAtiv = Number(editAlocForm.valorAtividade)||0;
+      const freq = Number(editAlocForm.frequencia)||1;
+      const body = {__metadata:{type:alocEntityType}, Atividade:editAlocForm.atividade, DataAtividade:editAlocForm.data, Periodo:editAlocForm.periodo, Frequencia:freq, ValorAtividade:valorAtiv, ValorDia:valorAtiv*freq};
       await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Alocacao')/items(${editingAloc.Id})`, {
-        method: 'POST',
-        headers: { 'X-HTTP-Method': 'MERGE', 'IF-MATCH': '*', 'Content-Type': 'application/json;odata=verbose' },
-        body: JSON.stringify(body)
+        method:'POST', headers:{'X-HTTP-Method':'MERGE','IF-MATCH':'*','Content-Type':'application/json;odata=verbose'},
+        body:JSON.stringify(body)
       });
-      setEditingAloc(null);
-      await loadAll();
-    } catch (e) { setError(e.message); }
+      setEditingAloc(null); await loadAll();
+    } catch(e) { setError(e.message); }
     setSavingEdit(false);
   }
 
   function openEditAloc(a) {
     setEditingAloc(a);
-    setEditAlocForm({ atividade: a.Atividade || '', data: a.DataAtividade ? a.DataAtividade.slice(0, 10) : '', periodo: a.Periodo || 'Integral', frequencia: a.Frequencia || 1 });
+    setEditAlocForm({atividade:a.Atividade||'', data:a.DataAtividade?a.DataAtividade.slice(0,10):'', periodo:a.Periodo||'Integral', frequencia:a.Frequencia||1, valorAtividade:a.ValorAtividade||0});
   }
 
+  // ── Partners edit ──
   async function saveEditParc() {
     if (!editingParc) return;
     setSavingParc(true);
     try {
-      const body = { __metadata: { type: parcEntityType }, Telefone: editParcForm.telefone || null, Email: editParcForm.email || null, Estado: editParcForm.estado || null, Ingles: editParcForm.ingles || null, AutodeclaracaoRacial: editParcForm.autodeclaracaoRacial || null, Status: editParcForm.status || 'Inativo', Atuacao: editParcForm.atuacao || null, Empresa: editParcForm.empresa || null, CNPJ: editParcForm.cnpj || null, Vigencia: editParcForm.vigencia || null };
+      const f = editParcForm;
+      const body = {__metadata:{type:parcEntityType}, Telefone:f.telefone||null, Email:f.email||null, Estado:f.estado||null, Ingles:f.ingles||null, AutodeclaracaoRacial:f.autodeclaracaoRacial||null, Status:f.status||'Inativo', Atuacao:f.atuacao||null, Empresa:f.empresa||null, CNPJ:f.cnpj||null, Vigencia:f.vigencia||null, Classificacao:f.classificacao||null, DataInicio:f.dataInicio||null, Gestor:f.gestor||null, OBS:f.obs||null, Renovacao:f.renovacao||null};
       await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros')/items(${editingParc.Id})`, {
-        method: 'POST',
-        headers: { 'X-HTTP-Method': 'MERGE', 'IF-MATCH': '*', 'Content-Type': 'application/json;odata=verbose' },
-        body: JSON.stringify(body)
+        method:'POST', headers:{'X-HTTP-Method':'MERGE','IF-MATCH':'*','Content-Type':'application/json;odata=verbose'},
+        body:JSON.stringify(body)
       });
-      setEditingParc(null);
-      await loadAll();
-    } catch (e) { setError(e.message); }
+      setEditingParc(null); await loadAll();
+    } catch(e) { setError(e.message); }
     setSavingParc(false);
   }
 
   function openEditParc(p) {
     setEditingParc(p);
-    setEditParcForm({ telefone: p.Telefone || '', email: p.Email || '', estado: p.Estado || '', ingles: p.Ingles || '', autodeclaracaoRacial: p.AutodeclaracaoRacial || '', status: p.Status || 'Inativo', atuacao: p.Atuacao || '', empresa: p.Empresa || '', cnpj: p.CNPJ || '', vigencia: p.Vigencia || '' });
+    setEditParcForm({telefone:p.Telefone||'', email:p.Email||'', estado:p.Estado||'', ingles:p.Ingles||'', autodeclaracaoRacial:p.AutodeclaracaoRacial||'', status:p.Status||'Inativo', atuacao:p.Atuacao||'', empresa:p.Empresa||'', cnpj:p.CNPJ||'', vigencia:p.Vigencia||'', classificacao:p.Classificacao||'', dataInicio:p.DataInicio?p.DataInicio.slice(0,10):'', gestor:p.Gestor||'', obs:p.OBS||'', renovacao:p.Renovacao||''});
   }
 
-  // Gantt calculations
-  const today = new Date(); today.setHours(0,0,0,0);
-  const rangeMs = ganttRange === 'week' ? 7*DAY_MS : ganttRange === 'month' ? 30*DAY_MS : 90*DAY_MS;
-  const gStart = new Date(today.getTime() - 7*DAY_MS);
-  const gEnd = new Date(gStart.getTime() + rangeMs + 7*DAY_MS);
-  const gDays = Math.round((gEnd - gStart)/DAY_MS) + 1;
-  const gW = gDays * DAY_W;
-  function dayOff(dateStr) { const d = new Date(dateStr); d.setHours(0,0,0,0); return Math.round((d-gStart)/DAY_MS); }
+  // ── Atividades CRUD ──
+  async function saveEditAtiv() {
+    if (!editingAtiv) return;
+    setSavingAtiv(true);
+    try {
+      const body = {__metadata:{type:ativEntityType}, Title:editAtivForm.titulo, Valor:Number(editAtivForm.valor)||0};
+      await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Atividades')/items(${editingAtiv.Id})`, {
+        method:'POST', headers:{'X-HTTP-Method':'MERGE','IF-MATCH':'*','Content-Type':'application/json;odata=verbose'},
+        body:JSON.stringify(body)
+      });
+      setEditingAtiv(null); await loadAll();
+    } catch(e) { setError(e.message); }
+    setSavingAtiv(false);
+  }
 
-  const ganttRows = useMemo(() => {
+  async function deleteAtividade(id) {
+    if (!window.confirm('Excluir esta atividade?')) return;
+    setDeletingAtivId(id);
+    try {
+      await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Atividades')/items(${id})`, {
+        method:'POST', headers:{'X-HTTP-Method':'DELETE','IF-MATCH':'*','Content-Type':'application/json;odata=verbose'}
+      });
+      await loadAll();
+    } catch(e) { setError(e.message); }
+    setDeletingAtivId(null);
+  }
+
+  async function saveNewAtiv() {
+    if (!newAtivForm.titulo) return;
+    setSavingNewAtiv(true);
+    try {
+      const body = {__metadata:{type:ativEntityType}, Title:newAtivForm.titulo, Valor:Number(newAtivForm.valor)||0};
+      await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Atividades')/items`, {
+        method:'POST', headers:{'Content-Type':'application/json;odata=verbose'},
+        body:JSON.stringify(body)
+      });
+      setNewAtivForm({titulo:'',valor:''}); await loadAll();
+    } catch(e) { setError(e.message); }
+    setSavingNewAtiv(false);
+  }
+
+  async function downloadAtivTemplate() {
+    try {
+      const XLSX = await loadXLSX();
+      const ws = XLSX.utils.json_to_sheet([{Atividade:'', Valor_R$:0}]);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Atividades');
+      XLSX.writeFile(wb, 'modelo_atividades.xlsx');
+    } catch(e) { setError('Erro ao gerar template: '+e.message); }
+  }
+
+  async function uploadAtivExcel(file) {
+    if (!file) return;
+    setUploadingAtiv(true);
+    try {
+      const XLSX = await loadXLSX();
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf);
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws);
+      let count=0;
+      for (const row of rows) {
+        const titulo = row['Atividade']||row['Title']||row['ATIVIDADE']||'';
+        const valor = Number(row['Valor_R$']||row['Valor']||row['VALOR']||0);
+        if (!titulo) continue;
+        const body = {__metadata:{type:ativEntityType}, Title:titulo, Valor:valor};
+        await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Atividades')/items`, {
+          method:'POST', headers:{'Content-Type':'application/json;odata=verbose'},
+          body:JSON.stringify(body)
+        });
+        count++;
+      }
+      alert(`${count} atividade(s) importada(s) com sucesso.`);
+      await loadAll();
+    } catch(e) { setError('Erro ao importar: '+e.message); }
+    setUploadingAtiv(false);
+  }
+
+  // ── Grade (Gantt replacement) ──
+  const gradeCols = useMemo(() => {
+    const s = new Date(gradeStart+'T12:00:00');
+    const e = new Date(gradeEnd+'T12:00:00');
+    const cols = [];
+    if (gradeView==='day') {
+      let cur=new Date(s);
+      while(cur<=e){ cols.push({key:cur.toISOString().slice(0,10), label:cur.getDate()+' '+['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'][cur.getDay()], isWe:cur.getDay()===0||cur.getDay()===6}); cur=new Date(cur.getTime()+DAY_MS); }
+    } else if (gradeView==='week') {
+      let cur=new Date(s);
+      while(cur<=e){
+        const y=cur.getFullYear(); const wStart=new Date(cur); wStart.setDate(cur.getDate()-cur.getDay()+1);
+        const key=`${y}-W${String(Math.ceil((((cur-new Date(y,0,1))/DAY_MS)+1)/7)).padStart(2,'0')}`;
+        if(!cols.find(c=>c.key===key)) cols.push({key, label:`${wStart.getDate().toString().padStart(2,'0')}/${(wStart.getMonth()+1).toString().padStart(2,'0')}`});
+        cur=new Date(cur.getTime()+DAY_MS);
+      }
+    } else {
+      let cur=new Date(s.getFullYear(),s.getMonth(),1);
+      while(cur<=e){
+        const key=`${cur.getFullYear()}-${String(cur.getMonth()+1).padStart(2,'0')}`;
+        if(!cols.find(c=>c.key===key)) cols.push({key, label:cur.toLocaleString('pt-BR',{month:'short',year:'2-digit'}).toUpperCase()});
+        cur=new Date(cur.getFullYear(),cur.getMonth()+1,1);
+      }
+    }
+    return cols;
+  }, [gradeStart, gradeEnd, gradeView]);
+
+  function dateToColKey(dateStr) {
+    const d = new Date(dateStr+'T12:00:00');
+    if (gradeView==='day') return dateStr.slice(0,10);
+    if (gradeView==='week') {
+      const y=d.getFullYear();
+      return `${y}-W${String(Math.ceil((((d-new Date(y,0,1))/DAY_MS)+1)/7)).padStart(2,'0')}`;
+    }
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+  }
+
+  const gradeData = useMemo(() => {
     const map = {};
-    for (const a of alocacoes) {
+    const s = new Date(gradeStart+'T00:00:00');
+    const e = new Date(gradeEnd+'T23:59:59');
+    for (const a of projAlocacoes) {
       if (!a.DataAtividade) continue;
-      const off = dayOff(a.DataAtividade);
-      if (off < 0 || off > gDays) continue;
-      if (!map[a.Parceiro]) map[a.Parceiro] = [];
-      map[a.Parceiro].push(a);
+      const d = new Date(a.DataAtividade+'T12:00:00');
+      if (d<s||d>e) continue;
+      if (!map[a.Parceiro]) map[a.Parceiro]={};
+      const k = dateToColKey(a.DataAtividade);
+      if (!map[a.Parceiro][k]) map[a.Parceiro][k]=[];
+      map[a.Parceiro][k].push(a);
     }
-    return Object.entries(map).sort((x,y) => x[0].localeCompare(y[0]));
-  }, [alocacoes, ganttRange]);
-
-  const projColors = useMemo(() => {
-    const COLORS = ['#6366f1','#0ea5e9','#f59e0b','#10b981','#ec4899','#8b5cf6','#ef4444','#14b8a6','#f97316','#64748b'];
-    const map = {}; let i = 0;
-    for (const a of alocacoes) { if (a.Projeto && !map[a.Projeto]) { map[a.Projeto] = COLORS[i%COLORS.length]; i++; } }
     return map;
-  }, [alocacoes]);
+  }, [projAlocacoes, gradeStart, gradeEnd, gradeView, gradeCols]);
 
-  const { dayCols, dayNums, monthMarks, todayLine } = useMemo(() => {
-    let dc='', dn='', mm='', curM=-1;
-    for (let d=0; d<gDays; d++) {
-      const dt = new Date(gStart.getTime() + d*DAY_MS);
-      const isWe = dt.getDay()===0 || dt.getDay()===6;
-      dc += `<div class="day-col${isWe?' we':''}" style="left:${d*DAY_W}px;width:${DAY_W}px"></div>`;
-      dn += `<span class="day-n" style="left:${d*DAY_W}px">${dt.getDate()}</span>`;
-      if (dt.getMonth()!==curM) { curM=dt.getMonth(); const mon=dt.toLocaleString('pt-BR',{month:'short'}).toUpperCase(); mm+=`<span class="month-mark" style="left:${d*DAY_W}px">${mon} ${dt.getFullYear()}</span>`; }
+  const gradeParceiros = useMemo(() => Object.keys(gradeData).sort(), [gradeData]);
+
+  function periodoBadge(periodo) {
+    if (periodo==='Manhã') return {label:'M', cls:'bg-amber-100 text-amber-800 border-amber-200'};
+    if (periodo==='Tarde') return {label:'T', cls:'bg-sky-100 text-sky-800 border-sky-200'};
+    return {label:'I', cls:'bg-indigo-100 text-indigo-800 border-indigo-200'};
+  }
+
+  // ── Dashboard ──
+  const dashAlocs = useMemo(() => {
+    let al = alocacoes;
+    if (dashCiclo) {
+      const ps = new Set(projects.filter(p=>p.ciclo===dashCiclo).map(p=>p.title));
+      const spIds = new Set(projects.filter(p=>p.ciclo===dashCiclo).map(p=>p.spId?String(p.spId):null).filter(Boolean));
+      al = al.filter(a=>ps.has(a.Projeto)||spIds.has(a.ProjetoSpId));
     }
-    const tOff = Math.round((today-gStart)/DAY_MS);
-    const tl = tOff>=0 && tOff<=gDays ? `<div class="today-l" style="left:${tOff*DAY_W}px"></div>` : '';
-    return { dayCols:dc, dayNums:dn, monthMarks:mm, todayLine:tl };
-  }, [ganttRange]);
+    if (dashFrom) al = al.filter(a=>a.DataAtividade&&a.DataAtividade>=dashFrom);
+    if (dashTo) al = al.filter(a=>a.DataAtividade&&a.DataAtividade<=dashTo);
+    if (dashProject) al = al.filter(a=>a.Projeto===dashProject||a.ProjetoSpId===dashProject);
+    if (dashPerson) al = al.filter(a=>a.Parceiro===dashPerson);
+    return al;
+  }, [alocacoes, dashCiclo, dashFrom, dashTo, dashProject, dashPerson, projects]);
 
-  // Filtered parceiros for management tab
-  const filteredParceiros = useMemo(() => {
-    let ps = parceiros;
-    if (statusFilter) ps = ps.filter(p => p.Status === statusFilter);
-    if (parcFilter) { const f = parcFilter.toLowerCase(); ps = ps.filter(p => (p.Title||'').toLowerCase().includes(f) || (p.Empresa||'').toLowerCase().includes(f)); }
-    return ps;
-  }, [parceiros, parcFilter, statusFilter]);
+  const dashMetrics = useMemo(() => {
+    const totalCusto = dashAlocs.reduce((s,a)=>s+(a.ValorDia||0),0);
+    const byProj={}, byPerson={}, byAtiv={}, byTime={};
+    for (const a of dashAlocs) {
+      if (a.Projeto) { byProj[a.Projeto]=(byProj[a.Projeto]||{count:0,custo:0}); byProj[a.Projeto].count++; byProj[a.Projeto].custo+=(a.ValorDia||0); }
+      if (a.Parceiro) { byPerson[a.Parceiro]=(byPerson[a.Parceiro]||{count:0,custo:0}); byPerson[a.Parceiro].count++; byPerson[a.Parceiro].custo+=(a.ValorDia||0); }
+      if (a.Atividade) { byAtiv[a.Atividade]=(byAtiv[a.Atividade]||0)+1; }
+      if (a.DataAtividade) {
+        const d=new Date(a.DataAtividade+'T12:00:00');
+        let tk;
+        if (dashGroupBy==='day') tk=a.DataAtividade.slice(0,10);
+        else if (dashGroupBy==='week') { const y=d.getFullYear(); tk=`${y}-W${String(Math.ceil((((d-new Date(y,0,1))/DAY_MS)+1)/7)).padStart(2,'0')}`; }
+        else tk=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+        byTime[tk]=(byTime[tk]||{count:0,custo:0}); byTime[tk].count++; byTime[tk].custo+=(a.ValorDia||0);
+      }
+    }
+    return {totalCusto, byProj, byPerson, byAtiv, byTime};
+  }, [dashAlocs, dashGroupBy]);
+
+  // ── Mini bar chart SVG ──
+  function BarChart({data, valueKey='value', labelKey='label', color='#6366f1', height=160}) {
+    if (!data.length) return CE('div',{className:'text-center py-6 text-sm text-slate-400'},'Sem dados');
+    const max=Math.max(...data.map(d=>d[valueKey]),1);
+    const bw=36, gap=10, pad=40;
+    const w=Math.max(data.length*(bw+gap)+gap+pad, 200);
+    const fmt=v=>v>=1000?`R$${(v/1000).toFixed(1)}k`:(v>0?`R$${v.toFixed(0)}`:`${v}`);
+    return CE('div',{style:{overflowX:'auto'}},
+      CE('svg',{width:w,height:height+50,style:{minWidth:200}},
+        CE('g',null,...data.map((d,i)=>{
+          const bh=Math.max(Math.round(d[valueKey]/max*(height-20)),d[valueKey]>0?4:0);
+          const x=pad/2+gap+i*(bw+gap);
+          const y=height-bh;
+          return CE('g',{key:i},
+            CE('rect',{x,y,width:bw,height:bh,fill:color,rx:4,opacity:0.85}),
+            bh>0&&CE('text',{x:x+bw/2,y:y-4,textAnchor:'middle',fontSize:9,fill:'#334155',fontWeight:'bold'},fmt(d[valueKey])),
+            CE('text',{x:x+bw/2,y:height+14,textAnchor:'middle',fontSize:9,fill:'#64748b'},
+              (d[labelKey]||'').length>8?(d[labelKey]||'').slice(0,8)+'…':(d[labelKey]||''))
+          );
+        })),
+        CE('line',{x1:pad/2,y1:height,x2:w-gap,y2:height,stroke:'#e2e8f0',strokeWidth:1})
+      )
+    );
+  }
 
   const inputCls = 'w-full border border-slate-200 rounded-lg px-3 py-2 text-sm';
   const labelCls = 'text-xs font-semibold text-slate-600 block mb-1';
 
-  return CE('div', { className: 'fade-in max-w-screen-2xl mx-auto px-4 pb-10 mt-4 space-y-4' },
-    // Error banner
-    error && CE('div', { className: 'bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-700 flex items-center justify-between' },
-      CE('span', null, error), CE('button', { onClick: ()=>setError(null), className:'ml-2 text-red-400 hover:text-red-600 font-bold' }, '✕')
+  return CE('div', {className:'fade-in max-w-screen-2xl mx-auto px-4 pb-10 mt-4 space-y-4'},
+    // Error
+    error && CE('div',{className:'bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-700 flex items-center justify-between'},
+      CE('span',null,error), CE('button',{onClick:()=>setError(null),className:'ml-2 text-red-400 hover:text-red-600 font-bold'},'✕')
     ),
 
-    // Tabs + reload + ciclo filter
-    CE('div', { className: 'flex items-center justify-between flex-wrap gap-3' },
-      CE('div', { className: 'flex gap-1 bg-white border border-slate-200 rounded-xl p-1' },
-        [['alocacoes','📋 Alocações'],['gantt','📅 Gantt'],['parceiros','👥 Parceiros']].map(([k,l]) =>
-          CE('button', { key:k, onClick:()=>setTab(k), className:`px-4 py-1.5 rounded-lg text-sm font-medium transition ${tab===k?'bg-indigo-600 text-white shadow':'text-slate-500 hover:text-slate-700'}` }, l)
+    // Tabs + ciclo
+    CE('div',{className:'flex items-center justify-between flex-wrap gap-3'},
+      CE('div',{className:'flex gap-1 bg-white border border-slate-200 rounded-xl p-1 flex-wrap'},
+        [['alocacoes','📋 Alocações'],['grade','📅 Grade'],['parceiros','👥 Parceiros'],['atividades','🎯 Atividades'],['dashboard','📊 Dashboard']].map(([k,l])=>
+          CE('button',{key:k,onClick:()=>setTab(k),className:`px-3 py-1.5 rounded-lg text-xs font-medium transition ${tab===k?'bg-indigo-600 text-white shadow':'text-slate-500 hover:text-slate-700'}`},l)
         )
       ),
-      CE('div', { className: 'flex items-center gap-2' },
-        ciclos.length > 0 && CE('select', {
-          className: 'border border-slate-200 rounded-lg px-3 py-1.5 text-sm bg-white',
-          value: cicloFilter, onChange: e => { setCicloFilter(e.target.value); setSelectedProject(''); }
-        }, CE('option',{value:''},'Todos os ciclos'), ciclos.map(c => CE('option',{key:c,value:c},c))),
-        CE('button', { onClick: loadAll, disabled: loading, className: 'text-xs border border-slate-200 rounded-lg px-3 py-1.5 text-slate-500 hover:text-indigo-600 transition disabled:opacity-40' }, loading ? '⏳ Carregando...' : '🔄 Atualizar')
+      CE('div',{className:'flex items-center gap-2'},
+        ciclos.length>0 && CE('select',{className:'border border-slate-200 rounded-lg px-3 py-1.5 text-sm bg-white',value:cicloFilter,onChange:e=>{setCicloFilter(e.target.value);setSelectedProject('');}},
+          CE('option',{value:''},'Todos os ciclos'), ciclos.map(c=>CE('option',{key:c,value:c},c))
+        ),
+        CE('button',{onClick:loadAll,disabled:loading,className:'text-xs border border-slate-200 rounded-lg px-3 py-1.5 text-slate-500 hover:text-indigo-600 transition disabled:opacity-40'},loading?'⏳ Carregando...':'🔄 Atualizar')
       )
     ),
 
-    // ═══ ALOCAÇÕES tab ═══
-    tab === 'alocacoes' && CE('div', { className: 'space-y-4' },
-      // Toolbar
-      CE('div', { className: 'flex items-center gap-3 flex-wrap' },
-        CE('select', {
-          className: 'border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white min-w-[260px] max-w-xs',
-          value: selectedProject, onChange: e => { setSelectedProject(e.target.value); setShowForm(false); }
-        },
+    // ══════════ ALOCAÇÕES tab ══════════
+    tab==='alocacoes' && CE('div',{className:'space-y-4'},
+      CE('div',{className:'flex items-center gap-3 flex-wrap'},
+        CE('select',{className:'border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white min-w-[260px] max-w-xs',value:selectedProject,onChange:e=>{setSelectedProject(e.target.value);setShowForm(false);}},
           CE('option',{value:''},'— Todos os projetos —'),
-          filteredProjects.map(p => CE('option',{key:p.id, value: p.spId ? String(p.spId) : p.id}, (p.title||'')+(p.client?` — ${p.client}`:'')))
+          filteredProjects.map(p=>CE('option',{key:p.id,value:p.spId?String(p.spId):p.id},(p.title||'')+(p.client?` — ${p.client}`:'')))
         ),
-        selectedProject && CE('button', {
-          onClick: () => setShowForm(s => !s),
-          className: `px-4 py-2 text-sm font-medium rounded-lg transition ${showForm?'bg-slate-100 text-slate-700':'bg-indigo-600 hover:bg-indigo-700 text-white'}`
-        }, showForm ? '✕ Cancelar' : '+ Nova alocação')
+        selectedProject && CE('button',{onClick:()=>setShowForm(s=>!s),className:`px-4 py-2 text-sm font-medium rounded-lg transition ${showForm?'bg-slate-100 text-slate-700':'bg-indigo-600 hover:bg-indigo-700 text-white'}`},showForm?'✕ Cancelar':'+ Nova alocação'),
+        CE('button',{onClick:exportAlocacoesXLSX,className:'px-3 py-2 text-xs border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 transition ml-auto'},'⬇ Exportar Excel')
       ),
 
-      // NEW ALLOCATION FORM
-      showForm && CE('div', { className: 'bg-white border border-slate-200 rounded-xl p-5 space-y-4' },
-        // Mode toggle
-        CE('div', { className: 'flex gap-2 mb-1' },
-          CE('span', { className: 'text-xs font-semibold text-slate-500 self-center mr-1' }, 'Modo:'),
-          ['single','range'].map(m => CE('button', { key:m, onClick:()=>setFormMode(m),
-            className:`px-3 py-1 text-xs rounded-lg border transition ${formMode===m?'bg-indigo-600 text-white border-indigo-600':'text-slate-600 border-slate-200 hover:border-indigo-300'}`
-          }, m==='single'?'Data única':'Período (de/até'))
+      // FORM NOVA ALOCAÇÃO
+      showForm && CE('div',{className:'bg-white border border-slate-200 rounded-xl p-5 space-y-4'},
+        CE('div',{className:'flex gap-2 mb-1'},
+          CE('span',{className:'text-xs font-semibold text-slate-500 self-center mr-1'},'Modo:'),
+          ['single','range'].map(m=>CE('button',{key:m,onClick:()=>setFormMode(m),className:`px-3 py-1 text-xs rounded-lg border transition ${formMode===m?'bg-indigo-600 text-white border-indigo-600':'text-slate-600 border-slate-200 hover:border-indigo-300'}`},m==='single'?'Data única':'Período (de/até)'))
         ),
-
-        // Fields grid
-        CE('div', { className: 'grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4' },
-          // Parceiro
-          CE('div', { className: 'col-span-2 md:col-span-1' },
-            CE('label', { className: labelCls }, 'Parceiro'),
-            CE('select', { className: inputCls, value: form.parceiroId,
-              onChange: e => { const p = parceiros.find(x => String(x.Id) === e.target.value); setForm(f => ({...f, parceiroId:e.target.value, parceiro:p?p.Title:''})); }
-            },
+        CE('div',{className:'grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4'},
+          CE('div',{className:'col-span-2 md:col-span-1'},
+            CE('label',{className:labelCls},'Parceiro'),
+            CE('select',{className:inputCls,value:form.parceiroId,onChange:e=>{const p=parceiros.find(x=>String(x.Id)===e.target.value);setForm(f=>({...f,parceiroId:e.target.value,parceiro:p?p.Title:''}));}},
               CE('option',{value:''},'Selecione...'),
-              parceiros.map(p => CE('option',{key:p.Id, value:p.Id}, `${p.Title}${p.Status==='Inativo'?' ⚠️':''}`))
+              parceiros.map(p=>CE('option',{key:p.Id,value:p.Id},`${p.Title}${p.Status!=='Ativo'?' ⚠️':''}`))
             ),
-            isSelectedInativo && CE('div', { className: 'mt-1.5 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5' }, '⚠️ Este parceiro está marcado como Inativo.')
+            isSelectedInativo && CE('div',{className:'mt-1.5 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5'},'⚠️ Este parceiro não está ativo.')
           ),
-          // Atividade
-          CE('div', { className: 'col-span-2 md:col-span-1' },
-            CE('label', { className: labelCls }, 'Atividade'),
-            CE('input', { type:'text', placeholder:'Ex: Entrevista de seleção', className: inputCls, value: form.atividade, onChange: e => setForm(f=>({...f,atividade:e.target.value})) })
+          CE('div',{className:'col-span-2 md:col-span-1'},
+            CE('label',{className:labelCls},'Atividade'),
+            CE('select',{className:inputCls,value:form.atividadeId,onChange:e=>{const at=atividades.find(a=>String(a.Id)===e.target.value);setForm(f=>({...f,atividadeId:e.target.value,atividade:at?at.Title:'',valorAtividade:at?at.Valor:0}));}},
+              CE('option',{value:''},'Selecione...'),
+              atividades.map(a=>CE('option',{key:a.Id,value:a.Id},`${a.Title}${a.Valor?` — R$${a.Valor}`:''}`)
+            )),
+            form.atividadeId && CE('div',{className:'mt-1 text-xs text-slate-500'},`Valor: R$ ${Number(form.valorAtividade).toFixed(2)}`)
           ),
-          // Data inicial
-          CE('div', null,
-            CE('label', { className: labelCls }, formMode==='range'?'Data início':'Data'),
-            CE('input', { type:'date', className: inputCls, value: form.data, onChange: e => setForm(f=>({...f,data:e.target.value})) })
+          CE('div',null,
+            CE('label',{className:labelCls},formMode==='range'?'Data início':'Data'),
+            CE('input',{type:'date',className:inputCls,value:form.data,onChange:e=>setForm(f=>({...f,data:e.target.value}))})
           ),
-          // Data fim (range only)
-          formMode==='range' && CE('div', null,
-            CE('label', { className: labelCls }, 'Data fim'),
-            CE('input', { type:'date', className: inputCls, value: form.dataFim, min: form.data, onChange: e => setForm(f=>({...f,dataFim:e.target.value})) })
+          formMode==='range' && CE('div',null,
+            CE('label',{className:labelCls},'Data fim'),
+            CE('input',{type:'date',className:inputCls,value:form.dataFim,min:form.data,onChange:e=>setForm(f=>({...f,dataFim:e.target.value}))})
           ),
-          // Período
-          CE('div', null,
-            CE('label', { className: labelCls }, 'Período'),
-            CE('select', { className: inputCls, value: form.periodo, onChange: e => setForm(f=>({...f,periodo:e.target.value})) },
-              ['Manhã','Tarde','Integral'].map(p => CE('option',{key:p,value:p},p))
+          CE('div',null,
+            CE('label',{className:labelCls},'Período'),
+            CE('select',{className:inputCls,value:form.periodo,onChange:e=>setForm(f=>({...f,periodo:e.target.value}))},
+              ['Manhã','Tarde','Integral'].map(p=>CE('option',{key:p,value:p},p))
             )
           ),
-          // Frequência
-          CE('div', null,
-            CE('label', { className: labelCls }, formMode==='range'?'Freq./dia':'Frequência'),
-            CE('input', { type:'number', min:1, className: inputCls, value: form.frequencia, onChange: e => setForm(f=>({...f,frequencia:e.target.value})) })
+          CE('div',null,
+            CE('label',{className:labelCls},formMode==='range'?'Freq./dia':'Frequência'),
+            CE('input',{type:'number',min:1,className:inputCls,value:form.frequencia,onChange:e=>setForm(f=>({...f,frequencia:e.target.value}))})
           ),
-          // Range info
-          formMode==='range' && form.data && form.dataFim && form.dataFim >= form.data && CE('div', { className: 'col-span-2 self-end' },
-            CE('div', { className: 'text-xs text-indigo-600 bg-indigo-50 border border-indigo-100 rounded-lg px-3 py-2' },
-              (() => { let n=0; let c=new Date(form.data+'T12:00:00'); const e=new Date(form.dataFim+'T12:00:00'); while(c<=e){n++;c=new Date(c.getTime()+DAY_MS);} return `Serão criadas ${n} alocação(ões), ${form.frequencia} atividade(s)/dia`; })()
+          form.valorAtividade>0 && CE('div',{className:'col-span-2 self-end'},
+            CE('div',{className:'text-xs text-green-700 bg-green-50 border border-green-100 rounded-lg px-3 py-2'},
+              `Valor dia: R$ ${(Number(form.valorAtividade)*(Number(form.frequencia)||1)).toFixed(2)}`
             )
           ),
-          // Save button
-          CE('div', { className: 'self-end' },
-            CE('button', {
-              onClick: saveAlocacao, disabled: saving || !form.parceiroId || !form.atividade || !form.data,
-              className: 'w-full px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-lg transition disabled:opacity-40'
-            }, saving ? '⏳ Salvando...' : '✓ Salvar')
+          formMode==='range'&&form.data&&form.dataFim&&form.dataFim>=form.data && CE('div',{className:'col-span-2 self-end'},
+            CE('div',{className:'text-xs text-indigo-600 bg-indigo-50 border border-indigo-100 rounded-lg px-3 py-2'},
+              (()=>{ let n=0; let c=new Date(form.data+'T12:00:00'); const e=new Date(form.dataFim+'T12:00:00'); while(c<=e){n++;c=new Date(c.getTime()+DAY_MS);} return `${n} dia(s) — total previsto: R$ ${(Number(form.valorAtividade)*(Number(form.frequencia)||1)*n).toFixed(2)}`; })()
+            )
+          ),
+          CE('div',{className:'self-end'},
+            CE('button',{onClick:saveAlocacao,disabled:saving||!form.parceiroId||!form.atividadeId||!form.data,className:'w-full px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-lg transition disabled:opacity-40'},saving?'⏳ Salvando...':'✓ Salvar')
           )
         )
       ),
 
-      // EDIT FORM (inline)
-      editingAloc && CE('div', { className: 'bg-amber-50 border border-amber-200 rounded-xl p-4 grid grid-cols-2 gap-3 md:grid-cols-4' },
-        CE('div', { className: 'col-span-4 text-sm font-semibold text-amber-800' }, `✏️ Editando alocação de ${editingAloc.Parceiro}`),
-        CE('div', null,
-          CE('label', { className: labelCls }, 'Atividade'),
-          CE('input', { type:'text', className: inputCls, value: editAlocForm.atividade, onChange: e => setEditAlocForm(f=>({...f,atividade:e.target.value})) })
+      // EDIT FORM
+      editingAloc && CE('div',{className:'bg-amber-50 border border-amber-200 rounded-xl p-4 grid grid-cols-2 gap-3 md:grid-cols-5'},
+        CE('div',{className:'col-span-5 text-sm font-semibold text-amber-800'},`✏️ Editando: ${editingAloc.Parceiro}`),
+        CE('div',null,
+          CE('label',{className:labelCls},'Atividade'),
+          CE('input',{type:'text',className:inputCls,value:editAlocForm.atividade,onChange:e=>setEditAlocForm(f=>({...f,atividade:e.target.value}))})
         ),
-        CE('div', null,
-          CE('label', { className: labelCls }, 'Data'),
-          CE('input', { type:'date', className: inputCls, value: editAlocForm.data, onChange: e => setEditAlocForm(f=>({...f,data:e.target.value})) })
+        CE('div',null,
+          CE('label',{className:labelCls},'Data'),
+          CE('input',{type:'date',className:inputCls,value:editAlocForm.data,onChange:e=>setEditAlocForm(f=>({...f,data:e.target.value}))})
         ),
-        CE('div', null,
-          CE('label', { className: labelCls }, 'Período'),
-          CE('select', { className: inputCls, value: editAlocForm.periodo, onChange: e => setEditAlocForm(f=>({...f,periodo:e.target.value})) },
-            ['Manhã','Tarde','Integral'].map(p => CE('option',{key:p,value:p},p))
+        CE('div',null,
+          CE('label',{className:labelCls},'Período'),
+          CE('select',{className:inputCls,value:editAlocForm.periodo,onChange:e=>setEditAlocForm(f=>({...f,periodo:e.target.value}))},
+            ['Manhã','Tarde','Integral'].map(p=>CE('option',{key:p,value:p},p))
           )
         ),
-        CE('div', null,
-          CE('label', { className: labelCls }, 'Frequência'),
-          CE('input', { type:'number', min:1, className: inputCls, value: editAlocForm.frequencia, onChange: e => setEditAlocForm(f=>({...f,frequencia:e.target.value})) })
+        CE('div',null,
+          CE('label',{className:labelCls},'Frequência'),
+          CE('input',{type:'number',min:1,className:inputCls,value:editAlocForm.frequencia,onChange:e=>setEditAlocForm(f=>({...f,frequencia:e.target.value}))})
         ),
-        CE('div', { className: 'col-span-2 flex gap-2 pt-1' },
-          CE('button', { onClick: saveEditAloc, disabled: savingEdit, className: 'px-4 py-2 bg-green-600 text-white text-sm rounded-lg transition disabled:opacity-40' }, savingEdit ? '⏳...' : '✓ Salvar'),
-          CE('button', { onClick: ()=>setEditingAloc(null), className: 'px-4 py-2 bg-white border border-slate-200 text-slate-600 text-sm rounded-lg hover:bg-slate-50' }, 'Cancelar')
+        CE('div',null,
+          CE('label',{className:labelCls},'Valor Ativ. (R$)'),
+          CE('input',{type:'number',min:0,step:'0.01',className:inputCls,value:editAlocForm.valorAtividade,onChange:e=>setEditAlocForm(f=>({...f,valorAtividade:e.target.value}))})
+        ),
+        CE('div',{className:'col-span-2 flex gap-2 pt-1'},
+          CE('button',{onClick:saveEditAloc,disabled:savingEdit,className:'px-4 py-2 bg-green-600 text-white text-sm rounded-lg disabled:opacity-40'},savingEdit?'⏳...':'✓ Salvar'),
+          CE('button',{onClick:()=>setEditingAloc(null),className:'px-4 py-2 bg-white border border-slate-200 text-slate-600 text-sm rounded-lg hover:bg-slate-50'},'Cancelar')
         )
       ),
 
-      // ALLOCATIONS TABLE
-      CE('div', { className: 'bg-white border border-slate-200 rounded-xl overflow-hidden' },
-        CE('table', { className: 'w-full text-sm' },
-          CE('thead', null,
-            CE('tr', { className: 'border-b border-slate-100 bg-slate-50' },
-              ['Parceiro','Projeto','Atividade','Data','Período','Freq.','Ações'].map(h =>
-                CE('th', { key:h, className:'text-left px-4 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wide' }, h)
+      // TABLE
+      CE('div',{className:'bg-white border border-slate-200 rounded-xl overflow-hidden'},
+        CE('div',{className:'scroll-table'},
+          CE('table',{className:'w-full text-sm'},
+            CE('thead',null,
+              CE('tr',{className:'border-b border-slate-100 bg-slate-50'},
+                ['Parceiro','Projeto','Atividade','Data','Período','Freq.','Vl. Atividade','Vl. Dia','Ações'].map(h=>
+                  CE('th',{key:h,className:'text-left px-4 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap'},h)
+                )
               )
-            )
-          ),
-          CE('tbody', null,
-            projAlocacoes.length === 0
-              ? CE('tr', null, CE('td', { colSpan:7, className:'text-center py-12 text-slate-400' }, 'Nenhuma alocação encontrada.'))
-              : projAlocacoes.map(a => CE('tr', { key:a.Id, className: `border-b border-slate-50 hover:bg-slate-50 transition ${editingAloc && editingAloc.Id===a.Id ? 'bg-amber-50' : ''}` },
-                  CE('td', { className:'px-4 py-2.5 font-medium text-slate-800 whitespace-nowrap' }, a.Parceiro),
-                  CE('td', { className:'px-4 py-2.5 text-slate-600 text-xs max-w-[160px] truncate' }, a.Projeto),
-                  CE('td', { className:'px-4 py-2.5 text-slate-600' }, a.Atividade),
-                  CE('td', { className:'px-4 py-2.5 text-slate-600 whitespace-nowrap' }, a.DataAtividade ? new Date(a.DataAtividade).toLocaleDateString('pt-BR') : '—'),
-                  CE('td', { className:'px-4 py-2.5' },
-                    CE('span', { className:`text-xs px-2 py-0.5 rounded-full font-medium ${a.Periodo==='Integral'?'bg-indigo-100 text-indigo-700':a.Periodo==='Manhã'?'bg-amber-100 text-amber-700':'bg-sky-100 text-sky-700'}` }, a.Periodo||'—')
-                  ),
-                  CE('td', { className:'px-4 py-2.5 text-slate-600' }, a.Frequencia||1),
-                  CE('td', { className:'px-4 py-2.5' },
-                    CE('div', { className:'flex gap-1.5' },
-                      CE('button', { title:'Editar', onClick: ()=>openEditAloc(a), className:'p-1 rounded hover:bg-amber-100 text-amber-600 transition' }, '✏️'),
-                      CE('button', { title:'Excluir', onClick: ()=>deleteAlocacao(a.Id), disabled: deletingId===a.Id, className:'p-1 rounded hover:bg-red-100 text-red-500 transition disabled:opacity-40' }, deletingId===a.Id?'⏳':'🗑️')
+            ),
+            CE('tbody',null,
+              projAlocacoes.length===0
+                ? CE('tr',null,CE('td',{colSpan:9,className:'text-center py-12 text-slate-400'},'Nenhuma alocação encontrada.'))
+                : projAlocacoes.map(a=>CE('tr',{key:a.Id,className:`border-b border-slate-50 hover:bg-slate-50 transition ${editingAloc&&editingAloc.Id===a.Id?'bg-amber-50':''}`},
+                    CE('td',{className:'px-4 py-2.5 font-medium text-slate-800 whitespace-nowrap'},a.Parceiro),
+                    CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs max-w-[160px] truncate'},a.Projeto),
+                    CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs max-w-[180px] truncate'},a.Atividade),
+                    CE('td',{className:'px-4 py-2.5 text-slate-600 whitespace-nowrap text-xs'},a.DataAtividade?new Date(a.DataAtividade).toLocaleDateString('pt-BR'):'—'),
+                    CE('td',{className:'px-4 py-2.5'},
+                      CE('span',{className:`text-xs px-2 py-0.5 rounded-full font-medium ${a.Periodo==='Integral'?'bg-indigo-100 text-indigo-700':a.Periodo==='Manhã'?'bg-amber-100 text-amber-700':'bg-sky-100 text-sky-700'}`},a.Periodo||'—')
+                    ),
+                    CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs text-center'},a.Frequencia||1),
+                    CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs whitespace-nowrap'},a.ValorAtividade?`R$ ${Number(a.ValorAtividade).toFixed(2)}`:'—'),
+                    CE('td',{className:'px-4 py-2.5 text-slate-800 text-xs font-semibold whitespace-nowrap'},a.ValorDia?`R$ ${Number(a.ValorDia).toFixed(2)}`:'—'),
+                    CE('td',{className:'px-4 py-2.5'},
+                      CE('div',{className:'flex gap-1.5'},
+                        CE('button',{title:'Editar',onClick:()=>openEditAloc(a),className:'p-1 rounded hover:bg-amber-100 text-amber-600 transition'},'✏️'),
+                        CE('button',{title:'Excluir',onClick:()=>deleteAlocacao(a.Id),disabled:deletingId===a.Id,className:'p-1 rounded hover:bg-red-100 text-red-500 transition disabled:opacity-40'},deletingId===a.Id?'⏳':'🗑️')
+                      )
                     )
-                  )
-                ))
+                  ))
+            )
           )
         )
       )
     ),
 
-    // ═══ GANTT tab ═══
-    tab === 'gantt' && CE('div', { className: 'space-y-3' },
-      CE('div', { className: 'flex gap-1' },
-        [['week','7 dias'],['month','30 dias'],['3months','90 dias']].map(([k,l]) =>
-          CE('button', { key:k, onClick:()=>setGanttRange(k),
-            className:`px-3 py-1.5 text-xs font-medium rounded-lg border transition ${ganttRange===k?'bg-indigo-600 text-white border-indigo-600':'bg-white text-slate-600 border-slate-200 hover:border-indigo-300'}`
-          }, l)
+    // ══════════ GRADE tab ══════════
+    tab==='grade' && CE('div',{className:'space-y-3'},
+      CE('div',{className:'flex items-center gap-3 flex-wrap'},
+        CE('div',{className:'flex gap-1'},
+          [['day','Dia'],['week','Semana'],['month','Mês']].map(([k,l])=>
+            CE('button',{key:k,onClick:()=>setGradeView(k),className:`px-3 py-1.5 text-xs font-medium rounded-lg border transition ${gradeView===k?'bg-indigo-600 text-white border-indigo-600':'bg-white text-slate-600 border-slate-200 hover:border-indigo-300'}`},l)
+          )
+        ),
+        CE('div',{className:'flex items-center gap-2 text-sm'},
+          CE('label',{className:'text-xs text-slate-500'},'De:'),
+          CE('input',{type:'date',className:'border border-slate-200 rounded-lg px-2 py-1 text-xs',value:gradeStart,onChange:e=>setGradeStart(e.target.value)}),
+          CE('label',{className:'text-xs text-slate-500'},'Até:'),
+          CE('input',{type:'date',className:'border border-slate-200 rounded-lg px-2 py-1 text-xs',value:gradeEnd,onChange:e=>setGradeEnd(e.target.value)})
+        ),
+        CE('div',{className:'flex items-center gap-4 text-xs ml-2'},
+          [['M','bg-amber-100 text-amber-800','Manhã'],['T','bg-sky-100 text-sky-800','Tarde'],['I','bg-indigo-100 text-indigo-800','Integral']].map(([l,cls,tip])=>
+            CE('span',{key:l,className:`px-2 py-0.5 rounded-md border font-semibold ${cls}`,title:tip},l)
+          )
         )
       ),
-      ganttRows.length === 0
-        ? CE('div', { className:'text-center py-16 text-slate-400' }, 'Nenhuma alocação no período visível.')
-        : CE('div', { className:'gantt-scroll' },
-            CE('div', { className:'gantt-inner', style:{width:`${gW}px`} },
-              CE('div', { className:'gantt-row ruler' },
-                CE('div', { className:'gantt-label text-xs font-bold text-slate-500 uppercase tracking-wide' }, 'Parceiro'),
-                CE('div', { className:'gantt-track', dangerouslySetInnerHTML:{ __html: dayCols+dayNums+monthMarks+todayLine } })
-              ),
-              ...ganttRows.map(([parceiro, alocs]) =>
-                CE('div', { key:parceiro, className:'gantt-row' },
-                  CE('div', { className:'gantt-label', title:parceiro }, parceiro),
-                  CE('div', { className:'gantt-track', style:{position:'relative',height:36} },
-                    CE('div', { dangerouslySetInnerHTML:{__html: dayCols+todayLine} }),
-                    ...alocs.map(a => {
-                      const off = dayOff(a.DataAtividade);
-                      if (off < 0 || off > gDays) return null;
-                      const color = projColors[a.Projeto] || '#6366f1';
-                      const label = `${a.Atividade||''}${a.Frequencia > 1 ? ` ×${a.Frequencia}`:''}`; 
-                      return CE('div', { key:a.Id, title:`${a.Projeto}\n${a.Atividade}\n${a.Periodo}${a.Frequencia>1?` ×${a.Frequencia}`:''}`,
-                        style:{position:'absolute',left:`${off*DAY_W+2}px`,top:5,width:`${DAY_W-4}px`,height:26,background:color,borderRadius:5,display:'flex',alignItems:'center',paddingLeft:5,overflow:'hidden',cursor:'default',zIndex:2}
-                      }, CE('span',{style:{fontSize:9,color:'#fff',fontWeight:700,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}},label));
-                    }).filter(Boolean)
-                  )
+      gradeParceiros.length===0
+        ? CE('div',{className:'text-center py-16 text-slate-400'},'Nenhuma alocação no período visível.')
+        : CE('div',{className:'scroll-table'},
+            CE('table',{className:'text-xs border-collapse bg-white border border-slate-200 rounded-xl overflow-hidden'},
+              CE('thead',null,
+                CE('tr',{className:'bg-slate-50 border-b border-slate-200'},
+                  CE('th',{className:'sticky left-0 bg-slate-50 z-10 px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap border-r border-slate-200 min-w-[180px]'},'Parceiro'),
+                  ...gradeCols.map(col=>CE('th',{key:col.key,className:`px-2 py-2.5 text-center font-semibold ${col.isWe?'text-slate-400 bg-slate-100':'text-slate-500'} border-l border-slate-100 min-w-[44px] whitespace-nowrap`},col.label))
                 )
               ),
-              CE('div', { className:'gantt-row', style:{borderTop:'2px solid var(--line)',minHeight:44} },
-                CE('div', { className:'gantt-label text-xs font-bold text-slate-400 uppercase' }, 'Legenda'),
-                CE('div', { style:{display:'flex',alignItems:'center',gap:14,padding:'10px 14px',flexWrap:'wrap'} },
-                  ...Object.entries(projColors).map(([proj,color]) =>
-                    CE('div',{key:proj,style:{display:'flex',alignItems:'center',gap:5}},
-                      CE('div',{style:{width:10,height:10,borderRadius:2,background:color,flexShrink:0}}),
-                      CE('span',{style:{fontSize:11,color:'#475569'}},proj)
-                    )
-                  )
-                )
+              CE('tbody',null,
+                ...gradeParceiros.map((parc,pi)=>CE('tr',{key:parc,className:`border-b border-slate-100 ${pi%2===0?'bg-white':'bg-slate-50/40'}`},
+                  CE('td',{className:'sticky left-0 z-10 px-4 py-2 font-medium text-slate-800 whitespace-nowrap border-r border-slate-200',style:{background:pi%2===0?'#fff':'#f8fafc'}},parc),
+                  ...gradeCols.map(col=>{
+                    const alocs=(gradeData[parc]&&gradeData[parc][col.key])||[];
+                    if(!alocs.length) return CE('td',{key:col.key,className:`border-l border-slate-100 px-1 py-1 text-center ${col.isWe?'bg-slate-100/60':''}`,style:{minWidth:44}},
+                      CE('span',{className:'text-slate-200'},'·'));
+                    if(alocs.length===1){const b=periodoBadge(alocs[0].Periodo); return CE('td',{key:col.key,className:`border-l border-slate-100 px-1 py-1 text-center ${col.isWe?'bg-amber-50/30':''}`,style:{minWidth:44},title:`${alocs[0].Atividade||''} — ${alocs[0].Periodo||''}\n${alocs[0].Projeto||''}`},CE('span',{className:`inline-flex items-center justify-center w-7 h-7 rounded-md border text-xs font-bold ${b.cls}`},b.label));}
+                    return CE('td',{key:col.key,className:`border-l border-slate-100 px-1 py-1 text-center`,style:{minWidth:44},title:alocs.map(a=>`${a.Periodo}: ${a.Atividade}`).join('\n')},
+                      CE('span',{className:'inline-flex items-center justify-center w-7 h-7 rounded-md border bg-purple-100 text-purple-800 border-purple-200 text-xs font-bold'},alocs.length)
+                    );
+                  })
+                ))
               )
             )
           )
     ),
 
-    // ═══ PARCEIROS tab ═══
-    tab === 'parceiros' && CE('div', { className: 'space-y-4' },
-      // Edit panel
-      editingParc && CE('div', { className: 'bg-indigo-50 border border-indigo-200 rounded-xl p-5 space-y-4' },
-        CE('div', { className: 'flex items-center justify-between' },
-          CE('h3', { className: 'font-semibold text-indigo-800' }, `✏️ Editando: ${editingParc.Title}`),
-          CE('button', { onClick:()=>setEditingParc(null), className:'text-indigo-400 hover:text-indigo-700 font-bold text-lg' }, '✕')
+    // ══════════ PARCEIROS tab ══════════
+    tab==='parceiros' && CE('div',{className:'space-y-4'},
+      editingParc && CE('div',{className:'bg-indigo-50 border border-indigo-200 rounded-xl p-5 space-y-4'},
+        CE('div',{className:'flex items-center justify-between'},
+          CE('h3',{className:'font-semibold text-indigo-800'},`✏️ Editando: ${editingParc.Title}`),
+          CE('button',{onClick:()=>setEditingParc(null),className:'text-indigo-400 hover:text-indigo-700 font-bold text-lg'},'✕')
         ),
-        CE('div', { className: 'grid grid-cols-2 gap-3 md:grid-cols-3' },
+        CE('div',{className:'grid grid-cols-2 gap-3 md:grid-cols-3'},
           [
             ['status','Status',null,['Ativo','Inativo']],
+            ['classificacao','Classificação',null,null],
             ['atuacao','Atuação',null,null],
             ['empresa','Empresa',null,null],
             ['cnpj','CNPJ',null,null],
+            ['dataInicio','Data Início','date',null],
             ['vigencia','Vigência',null,null],
+            ['gestor','Gestor',null,null],
             ['telefone','Telefone',null,null],
             ['email','E-mail','email',null],
             ['estado','Estado (UF)',null,null],
             ['ingles','Inglês',null,null],
             ['autodeclaracaoRacial','Autodecl. Racial',null,null],
-          ].map(([key,label,type,options]) =>
-            CE('div', { key:key },
-              CE('label', { className: labelCls }, label),
-              options
-                ? CE('select', { className: inputCls, value: editParcForm[key]||'', onChange: e=>setEditParcForm(f=>({...f,[key]:e.target.value})) },
-                    options.map(o => CE('option',{key:o,value:o},o))
-                  )
-                : CE('input', { type: type||'text', className: inputCls, value: editParcForm[key]||'', onChange: e=>setEditParcForm(f=>({...f,[key]:e.target.value})) })
-            )
+            ['renovacao','Renovação',null,null],
+          ].map(([key,label,type,opts])=>CE('div',{key},
+            CE('label',{className:labelCls},label),
+            opts
+              ? CE('select',{className:inputCls,value:editParcForm[key]||'',onChange:e=>setEditParcForm(f=>({...f,[key]:e.target.value}))},opts.map(o=>CE('option',{key:o,value:o},o)))
+              : CE('input',{type:type||'text',className:inputCls,value:editParcForm[key]||'',onChange:e=>setEditParcForm(f=>({...f,[key]:e.target.value}))})
+          )),
+          CE('div',{className:'col-span-2 md:col-span-3'},
+            CE('label',{className:labelCls},'OBS'),
+            CE('textarea',{className:inputCls,rows:2,value:editParcForm.obs||'',onChange:e=>setEditParcForm(f=>({...f,obs:e.target.value}))})
           )
         ),
-        CE('div', { className: 'flex gap-2' },
-          CE('button', { onClick: saveEditParc, disabled: savingParc, className: 'px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-lg transition disabled:opacity-40' }, savingParc?'⏳ Salvando...':'✓ Salvar'),
-          CE('button', { onClick:()=>setEditingParc(null), className:'px-4 py-2 bg-white border border-slate-200 text-slate-600 text-sm rounded-lg hover:bg-slate-50' }, 'Cancelar')
+        CE('div',{className:'flex gap-2'},
+          CE('button',{onClick:saveEditParc,disabled:savingParc,className:'px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-lg transition disabled:opacity-40'},savingParc?'⏳ Salvando...':'✓ Salvar'),
+          CE('button',{onClick:()=>setEditingParc(null),className:'px-4 py-2 bg-white border border-slate-200 text-slate-600 text-sm rounded-lg hover:bg-slate-50'},'Cancelar')
         )
       ),
-
-      // Filters
-      CE('div', { className: 'flex gap-3 flex-wrap' },
-        CE('input', { type:'text', placeholder:'Buscar por nome ou empresa...', className:'border border-slate-200 rounded-lg px-3 py-2 text-sm min-w-[220px]', value: parcFilter, onChange: e=>setParcFilter(e.target.value) }),
-        CE('select', { className:'border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white', value: statusFilter, onChange: e=>setStatusFilter(e.target.value) },
-          CE('option',{value:''},'Todos os status'),
-          CE('option',{value:'Ativo'},'✅ Ativos'),
-          CE('option',{value:'Inativo'},'⚪ Inativos')
+      CE('div',{className:'flex gap-3 flex-wrap'},
+        CE('input',{type:'text',placeholder:'Buscar por nome ou empresa...',className:'border border-slate-200 rounded-lg px-3 py-2 text-sm min-w-[220px]',value:parcFilter,onChange:e=>setParcFilter(e.target.value)}),
+        CE('select',{className:'border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white',value:statusFilter,onChange:e=>setStatusFilter(e.target.value)},
+          CE('option',{value:''},'Todos os status'),CE('option',{value:'Ativo'},'✅ Ativos'),CE('option',{value:'Inativo'},'⚪ Inativos')
         ),
-        CE('span', { className:'self-center text-xs text-slate-400' }, `${filteredParceiros.length} parceiros`)
+        CE('span',{className:'self-center text-xs text-slate-400'},`${filteredParceiros.length} parceiros`)
       ),
-
-      // Partners table
-      CE('div', { className: 'bg-white border border-slate-200 rounded-xl overflow-hidden' },
-        CE('table', { className: 'w-full text-sm' },
-          CE('thead', null,
-            CE('tr', { className: 'border-b border-slate-100 bg-slate-50' },
-              ['Status','Nome','Atuação','Empresa','Vigência','Ação'].map(h =>
-                CE('th', { key:h, className:'text-left px-4 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wide' }, h)
+      CE('div',{className:'bg-white border border-slate-200 rounded-xl overflow-hidden'},
+        CE('div',{className:'scroll-table'},
+          CE('table',{className:'w-full text-sm'},
+            CE('thead',null,
+              CE('tr',{className:'border-b border-slate-100 bg-slate-50'},
+                ['Status','Nome','Classificação','Atuação','Empresa','Gestor','Data Início','Vigência','Renovação','Ação'].map(h=>
+                  CE('th',{key:h,className:'text-left px-4 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap'},h)
+                )
               )
+            ),
+            CE('tbody',null,
+              filteredParceiros.length===0
+                ? CE('tr',null,CE('td',{colSpan:10,className:'text-center py-12 text-slate-400'},'Nenhum parceiro encontrado.'))
+                : filteredParceiros.map(p=>CE('tr',{key:p.Id,className:`border-b border-slate-50 hover:bg-slate-50 transition ${editingParc&&editingParc.Id===p.Id?'bg-indigo-50':''}`},
+                    CE('td',{className:'px-4 py-2.5'},CE('span',{className:`text-xs px-2 py-0.5 rounded-full font-semibold ${p.Status==='Ativo'?'bg-green-100 text-green-700':'bg-slate-100 text-slate-500'}`},p.Status||'—')),
+                    CE('td',{className:'px-4 py-2.5 font-medium text-slate-800 whitespace-nowrap'},p.Title),
+                    CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs'},p.Classificacao||'—'),
+                    CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs'},p.Atuacao||'—'),
+                    CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs max-w-[160px] truncate'},p.Empresa||'—'),
+                    CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs whitespace-nowrap'},p.Gestor||'—'),
+                    CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs whitespace-nowrap'},p.DataInicio?new Date(p.DataInicio).toLocaleDateString('pt-BR'):'—'),
+                    CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs whitespace-nowrap'},p.Vigencia||'—'),
+                    CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs'},p.Renovacao||'—'),
+                    CE('td',{className:'px-4 py-2.5'},CE('button',{onClick:()=>openEditParc(p),className:'p-1 rounded hover:bg-indigo-100 text-indigo-600 transition'},'✏️'))
+                  ))
+            )
+          )
+        )
+      )
+    ),
+
+    // ══════════ ATIVIDADES tab ══════════
+    tab==='atividades' && CE('div',{className:'space-y-4'},
+      CE('div',{className:'flex items-center gap-3 flex-wrap justify-between'},
+        CE('h2',{className:'text-base font-semibold text-slate-800'},'Gestão de Atividades'),
+        CE('div',{className:'flex gap-2'},
+          CE('button',{onClick:downloadAtivTemplate,className:'px-3 py-1.5 text-xs border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 transition'},'⬇ Baixar modelo Excel'),
+          CE('label',{className:`px-3 py-1.5 text-xs border rounded-lg cursor-pointer transition ${uploadingAtiv?'border-slate-200 text-slate-400 bg-slate-50':'border-indigo-200 text-indigo-600 hover:bg-indigo-50'}`},
+            uploadingAtiv?'⏳ Importando...':'⬆ Importar Excel',
+            CE('input',{type:'file',accept:'.xlsx,.xls',className:'hidden',disabled:uploadingAtiv,onChange:e=>{if(e.target.files[0]){uploadAtivExcel(e.target.files[0]);e.target.value='';}}})
+          )
+        )
+      ),
+      // Nova atividade
+      CE('div',{className:'bg-white border border-slate-200 rounded-xl p-4 flex items-end gap-3 flex-wrap'},
+        CE('div',{className:'flex-1 min-w-[200px]'},
+          CE('label',{className:labelCls},'Nova atividade'),
+          CE('input',{type:'text',placeholder:'Nome da atividade',className:inputCls,value:newAtivForm.titulo,onChange:e=>setNewAtivForm(f=>({...f,titulo:e.target.value}))})
+        ),
+        CE('div',{className:'w-36'},
+          CE('label',{className:labelCls},'Valor (R$)'),
+          CE('input',{type:'number',min:0,step:'0.01',placeholder:'0.00',className:inputCls,value:newAtivForm.valor,onChange:e=>setNewAtivForm(f=>({...f,valor:e.target.value}))})
+        ),
+        CE('button',{onClick:saveNewAtiv,disabled:savingNewAtiv||!newAtivForm.titulo,className:'px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg transition disabled:opacity-40'},savingNewAtiv?'⏳ Salvando...':'+ Adicionar')
+      ),
+      // Edit panel
+      editingAtiv && CE('div',{className:'bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-end gap-3 flex-wrap'},
+        CE('div',{className:'flex-1 min-w-[200px]'},
+          CE('label',{className:labelCls},'Nome'),
+          CE('input',{type:'text',className:inputCls,value:editAtivForm.titulo,onChange:e=>setEditAtivForm(f=>({...f,titulo:e.target.value}))})
+        ),
+        CE('div',{className:'w-36'},
+          CE('label',{className:labelCls},'Valor (R$)'),
+          CE('input',{type:'number',min:0,step:'0.01',className:inputCls,value:editAtivForm.valor,onChange:e=>setEditAtivForm(f=>({...f,valor:e.target.value}))})
+        ),
+        CE('div',{className:'flex gap-2'},
+          CE('button',{onClick:saveEditAtiv,disabled:savingAtiv,className:'px-4 py-2 bg-green-600 text-white text-sm rounded-lg disabled:opacity-40'},savingAtiv?'⏳...':'✓ Salvar'),
+          CE('button',{onClick:()=>setEditingAtiv(null),className:'px-4 py-2 bg-white border border-slate-200 text-slate-600 text-sm rounded-lg hover:bg-slate-50'},'Cancelar')
+        )
+      ),
+      CE('div',{className:'bg-white border border-slate-200 rounded-xl overflow-hidden'},
+        CE('table',{className:'w-full text-sm'},
+          CE('thead',null,
+            CE('tr',{className:'border-b border-slate-100 bg-slate-50'},
+              ['Atividade','Valor (R$)','Ações'].map(h=>CE('th',{key:h,className:'text-left px-4 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wide'},h))
             )
           ),
-          CE('tbody', null,
-            filteredParceiros.length === 0
-              ? CE('tr', null, CE('td', { colSpan:6, className:'text-center py-12 text-slate-400' }, 'Nenhum parceiro encontrado.'))
-              : filteredParceiros.map(p => CE('tr', { key:p.Id, className:`border-b border-slate-50 hover:bg-slate-50 transition ${editingParc && editingParc.Id===p.Id ? 'bg-indigo-50' : ''}` },
-                  CE('td', { className:'px-4 py-2.5' },
-                    CE('span', { className:`text-xs px-2 py-0.5 rounded-full font-semibold ${p.Status==='Ativo'?'bg-green-100 text-green-700':'bg-slate-100 text-slate-500'}` }, p.Status||'—')
-                  ),
-                  CE('td', { className:'px-4 py-2.5 font-medium text-slate-800' }, p.Title),
-                  CE('td', { className:'px-4 py-2.5 text-slate-600 text-xs' }, p.Atuacao||'—'),
-                  CE('td', { className:'px-4 py-2.5 text-slate-600 text-xs max-w-[200px] truncate' }, p.Empresa||'—'),
-                  CE('td', { className:'px-4 py-2.5 text-slate-600 text-xs whitespace-nowrap' }, p.Vigencia||'—'),
-                  CE('td', { className:'px-4 py-2.5' },
-                    CE('button', { onClick:()=>openEditParc(p), className:'p-1 rounded hover:bg-indigo-100 text-indigo-600 transition' }, '✏️')
+          CE('tbody',null,
+            atividades.length===0
+              ? CE('tr',null,CE('td',{colSpan:3,className:'text-center py-10 text-slate-400'},'Nenhuma atividade cadastrada.'))
+              : atividades.map(a=>CE('tr',{key:a.Id,className:`border-b border-slate-50 hover:bg-slate-50 ${editingAtiv&&editingAtiv.Id===a.Id?'bg-amber-50':''}`},
+                  CE('td',{className:'px-4 py-2.5 font-medium text-slate-800'},a.Title),
+                  CE('td',{className:'px-4 py-2.5 text-slate-600'},a.Valor?`R$ ${Number(a.Valor).toFixed(2)}`:'—'),
+                  CE('td',{className:'px-4 py-2.5'},
+                    CE('div',{className:'flex gap-1.5'},
+                      CE('button',{onClick:()=>{setEditingAtiv(a);setEditAtivForm({titulo:a.Title,valor:a.Valor||0});},className:'p-1 rounded hover:bg-amber-100 text-amber-600 transition'},'✏️'),
+                      CE('button',{onClick:()=>deleteAtividade(a.Id),disabled:deletingAtivId===a.Id,className:'p-1 rounded hover:bg-red-100 text-red-500 transition disabled:opacity-40'},deletingAtivId===a.Id?'⏳':'🗑️')
+                    )
                   )
                 ))
           )
         )
       )
+    ),
+
+    // ══════════ DASHBOARD tab ══════════
+    tab==='dashboard' && CE('div',{className:'space-y-5'},
+      // Filters
+      CE('div',{className:'bg-white border border-slate-200 rounded-xl p-4 grid grid-cols-2 gap-3 md:grid-cols-5'},
+        CE('div',null,
+          CE('label',{className:labelCls},'Ciclo'),
+          CE('select',{className:inputCls,value:dashCiclo,onChange:e=>setDashCiclo(e.target.value)},
+            CE('option',{value:''},'Todos'),ciclos.map(c=>CE('option',{key:c,value:c},c))
+          )
+        ),
+        CE('div',null,
+          CE('label',{className:labelCls},'De'),
+          CE('input',{type:'date',className:inputCls,value:dashFrom,onChange:e=>setDashFrom(e.target.value)})
+        ),
+        CE('div',null,
+          CE('label',{className:labelCls},'Até'),
+          CE('input',{type:'date',className:inputCls,value:dashTo,onChange:e=>setDashTo(e.target.value)})
+        ),
+        CE('div',null,
+          CE('label',{className:labelCls},'Projeto'),
+          CE('select',{className:inputCls,value:dashProject,onChange:e=>setDashProject(e.target.value)},
+            CE('option',{value:''},'Todos'),
+            [...new Set(alocacoes.map(a=>a.Projeto).filter(Boolean))].sort().map(p=>CE('option',{key:p,value:p},p))
+          )
+        ),
+        CE('div',null,
+          CE('label',{className:labelCls},'Pessoa'),
+          CE('select',{className:inputCls,value:dashPerson,onChange:e=>setDashPerson(e.target.value)},
+            CE('option',{value:''},'Todas'),
+            parceiros.map(p=>CE('option',{key:p.Id,value:p.Title},p.Title))
+          )
+        )
+      ),
+
+      // KPIs
+      CE('div',{className:'grid grid-cols-2 gap-4 md:grid-cols-4'},
+        [
+          ['💰 Custo Total',`R$ ${dashMetrics.totalCusto.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}`,`${dashAlocs.length} alocações`,'bg-indigo-600'],
+          ['📁 Projetos',Object.keys(dashMetrics.byProj).length,'com alocações','bg-emerald-600'],
+          ['👥 Parceiros',Object.keys(dashMetrics.byPerson).length,'alocados','bg-sky-600'],
+          ['🎯 Atividades',Object.keys(dashMetrics.byAtiv).length,'tipos','bg-violet-600'],
+        ].map(([label,value,sub,bg])=>CE('div',{key:label,className:`${bg} rounded-xl p-4 text-white`},
+          CE('div',{className:'text-xs font-medium opacity-80 mb-1'},label),
+          CE('div',{className:'text-2xl font-bold leading-none mb-1'},value),
+          CE('div',{className:'text-xs opacity-70'},sub)
+        ))
+      ),
+
+      // Charts grid
+      CE('div',{className:'grid grid-cols-1 gap-5 md:grid-cols-2'},
+
+        // Custo por projeto
+        CE('div',{className:'bg-white border border-slate-200 rounded-xl p-5'},
+          CE('h3',{className:'text-sm font-semibold text-slate-700 mb-4'},'💰 Custo por Projeto'),
+          CE(BarChart,{
+            data:Object.entries(dashMetrics.byProj).sort((a,b)=>b[1].custo-a[1].custo).slice(0,10).map(([label,v])=>({label,value:v.custo})),
+            valueKey:'value',labelKey:'label',color:'#6366f1',height:160
+          })
+        ),
+
+        // Custo por pessoa
+        CE('div',{className:'bg-white border border-slate-200 rounded-xl p-5'},
+          CE('h3',{className:'text-sm font-semibold text-slate-700 mb-4'},'👤 Custo por Parceiro'),
+          CE(BarChart,{
+            data:Object.entries(dashMetrics.byPerson).sort((a,b)=>b[1].custo-a[1].custo).slice(0,10).map(([label,v])=>({label,value:v.custo})),
+            valueKey:'value',labelKey:'label',color:'#0ea5e9',height:160
+          })
+        ),
+
+        // Alocações por atividade
+        CE('div',{className:'bg-white border border-slate-200 rounded-xl p-5'},
+          CE('h3',{className:'text-sm font-semibold text-slate-700 mb-4'},'🎯 Alocações por Atividade'),
+          CE(BarChart,{
+            data:Object.entries(dashMetrics.byAtiv).sort((a,b)=>b[1]-a[1]).slice(0,10).map(([label,value])=>({label,value})),
+            valueKey:'value',labelKey:'label',color:'#8b5cf6',height:160
+          })
+        ),
+
+        // Por tempo
+        CE('div',{className:'bg-white border border-slate-200 rounded-xl p-5'},
+          CE('h3',{className:'text-sm font-semibold text-slate-700 mb-3'},
+            '📅 Alocações por ',
+            CE('span',{className:'inline-flex gap-1 ml-1'},
+              [['day','Dia'],['week','Sem.'],['month','Mês']].map(([k,l])=>CE('button',{key:k,onClick:()=>setDashGroupBy(k),className:`px-2 py-0.5 text-xs rounded border transition ${dashGroupBy===k?'bg-indigo-600 text-white border-indigo-600':'text-slate-500 border-slate-200 hover:border-indigo-300'}`},l))
+            )
+          ),
+          CE(BarChart,{
+            data:Object.entries(dashMetrics.byTime).sort((a,b)=>a[0].localeCompare(b[0])).map(([label,v])=>({label,value:v.count})),
+            valueKey:'value',labelKey:'label',color:'#10b981',height:160
+          })
+        )
+      ),
+
+      // Alocações por projeto (count)
+      CE('div',{className:'bg-white border border-slate-200 rounded-xl p-5'},
+        CE('h3',{className:'text-sm font-semibold text-slate-700 mb-4'},'📊 Número de Alocações por Projeto'),
+        CE(BarChart,{
+          data:Object.entries(dashMetrics.byProj).sort((a,b)=>b[1].count-a[1].count).map(([label,v])=>({label,value:v.count})),
+          valueKey:'value',labelKey:'label',color:'#f59e0b',height:160
+        })
+      )
     )
   );
 }
+
 
 // ─── Home Screen (module selector, shown after login) ────────────────────────
 function HomeScreen({
