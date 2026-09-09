@@ -7308,20 +7308,75 @@ function ParceirosView({ projects, token, headMembers: headMembersProp }) {
   }
 
   async function trySendEmail(token, toEmails, ccEmails, subject, body, filename, b64) {
+    const htmlBody = `<pre style="font-family:Arial,sans-serif;white-space:pre-wrap">${body.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</pre>`;
+    // 1. Try to acquire Graph token via MSAL (silent first, then popup)
+    let graphToken = null;
     try {
-      const msg = {
-        message: {
-          subject,
-          body:{contentType:'HTML',content:`<pre style="font-family:Arial,sans-serif;white-space:pre-wrap">${body.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</pre>`},
-          toRecipients:toEmails.map(e=>({emailAddress:{address:e}})),
-          ccRecipients:ccEmails.map(e=>({emailAddress:{address:e}})),
-          attachments:b64?[{'@odata.type':'#microsoft.graph.fileAttachment',name:filename,contentType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',contentBytes:b64}]:[]
-        }, saveToSentItems:true
-      };
-      const res = await fetch('https://graph.microsoft.com/v1.0/me/sendMail',{
-        method:'POST', headers:{'Authorization':`Bearer ${token}`,'Content-Type':'application/json'}, body:JSON.stringify(msg)
+      const app = getMsalApp(APP_CONFIG.clientId, APP_CONFIG.tenantId);
+      await app.initialize();
+      const accounts = app.getAllAccounts();
+      if (accounts.length > 0) {
+        try {
+          const r = await app.acquireTokenSilent({scopes:['https://graph.microsoft.com/Mail.Send'],account:accounts[0]});
+          graphToken = r.accessToken;
+        } catch {
+          const r = await app.acquireTokenPopup({scopes:['https://graph.microsoft.com/Mail.Send'],account:accounts[0]});
+          graphToken = r.accessToken;
+        }
+      }
+    } catch {}
+
+    // 2. If Graph token obtained, send via Graph API (with attachment)
+    if (graphToken) {
+      try {
+        const msg = {
+          message:{
+            subject,
+            body:{contentType:'HTML',content:htmlBody},
+            toRecipients:toEmails.map(e=>({emailAddress:{address:e}})),
+            ccRecipients:ccEmails.map(e=>({emailAddress:{address:e}})),
+            attachments:b64?[{'@odata.type':'#microsoft.graph.fileAttachment',name:filename,
+              contentType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',contentBytes:b64}]:[]
+          }, saveToSentItems:true
+        };
+        const res = await fetch('https://graph.microsoft.com/v1.0/me/sendMail',{
+          method:'POST', headers:{'Authorization':`Bearer ${graphToken}`,'Content-Type':'application/json'}, body:JSON.stringify(msg)
+        });
+        if (res.ok||res.status===202) {
+          // Also auto-download the attachment locally
+          if (b64) {
+            const bytes=atob(b64); const arr=new Uint8Array(bytes.length);
+            for (let i=0;i<bytes.length;i++) arr[i]=bytes.charCodeAt(i);
+            const blob=new Blob([arr],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+            const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=filename; a.click();
+          }
+          return true;
+        }
+      } catch {}
+    }
+
+    // 3. Fallback: SP.Utilities.Utility.SendEmail (no attachment) + auto-download
+    try {
+      const bodyWithNote = htmlBody + (b64?'<br><br><em>📎 O anexo foi baixado automaticamente no seu computador.</em>':'');
+      const spRes = await fetch(`${PARC_SITE}/_api/SP.Utilities.Utility.SendEmail`, {
+        method:'POST',
+        headers:{'Authorization':`Bearer ${token}`,'Content-Type':'application/json;odata=verbose','Accept':'application/json;odata=verbose'},
+        body:JSON.stringify({properties:{
+          '__metadata':{type:'SP.Utilities.EmailProperties'},
+          To:{results:toEmails},
+          CC:{results:ccEmails.filter(Boolean)},
+          Subject:subject,
+          Body:bodyWithNote
+        }})
       });
-      return res.ok||res.status===202;
+      // Auto-download the attachment so the user has the file
+      if (b64) {
+        const bytes=atob(b64); const arr=new Uint8Array(bytes.length);
+        for (let i=0;i<bytes.length;i++) arr[i]=bytes.charCodeAt(i);
+        const blob=new Blob([arr],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+        const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=filename; a.click();
+      }
+      return spRes.ok||spRes.status===200;
     } catch { return false; }
   }
 
