@@ -7175,11 +7175,24 @@ function ParceirosView({ projects, token, headMembers: headMembersProp }) {
   const [tipoAlocacaoForm, setTipoAlocacaoForm] = useState('parceiros');
   const [gradeTipoFilter, setGradeTipoFilter] = useState('todos');
   const [dashTipo, setDashTipo] = useState('');
+  // ── Comunicações / Histórico ──
+  const [showSendModal, setShowSendModal] = useState(false);
+  const [sendMsgHead, setSendMsgHead] = useState({assunto:'Alocações do projeto',corpo:''});
+  const [sendMsgFixo, setSendMsgFixo] = useState({assunto:'Suas alocações no projeto',corpo:''});
+  const [sendMsgParceiro, setSendMsgParceiro] = useState({assunto:'Suas alocações no projeto',corpo:''});
+  const [sendEmailFields, setSendEmailFields] = useState({});
+  const [sendingEmails, setSendingEmails] = useState(false);
+  const [sendResult, setSendResult] = useState(null);
+  const [historico, setHistorico] = useState([]);
+  const [histEntityType, setHistEntityType] = useState('');
+  const [headEmailMap, setHeadEmailMap] = useState({});
+  const [sentAlocsMap, setSentAlocsMap] = useState({});
 
   const PARC_SITE = SP_PARC_SITE_URL;
   const DAY_MS = 86400000;
 
   useEffect(() => { if (token) loadAll(); }, [token]);
+  useEffect(() => { if (token) { loadHeadEmails(); loadHistorico(); } }, [token]);
 
   async function loadAll() {
     setLoading(true); setError(null);
@@ -7200,6 +7213,160 @@ function ParceirosView({ projects, token, headMembers: headMembersProp }) {
       if (tAtiv && tAtiv.ListItemEntityTypeFullName) setAtivEntityType(tAtiv.ListItemEntityTypeFullName);
     } catch (e) { setError(e.message); }
     setLoading(false);
+  }
+
+  // ── Comunicações: funções ──
+  async function loadHeadEmails() {
+    try {
+      const r = await spFetch(token, `${SP_SITE_URL}/_api/web/lists/getbytitle('${SP_TEAM_LIST}')/items?$select=Title,Usuario&$top=500`);
+      const map = {};
+      for (const item of (r.value||[])) { if (item.Title) map[item.Title.trim()]=(item.Usuario||'').trim(); }
+      setHeadEmailMap(map);
+    } catch {}
+  }
+
+  async function loadHistorico() {
+    try {
+      const r = await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Comunicacao_Historico')/items?$select=Id,Title,DataEnvio,Projeto,Destinatario,TipoDestinatario,Assunto,Status,AlocacoesIds&$top=300&$orderby=DataEnvio desc`);
+      const hist = r.value||[];
+      setHistorico(hist);
+      const sm={};
+      for (const h of hist) {
+        for (const id of (h.AlocacoesIds||'').split(',').map(s=>s.trim()).filter(Boolean)) {
+          if (!sm[id]) sm[id]=[];
+          if (h.TipoDestinatario&&!sm[id].includes(h.TipoDestinatario)) sm[id].push(h.TipoDestinatario);
+        }
+      }
+      setSentAlocsMap(sm);
+      const t = await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Comunicacao_Historico')?$select=ListItemEntityTypeFullName`);
+      if (t&&t.ListItemEntityTypeFullName) setHistEntityType(t.ListItemEntityTypeFullName);
+    } catch {}
+  }
+
+  async function saveHistoricoEntry({projeto, destinatario, tipo, assunto, status, alocIds}) {
+    if (!histEntityType) return;
+    try {
+      await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Comunicacao_Historico')/items`, {
+        method:'POST', headers:{'Content-Type':'application/json;odata=verbose'},
+        body:JSON.stringify({__metadata:{type:histEntityType}, Title:assunto.slice(0,255),
+          DataEnvio:new Date().toISOString(), Projeto:projeto||'',
+          Destinatario:(destinatario||'').slice(0,255), TipoDestinatario:tipo||'',
+          Assunto:assunto.slice(0,255), Status:status||'',
+          AlocacoesIds:(alocIds||[]).join(',')})
+      });
+    } catch {}
+  }
+
+  function initSendModal() {
+    const selected = projAlocacoes.filter(a=>selectedAlocIds.has(a.Id));
+    const byProj = {};
+    for (const a of selected) {
+      const pk = a.Projeto||'Sem projeto';
+      if (!byProj[pk]) byProj[pk]={alocs:[],fixoNames:new Set(),parcNames:new Set()};
+      byProj[pk].alocs.push(a);
+      if (a.ParceiroId==='FIXO') byProj[pk].fixoNames.add(a.Parceiro||'');
+      else byProj[pk].parcNames.add(a.Parceiro||'');
+    }
+    const fields = {};
+    for (const [pk, data] of Object.entries(byProj)) {
+      const proj = projects.find(p=>p.title===pk||(data.alocs[0]&&String(p.spId)===data.alocs[0].ProjetoSpId));
+      const headNames = proj?_projHeads(proj):[];
+      const headEmails = headNames.map(n=>headEmailMap[n]||'').filter(Boolean);
+      const fixoEmails = [...data.fixoNames].map(n=>headEmailMap[n]||'').filter(Boolean);
+      const parcEmails = [...data.parcNames].map(n=>{const p=parceiros.find(x=>x.Title===n);return p&&p.Email?p.Email:'';}).filter(Boolean);
+      fields[pk] = {alocacoes:data.alocs, headInput:headEmails.join(', '), fixoInput:fixoEmails.join(', '), parceiroInput:parcEmails.join(', '), cc:''};
+    }
+    setSendEmailFields(fields);
+    setSendResult(null);
+    setShowSendModal(true);
+  }
+
+  async function generateExcelB64(alocs, tipo) {
+    const XLSX = await loadXLSX();
+    const isFx = a=>a.ParceiroId==='FIXO';
+    const fd = d=>d?new Date(d).toLocaleDateString('pt-BR'):'';
+    const showVal = tipo!=='fixo';
+    const alocRows = alocs.map(a=>({
+      'Parceiro':a.Parceiro||'', 'Tipo':isFx(a)?'Fixo':'Parceiro', 'Projeto':a.Projeto||'',
+      'Atividade':a.Atividade||'', 'Data':fd(a.DataAtividade), 'Período':a.Periodo||'', 'Frequência':a.Frequencia||1,
+      ...(showVal&&!isFx(a)?{'Valor Atividade (R$)':a.ValorAtividade||0,'Valor Dia (R$)':a.ValorDia||0}:{})
+    }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(alocRows), 'Alocações');
+    if (showVal) {
+      const alinhByP={};
+      for (const a of alocs) {
+        if (isFx(a)||a.CobraAlinhamento!=='Sim'||!a.AtivAlinhamento) continue;
+        const k=a.Parceiro||'';
+        if (!alinhByP[k]) alinhByP[k]={parc:k,ativ:a.AtivAlinhamento,horas:0,vH:a.HorasAlinhamento>0?Number(a.ValorAlinhamento)/Number(a.HorasAlinhamento):0};
+        alinhByP[k].horas+=Number(a.HorasAlinhamento)||0;
+      }
+      const ar=Object.values(alinhByP).map(r=>({'Parceiro':r.parc,'Atividade':r.ativ,'Horas':r.horas,'Valor/h':r.vH.toFixed(2),'Total (R$)':(r.horas*r.vH).toFixed(2)}));
+      if (ar.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(ar), 'Alinhamento');
+    }
+    return XLSX.write(wb, {type:'base64',bookType:'xlsx'});
+  }
+
+  async function trySendEmail(token, toEmails, ccEmails, subject, body, filename, b64) {
+    try {
+      const msg = {
+        message: {
+          subject,
+          body:{contentType:'HTML',content:`<pre style="font-family:Arial,sans-serif;white-space:pre-wrap">${body.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</pre>`},
+          toRecipients:toEmails.map(e=>({emailAddress:{address:e}})),
+          ccRecipients:ccEmails.map(e=>({emailAddress:{address:e}})),
+          attachments:b64?[{'@odata.type':'#microsoft.graph.fileAttachment',name:filename,contentType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',contentBytes:b64}]:[]
+        }, saveToSentItems:true
+      };
+      const res = await fetch('https://graph.microsoft.com/v1.0/me/sendMail',{
+        method:'POST', headers:{'Authorization':`Bearer ${token}`,'Content-Type':'application/json'}, body:JSON.stringify(msg)
+      });
+      return res.ok||res.status===202;
+    } catch { return false; }
+  }
+
+  async function sendComunicacoes() {
+    setSendingEmails(true); setSendResult(null);
+    const results=[];
+    try {
+      for (const [projeto, fields] of Object.entries(sendEmailFields)) {
+        const alocs = fields.alocacoes;
+        // Parceiros (individuais por email)
+        const parcEmails = fields.parceiroInput.split(',').map(s=>s.trim()).filter(Boolean);
+        for (const em of parcEmails) {
+          const parc = parceiros.find(p=>p.Email===em);
+          const myAlocs = parc?alocs.filter(a=>a.Parceiro===parc.Title&&a.ParceiroId!=='FIXO'):alocs.filter(a=>a.ParceiroId!=='FIXO');
+          const b64 = await generateExcelB64(myAlocs,'parceiro');
+          const ok = await trySendEmail(token,[em],fields.cc.split(',').map(s=>s.trim()).filter(Boolean),sendMsgParceiro.assunto,sendMsgParceiro.corpo,`alocacoes_${projeto}.xlsx`,b64);
+          const status = ok?'Enviado':'Falha (sem escopo Graph)';
+          results.push({projeto,dest:em,tipo:'Parceiro',status});
+          await saveHistoricoEntry({projeto,destinatario:em,tipo:'Parceiro',assunto:sendMsgParceiro.assunto,status,alocIds:myAlocs.map(a=>String(a.Id))});
+        }
+        // Fixos (individuais por email)
+        const fixoEmails = fields.fixoInput.split(',').map(s=>s.trim()).filter(Boolean);
+        for (const em of fixoEmails) {
+          const fixName = Object.entries(headEmailMap).find(([n,e])=>e===em)?.[0];
+          const myAlocs = fixName?alocs.filter(a=>a.Parceiro===fixName&&a.ParceiroId==='FIXO'):alocs.filter(a=>a.ParceiroId==='FIXO');
+          const b64 = await generateExcelB64(myAlocs,'fixo');
+          const ok = await trySendEmail(token,[em],fields.cc.split(',').map(s=>s.trim()).filter(Boolean),sendMsgFixo.assunto,sendMsgFixo.corpo,`alocacoes_${projeto}_fixo.xlsx`,b64);
+          const status = ok?'Enviado':'Falha (sem escopo Graph)';
+          results.push({projeto,dest:em,tipo:'Fixo',status});
+          await saveHistoricoEntry({projeto,destinatario:em,tipo:'Fixo',assunto:sendMsgFixo.assunto,status,alocIds:myAlocs.map(a=>String(a.Id))});
+        }
+        // Heads (todos juntos, excel completo)
+        const headEmails = fields.headInput.split(',').map(s=>s.trim()).filter(Boolean);
+        if (headEmails.length) {
+          const b64 = await generateExcelB64(alocs,'head');
+          const ok = await trySendEmail(token,headEmails,fields.cc.split(',').map(s=>s.trim()).filter(Boolean),sendMsgHead.assunto,sendMsgHead.corpo,`alocacoes_${projeto}_completo.xlsx`,b64);
+          const status = ok?'Enviado':'Falha (sem escopo Graph)';
+          results.push({projeto,dest:headEmails.join(', '),tipo:'Head',status});
+          await saveHistoricoEntry({projeto,destinatario:headEmails.join(', '),tipo:'Head',assunto:sendMsgHead.assunto,status,alocIds:alocs.map(a=>String(a.Id))});
+        }
+      }
+      setSendResult(results);
+      await loadHistorico();
+    } catch(e) { setError(e.message); }
+    setSendingEmails(false);
   }
 
   // ── Derived ──
@@ -7543,6 +7710,30 @@ function ParceirosView({ projects, token, headMembers: headMembersProp }) {
       await loadAll();
     } catch(e) { setError(e.message); }
     setDeletingId(null);
+  }
+
+  async function createAlocacaoColumns() {
+    const fields = [
+      {name:'CobraAlinhamento', type:'SP.Field',        kind:2},
+      {name:'AtivAlinhamento',  type:'SP.Field',        kind:2},
+      {name:'HorasAlinhamento', type:'SP.FieldNumber',  kind:9},
+      {name:'ValorAlinhamento', type:'SP.FieldNumber',  kind:9},
+    ];
+    let created=0, skipped=0;
+    for (const f of fields) {
+      try {
+        await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Alocacao')/fields`, {
+          method:'POST',
+          headers:{'Content-Type':'application/json;odata=verbose'},
+          body:JSON.stringify({"__metadata":{"type":f.type},"Title":f.name,"StaticName":f.name,"FieldTypeKind":f.kind})
+        });
+        created++;
+      } catch(e) {
+        if (e.message&&(e.message.includes('já existe')||e.message.includes('already exists')||e.message.includes('duplicate')||e.message.includes('-2130575338'))) skipped++;
+        else { setError(`Erro ao criar campo ${f.name}: ${e.message}`); return; }
+      }
+    }
+    alert(`✅ Colunas criadas: ${created} | Já existiam: ${skipped}\nRecarregue para aplicar.`);
   }
 
   async function bulkDelete() {
@@ -7892,7 +8083,7 @@ function ParceirosView({ projects, token, headMembers: headMembersProp }) {
     // Tabs + ciclo
     CE('div',{className:'flex items-center justify-between flex-wrap gap-3'},
       CE('div',{className:'flex gap-1 bg-white border border-slate-200 rounded-xl p-1 flex-wrap'},
-        [['alocacoes','📋 Alocações'],['grade','📅 Grade'],['parceiros','👥 Parceiros'],['atividades','🎯 Atividades'],['dashboard','📊 Dashboard']].map(([k,l])=>
+        [['alocacoes','📋 Alocações'],['grade','📅 Grade'],['parceiros','👥 Parceiros'],['atividades','🎯 Atividades'],['dashboard','📊 Dashboard'],['historico','📨 Histórico']].map(([k,l])=>
           CE('button',{key:k,onClick:()=>setTab(k),className:`px-3 py-1.5 rounded-lg text-xs font-medium transition ${tab===k?'bg-indigo-600 text-white shadow':'text-slate-500 hover:text-slate-700'}`},l)
         )
       ),
@@ -7915,7 +8106,8 @@ function ParceirosView({ projects, token, headMembers: headMembersProp }) {
         selectedAlocIds.size>0&&CE('div',{className:'flex items-center gap-2 ml-auto'},
           CE('span',{className:'text-xs text-slate-500'},`${selectedAlocIds.size} selecionada(s)`),
           CE('button',{onClick:()=>{setShowBulkEdit(s=>!s);},className:'px-3 py-1.5 text-xs border border-amber-200 text-amber-700 rounded-lg hover:bg-amber-50 transition'},showBulkEdit?'✕ Cancelar edição':'✏️ Editar seleção'),
-          CE('button',{onClick:bulkDelete,disabled:bulkDeleting,className:'px-3 py-1.5 text-xs bg-red-500 hover:bg-red-600 text-white rounded-lg transition disabled:opacity-40'},bulkDeleting?'⏳...':'🗑️ Excluir seleção')
+          CE('button',{onClick:bulkDelete,disabled:bulkDeleting,className:'px-3 py-1.5 text-xs bg-red-500 hover:bg-red-600 text-white rounded-lg transition disabled:opacity-40'},bulkDeleting?'⏳...':'🗑️ Excluir seleção'),
+          CE('button',{onClick:initSendModal,className:'px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition'},'📧 Enviar Comunicações')
         ),
         CE('div',{className:'flex gap-2 ml-auto'},
           CE('button',{onClick:downloadAlocTemplate,className:'px-3 py-2 text-xs border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 transition'},'⬇ Modelo'),
@@ -7923,6 +8115,7 @@ function ParceirosView({ projects, token, headMembers: headMembersProp }) {
             uploadingAloc?'⏳ Importando...':'⬆ Importar',
             CE('input',{type:'file',accept:'.xlsx,.xls',className:'hidden',disabled:uploadingAloc,onChange:e=>{if(e.target.files[0]){uploadAlocacoesExcel(e.target.files[0]);e.target.value='';}}})
           ),
+          CE('button',{onClick:createAlocacaoColumns,title:'Criar colunas de Alinhamento no SharePoint (executar 1x)',className:'px-3 py-2 text-xs border border-amber-200 rounded-lg text-amber-700 hover:bg-amber-50 transition'},'⚙️ Setup SP'),
           CE('button',{onClick:exportAlocacoesXLSX,className:'px-3 py-2 text-xs border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 transition'},'⬇ Excel')
         )
       ),
@@ -8060,14 +8253,14 @@ function ParceirosView({ projects, token, headMembers: headMembersProp }) {
                 CE('th',{className:'px-3 py-2.5 w-8 bg-slate-50'},
                   CE('input',{type:'checkbox',checked:selectedAlocIds.size===projAlocacoes.length&&projAlocacoes.length>0,onChange:toggleSelectAll,title:'Selecionar todos'})
                 ),
-                ['Parceiro','Status','Projeto','Atividade','Data','Período','Freq.','Vl. Atividade','Vl. Dia','Ações'].map(h=>
+                ['Parceiro','Status','Projeto','Atividade','Data','Período','Freq.','Vl. Atividade','Vl. Dia','📧','Ações'].map(h=>
                   CE('th',{key:h,className:'text-left px-4 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap bg-slate-50'},h)
                 )
               )
             ),
             CE('tbody',null,
               projAlocacoes.length===0
-                ?CE('tr',null,CE('td',{colSpan:11,className:'text-center py-12 text-slate-400'},'Nenhuma alocação encontrada.'))
+                ?CE('tr',null,CE('td',{colSpan:12,className:'text-center py-12 text-slate-400'},'Nenhuma alocação encontrada.'))
                 :projAlocacoes.map(a=>{
                   const status=parcStatusMap[a.Parceiro];
                   const isAtivo=status==='Ativo';
@@ -8088,6 +8281,15 @@ function ParceirosView({ projects, token, headMembers: headMembersProp }) {
                     CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs text-center'},a.Frequencia||1),
                     CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs whitespace-nowrap'},a.ValorAtividade?`R$ ${Number(a.ValorAtividade).toFixed(2)}`:'—'),
                     CE('td',{className:'px-4 py-2.5 text-slate-800 text-xs font-semibold whitespace-nowrap'},a.ValorDia?`R$ ${Number(a.ValorDia).toFixed(2)}`:'—'),
+                    CE('td',{className:'px-3 py-2.5'},
+                      CE('div',{className:'flex gap-0.5 flex-wrap'},
+                        ...(sentAlocsMap[String(a.Id)]||[]).map(tipo=>
+                          CE('span',{key:tipo,title:`Enviado para ${tipo}`,className:`text-[10px] px-1 py-0.5 rounded font-bold ${tipo==='Head'?'bg-emerald-100 text-emerald-700':tipo==='Fixo'?'bg-sky-100 text-sky-700':'bg-indigo-100 text-indigo-700'}`},
+                            tipo==='Head'?'H':tipo==='Fixo'?'F':'P'
+                          )
+                        )
+                      )
+                    ),
                     CE('td',{className:'px-4 py-2.5'},
                       CE('div',{className:'flex gap-1.5'},
                         CE('button',{title:'Editar',onClick:()=>openEditAloc(a),className:'p-1 rounded hover:bg-amber-100 text-amber-600 transition'},'✏️'),
@@ -8417,6 +8619,105 @@ function ParceirosView({ projects, token, headMembers: headMembersProp }) {
             color:'#8b5cf6', barH:20,
             fmt:v=>dashAtivGroupBy==='total'?String(v):v.toFixed(2)
           })
+        )
+      )
+    ),
+
+    // ══════════ HISTÓRICO ══════════
+    tab==='historico'&&CE('div',{className:'space-y-4'},
+      CE('div',{className:'flex items-center justify-between'},
+        CE('h2',{className:'text-base font-bold text-slate-700'},'📨 Histórico de Mensagens'),
+        CE('button',{onClick:loadHistorico,className:'px-3 py-1.5 text-xs border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 transition'},'↻ Atualizar')
+      ),
+      historico.length===0
+        ?CE('div',{className:'text-center py-12 text-slate-400 text-sm'},'Nenhuma mensagem enviada ainda.')
+        :CE('div',{className:'scroll-table sticky-wrap'},
+          CE('table',{className:'w-full text-sm'},
+            CE('thead',null,CE('tr',{className:'border-b border-slate-100 bg-slate-50'},
+              ['Data/Hora','Projeto','Destinatário','Tipo','Assunto','Status'].map(h=>CE('th',{key:h,className:'text-left px-4 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wide'},h))
+            )),
+            CE('tbody',null,
+              ...historico.map(h=>CE('tr',{key:h.Id,className:'border-b border-slate-50 hover:bg-slate-50'},
+                CE('td',{className:'px-4 py-2.5 text-slate-500 whitespace-nowrap text-xs'},h.DataEnvio?new Date(h.DataEnvio).toLocaleString('pt-BR'):'—'),
+                CE('td',{className:'px-4 py-2.5 font-medium text-slate-800 text-xs'},h.Projeto||'—'),
+                CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs'},h.Destinatario||'—'),
+                CE('td',{className:'px-4 py-2.5'},CE('span',{className:`text-xs px-2 py-0.5 rounded-full font-medium ${h.TipoDestinatario==='Head'?'bg-emerald-100 text-emerald-700':h.TipoDestinatario==='Fixo'?'bg-sky-100 text-sky-700':'bg-indigo-100 text-indigo-700'}`},h.TipoDestinatario||'—')),
+                CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs'},h.Assunto||'—'),
+                CE('td',{className:'px-4 py-2.5'},CE('span',{className:`text-xs px-2 py-0.5 rounded-full font-medium ${h.Status==='Enviado'?'bg-green-100 text-green-700':'bg-amber-100 text-amber-700'}`},h.Status||'—'))
+              ))
+            )
+          )
+        )
+    ),
+
+    // ══════════ MODAL ENVIO ══════════
+    showSendModal&&CE('div',{
+      style:{position:'fixed',inset:0,zIndex:60,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.45)'},
+      onClick:e=>{if(e.target===e.currentTarget)setShowSendModal(false);}
+    },
+      CE('div',{className:'bg-white rounded-2xl shadow-2xl mx-4 w-full max-w-3xl overflow-y-auto',style:{maxHeight:'90vh'}},
+        CE('div',{className:'p-6 space-y-5'},
+          CE('div',{className:'flex items-center justify-between'},
+            CE('h2',{className:'text-lg font-bold text-slate-800'},'📧 Enviar Comunicações'),
+            CE('button',{onClick:()=>setShowSendModal(false),className:'text-slate-400 hover:text-slate-600 text-xl font-bold leading-none'},'✕')
+          ),
+          CE('div',{className:'space-y-3'},
+            ...Object.entries(sendEmailFields).map(([proj,fields])=>
+              CE('div',{key:proj,className:'border border-slate-200 rounded-xl p-4 space-y-3'},
+                CE('div',{className:'text-sm font-bold text-slate-700'},`📁 ${proj} — ${fields.alocacoes.length} alocação(ões)`),
+                CE('div',{className:'grid grid-cols-1 gap-3 md:grid-cols-2'},
+                  CE('div',null,
+                    CE('label',{className:labelCls},'Email do Head'),
+                    CE('input',{type:'text',className:inputCls,placeholder:'head@empresa.com',value:fields.headInput,
+                      onChange:e=>setSendEmailFields(f=>({...f,[proj]:{...f[proj],headInput:e.target.value}}))})
+                  ),
+                  CE('div',null,
+                    CE('label',{className:labelCls},'Email do Consultor Fixo'),
+                    CE('input',{type:'text',className:inputCls,placeholder:'fixo@empresa.com',value:fields.fixoInput,
+                      onChange:e=>setSendEmailFields(f=>({...f,[proj]:{...f[proj],fixoInput:e.target.value}}))})
+                  ),
+                  CE('div',null,
+                    CE('label',{className:labelCls},'Email do Parceiro Externo'),
+                    CE('input',{type:'text',className:inputCls,placeholder:'parceiro@email.com',value:fields.parceiroInput,
+                      onChange:e=>setSendEmailFields(f=>({...f,[proj]:{...f[proj],parceiroInput:e.target.value}}))})
+                  ),
+                  CE('div',null,
+                    CE('label',{className:labelCls},'Emails em Cópia (CC)'),
+                    CE('input',{type:'text',className:inputCls,placeholder:'cc1@..., cc2@...',value:fields.cc,
+                      onChange:e=>setSendEmailFields(f=>({...f,[proj]:{...f[proj],cc:e.target.value}}))})
+                  )
+                )
+              )
+            )
+          ),
+          CE('div',{className:'space-y-3'},
+            CE('div',{className:'text-sm font-bold text-slate-700'},'✉️ Mensagens (salvas até próxima alteração)'),
+            CE('div',{className:'border border-emerald-200 bg-emerald-50 rounded-xl p-3 space-y-2'},
+              CE('div',{className:'text-xs font-semibold text-slate-700'},'📗 Para o Head (recebe tudo do projeto)'),
+              CE('input',{type:'text',className:inputCls,placeholder:'Assunto',value:sendMsgHead.assunto,onChange:e=>setSendMsgHead(m=>({...m,assunto:e.target.value}))}),
+              CE('textarea',{className:`${inputCls} resize-none`,rows:3,placeholder:'Corpo da mensagem...',value:sendMsgHead.corpo,onChange:e=>setSendMsgHead(m=>({...m,corpo:e.target.value}))})
+            ),
+            CE('div',{className:'border border-sky-200 bg-sky-50 rounded-xl p-3 space-y-2'},
+              CE('div',{className:'text-xs font-semibold text-slate-700'},'📘 Para o Fixo (sem valores)'),
+              CE('input',{type:'text',className:inputCls,placeholder:'Assunto',value:sendMsgFixo.assunto,onChange:e=>setSendMsgFixo(m=>({...m,assunto:e.target.value}))}),
+              CE('textarea',{className:`${inputCls} resize-none`,rows:3,placeholder:'Corpo da mensagem...',value:sendMsgFixo.corpo,onChange:e=>setSendMsgFixo(m=>({...m,corpo:e.target.value}))})
+            ),
+            CE('div',{className:'border border-indigo-200 bg-indigo-50 rounded-xl p-3 space-y-2'},
+              CE('div',{className:'text-xs font-semibold text-slate-700'},'📙 Para o Parceiro Externo (só as dele, com valores)'),
+              CE('input',{type:'text',className:inputCls,placeholder:'Assunto',value:sendMsgParceiro.assunto,onChange:e=>setSendMsgParceiro(m=>({...m,assunto:e.target.value}))}),
+              CE('textarea',{className:`${inputCls} resize-none`,rows:3,placeholder:'Corpo da mensagem...',value:sendMsgParceiro.corpo,onChange:e=>setSendMsgParceiro(m=>({...m,corpo:e.target.value}))})
+            )
+          ),
+          sendResult&&CE('div',{className:'space-y-1'},
+            CE('div',{className:'text-xs font-bold text-slate-600 mb-1'},'Resultado:'),
+            ...sendResult.map((r,i)=>CE('div',{key:i,className:`text-xs px-3 py-1.5 rounded-lg border ${r.status==='Enviado'?'bg-green-50 text-green-700 border-green-100':'bg-amber-50 text-amber-700 border-amber-100'}`},
+              `${r.tipo} | ${r.dest} | ${r.projeto}: ${r.status}`
+            ))
+          ),
+          CE('div',{className:'flex justify-end gap-3 pt-2 border-t border-slate-100'},
+            CE('button',{onClick:()=>setShowSendModal(false),className:'px-4 py-2 text-sm border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50'},'Cancelar'),
+            CE('button',{onClick:sendComunicacoes,disabled:sendingEmails,className:'px-5 py-2 text-sm bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-medium disabled:opacity-40'},sendingEmails?'⏳ Enviando...':'📤 Enviar')
+          )
         )
       )
     )
