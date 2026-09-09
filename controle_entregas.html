@@ -2168,7 +2168,9 @@ async function spFetch(token, url, opts = {}) {
     throw new Error(`SP ${res.status}: ${t.slice(0, 600)}`);
   }
   if (res.status === 204) return null;
-  return res.json();
+  const text = await res.text();
+  if (!text || !text.trim()) return null;
+  return JSON.parse(text);
 }
 function _spListBase(siteUrl, listName) {
   // Use GetList with server-relative URL — more reliable than GetByTitle
@@ -6893,7 +6895,7 @@ function App() {
         module: module, onHome: () => setModule(null),
         onBackupDownload: handleBackupDownload, onBackupUpload: handleBackupUpload
       }),
-      React.createElement(ParceirosView, { projects: projects, token: authState.token })
+      React.createElement(ParceirosView, { projects: projects, token: authState.token, headMembers: headMembers })
     );
   }
 
@@ -7113,7 +7115,7 @@ function AppHeader({
 }
 
 // ─── Painel de Controle de Parceiros ─────────────────────────────────────────
-function ParceirosView({ projects, token }) {
+function ParceirosView({ projects, token, headMembers: headMembersProp }) {
   const CE = React.createElement;
   const { useState, useEffect, useMemo, useRef } = React;
 
@@ -7168,6 +7170,8 @@ function ParceirosView({ projects, token }) {
   const [dashPerson, setDashPerson] = useState('');
   const [dashGroupBy, setDashGroupBy] = useState('month');
   const [dashAtivGroupBy, setDashAtivGroupBy] = useState('total');
+  const [tipoAlocacaoForm, setTipoAlocacaoForm] = useState('parceiros');
+  const [gradeTipoFilter, setGradeTipoFilter] = useState('todos');
 
   const PARC_SITE = SP_PARC_SITE_URL;
   const DAY_MS = 86400000;
@@ -7197,6 +7201,10 @@ function ParceirosView({ projects, token }) {
 
   // ── Derived ──
   const ciclos = useMemo(() => [...new Set(projects.map(p=>p.ciclo).filter(Boolean))].sort(), [projects]);
+  const fixosNames = useMemo(() => {
+    if (headMembersProp && headMembersProp.length) return [...headMembersProp].sort();
+    return [...new Set(projects.flatMap(p=>_projHeads(p)))].filter(Boolean).sort();
+  }, [headMembersProp, projects]);
   const filteredProjects = useMemo(() => {
     const ps = [...projects].sort((a,b)=>(a.title||'').localeCompare(b.title||''));
     return cicloFilter ? ps.filter(p=>p.ciclo===cicloFilter) : ps;
@@ -7434,7 +7442,7 @@ function ParceirosView({ projects, token }) {
         const body = {
           __metadata:{type:alocEntityType},
           Title:`${form.parceiro} — ${proj?proj.title:selectedProject}`,
-          Parceiro:form.parceiro, ParceiroId:String(form.parceiroId),
+          Parceiro:form.parceiro, ParceiroId:tipoAlocacaoForm==='fixos'?'FIXO':String(form.parceiroId),
           Projeto:proj?proj.title:selectedProject,
           ProjetoSpId:proj&&proj.spId?String(proj.spId):selectedProject,
           Atividade:form.atividade, DataAtividade:d, Periodo:form.periodo,
@@ -7648,15 +7656,23 @@ function ParceirosView({ projects, token }) {
   const [gradeStatusFilter, setGradeStatusFilter] = React.useState('Ativo');
 
   const gradeParceiros = useMemo(() => {
-    let ps = parceiros;
-    if (gradeStatusFilter) ps = ps.filter(p => p.Status === gradeStatusFilter);
-    return [...ps].sort((a,b) => {
-      const sa = a.Status==='Ativo'?0:1;
-      const sb = b.Status==='Ativo'?0:1;
-      if (sa!==sb) return sa-sb;
-      return (a.Title||'').localeCompare(b.Title||'');
-    });
-  }, [parceiros, gradeStatusFilter]);
+    let result = [];
+    if (gradeTipoFilter !== 'fixos') {
+      let ps = parceiros;
+      if (gradeStatusFilter) ps = ps.filter(p => p.Status === gradeStatusFilter);
+      const sorted = [...ps].sort((a,b) => {
+        const sa = a.Status==='Ativo'?0:1; const sb = b.Status==='Ativo'?0:1;
+        if (sa!==sb) return sa-sb;
+        return (a.Title||'').localeCompare(b.Title||'');
+      });
+      result = result.concat(sorted.map(p=>({...p, tipo:'parceiro'})));
+    }
+    if (gradeTipoFilter !== 'parceiros') {
+      const fixos = fixosNames.map(name=>({Id:'__fixo__'+name, Title:name, Status:'Fixo', tipo:'fixo'}));
+      result = result.concat(fixos);
+    }
+    return result;
+  }, [parceiros, gradeStatusFilter, gradeTipoFilter, fixosNames]);
 
   function periodoBadge(periodo) {
     if (periodo==='Manhã') return {label:'M',cls:'bg-amber-100 text-amber-800 border-amber-200'};
@@ -7856,12 +7872,17 @@ function ParceirosView({ projects, token }) {
         ),
         CE('div',{className:'grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4'},
           CE('div',{className:'col-span-2 md:col-span-1'},
-            CE('label',{className:labelCls},'Parceiro'),
-            CE('select',{className:inputCls,value:form.parceiroId,onChange:e=>{const p=parceiros.find(x=>String(x.Id)===e.target.value);setForm(f=>({...f,parceiroId:e.target.value,parceiro:p?p.Title:''}));}},
-              CE('option',{value:''},'Selecione...'),
-              parceiros.map(p=>CE('option',{key:p.Id,value:p.Id},`${p.Title}${p.Status!=='Ativo'?' ⚠️':''}`))
-            ),
-            isSelectedInativo&&CE('div',{className:'mt-1.5 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5'},'⚠️ Este parceiro não está ativo.')
+            CE('label',{className:labelCls},tipoAlocacaoForm==='fixos'?'Fixo':'Parceiro'),
+            tipoAlocacaoForm==='fixos'
+              ?CE('select',{className:inputCls,value:form.parceiroId,onChange:e=>{setForm(f=>({...f,parceiroId:e.target.value,parceiro:e.target.value}));}},
+                CE('option',{value:''},'Selecione...'),
+                fixosNames.map(name=>CE('option',{key:name,value:name},name))
+              )
+              :CE('select',{className:inputCls,value:form.parceiroId,onChange:e=>{const p=parceiros.find(x=>String(x.Id)===e.target.value);setForm(f=>({...f,parceiroId:e.target.value,parceiro:p?p.Title:''}));}},
+                CE('option',{value:''},'Selecione...'),
+                parceiros.map(p=>CE('option',{key:p.Id,value:p.Id},`${p.Title}${p.Status!=='Ativo'?' ⚠️':''}`))
+              ),
+            tipoAlocacaoForm==='parceiros'&&isSelectedInativo&&CE('div',{className:'mt-1.5 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5'},'⚠️ Este parceiro não está ativo.')
           ),
           CE('div',{className:'col-span-2 md:col-span-1'},
             CE('label',{className:labelCls},'Atividade'),
@@ -7916,15 +7937,15 @@ function ParceirosView({ projects, token }) {
 
       // Table
       CE('div',{className:'bg-white border border-slate-200 rounded-xl overflow-hidden'},
-        CE('div',{className:'scroll-table'},
+        CE('div',{className:'scroll-table sticky-table-wrap'},
           CE('table',{className:'w-full text-sm'},
-            CE('thead',null,
+            CE('thead',{className:'sticky-thead'},
               CE('tr',{className:'border-b border-slate-100 bg-slate-50'},
-                CE('th',{className:'px-3 py-2.5 w-8'},
+                CE('th',{className:'px-3 py-2.5 w-8 bg-slate-50'},
                   CE('input',{type:'checkbox',checked:selectedAlocIds.size===projAlocacoes.length&&projAlocacoes.length>0,onChange:toggleSelectAll,title:'Selecionar todos'})
                 ),
                 ['Parceiro','Status','Projeto','Atividade','Data','Período','Freq.','Vl. Atividade','Vl. Dia','Ações'].map(h=>
-                  CE('th',{key:h,className:'text-left px-4 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap'},h)
+                  CE('th',{key:h,className:'text-left px-4 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap bg-slate-50'},h)
                 )
               )
             ),
@@ -7940,7 +7961,9 @@ function ParceirosView({ projects, token }) {
                     ),
                     CE('td',{className:'px-4 py-2.5 font-medium text-slate-800 whitespace-nowrap'},a.Parceiro),
                     CE('td',{className:'px-4 py-2.5'},
-                      CE('span',{className:`text-xs px-1.5 py-0.5 rounded font-semibold ${isAtivo?'bg-green-100 text-green-700':'bg-red-100 text-red-600'}`},isAtivo?'Ativo':status||'?')
+                      a.ParceiroId==='FIXO'
+                        ?CE('span',{className:'text-xs px-1.5 py-0.5 rounded font-semibold bg-blue-100 text-blue-700'},'Fixo')
+                        :CE('span',{className:`text-xs px-1.5 py-0.5 rounded font-semibold ${isAtivo?'bg-green-100 text-green-700':'bg-red-100 text-red-600'}`},isAtivo?'Ativo':status||'?')
                     ),
                     CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs max-w-[150px] truncate'},a.Projeto),
                     CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs max-w-[160px] truncate'},a.Atividade),
@@ -7977,6 +8000,11 @@ function ParceirosView({ projects, token }) {
           CE('option',{value:'Ativo'},'✅ Ativos'),
           CE('option',{value:'Inativo'},'⚪ Inativos')
         ),
+        CE('div',{className:'flex gap-1'},
+          [['todos','Todos'],['parceiros','🤝 Parceiros'],['fixos','👔 Fixos']].map(([v,l])=>
+            CE('button',{key:v,onClick:()=>setGradeTipoFilter(v),className:`px-2.5 py-1 text-xs rounded-lg border transition ${gradeTipoFilter===v?'bg-indigo-600 text-white border-indigo-600':'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`},l)
+          )
+        ),
         CE('span',{className:'text-xs text-slate-400'},`${gradeParceiros.length} pessoas`),
         CE('div',{className:'flex items-center gap-4 text-xs ml-auto'},
           [['M','bg-amber-100 text-amber-800 border-amber-200','Manhã'],['T','bg-sky-100 text-sky-800 border-sky-200','Tarde'],['I','bg-indigo-100 text-indigo-800 border-indigo-200','Integral'],['·','text-slate-300','Livre']].map(([l,cls,tip])=>
@@ -7986,9 +8014,9 @@ function ParceirosView({ projects, token }) {
       ),
       parceiros.length===0
         ?CE('div',{className:'text-center py-16 text-slate-400'},'Nenhum parceiro cadastrado.')
-        :CE('div',{className:'scroll-table'},
+        :CE('div',{className:'scroll-table sticky-table-wrap'},
             CE('table',{className:'text-xs border-collapse bg-white border border-slate-200 rounded-xl overflow-hidden'},
-              CE('thead',null,
+              CE('thead',{className:'sticky-thead'},
                 CE('tr',{className:'bg-slate-50 border-b border-slate-200'},
                   CE('th',{className:'sticky left-0 bg-slate-50 z-10 px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase border-r border-slate-200 min-w-[220px]'},'Parceiro'),
                   ...gradeCols.map(col=>CE('th',{key:col.key,className:`px-1 py-2.5 text-center font-semibold ${col.isWe?'text-slate-400 bg-slate-100':'text-slate-500'} border-l border-slate-100 min-w-[44px] whitespace-nowrap`},col.label))
@@ -7996,14 +8024,16 @@ function ParceirosView({ projects, token }) {
               ),
               CE('tbody',null,
                 ...gradeParceiros.map((p,pi)=>{
-                  const isAtivo = p.Status==='Ativo';
+                  const isFixo = p.tipo==='fixo';
+                  const isAtivo = isFixo || p.Status==='Ativo';
                   const rowBg = pi%2===0?'#fff':'#f8fafc';
-                  return CE('tr',{key:p.Id,className:`border-b border-slate-100 ${!isAtivo?'opacity-60':''}`},
+                  return CE('tr',{key:p.Id,className:`border-b border-slate-100 ${!isAtivo&&!isFixo?'opacity-60':''}`},
                     CE('td',{className:'sticky left-0 z-10 px-3 py-2 border-r border-slate-200',style:{background:rowBg,minWidth:220}},
                       CE('div',{className:'flex items-center gap-2'},
-                        CE('span',{className:`inline-block w-2 h-2 rounded-full flex-shrink-0 ${isAtivo?'bg-green-500':'bg-slate-400'}`,title:p.Status||'Sem status'}),
+                        CE('span',{className:`inline-block w-2 h-2 rounded-full flex-shrink-0 ${isFixo?'bg-blue-500':isAtivo?'bg-green-500':'bg-slate-400'}`,title:isFixo?'Fixo':p.Status||'Sem status'}),
                         CE('span',{className:'font-medium text-slate-800 whitespace-nowrap leading-tight'},p.Title),
-                        !isAtivo&&CE('span',{className:'text-slate-400 text-xs'},'('+( p.Status||'?')+')')
+                        isFixo&&CE('span',{className:'text-blue-500 text-xs font-medium'},'(Fixo)'),
+                        !isFixo&&!isAtivo&&CE('span',{className:'text-slate-400 text-xs'},'('+( p.Status||'?')+')')
                       )
                     ),
                     ...gradeCols.map(col=>{
@@ -8077,12 +8107,12 @@ function ParceirosView({ projects, token }) {
         )
       ),
       CE('div',{className:'bg-white border border-slate-200 rounded-xl overflow-hidden'},
-        CE('div',{className:'scroll-table'},
+        CE('div',{className:'scroll-table sticky-table-wrap'},
           CE('table',{className:'w-full text-sm'},
-            CE('thead',null,
+            CE('thead',{className:'sticky-thead'},
               CE('tr',{className:'border-b border-slate-100 bg-slate-50'},
                 ['Status','Nome','Classificação','Atuação','Empresa','Gestor','Data Início','Vigência','Renovação','Ações'].map(h=>
-                  CE('th',{key:h,className:'text-left px-4 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap'},h)
+                  CE('th',{key:h,className:'text-left px-4 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap bg-slate-50'},h)
                 )
               )
             ),
