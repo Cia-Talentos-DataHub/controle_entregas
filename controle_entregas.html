@@ -7748,7 +7748,14 @@ function ParceirosView({ projects, token, headMembers: headMembersProp }) {
     for (const [atv,cnt] of Object.entries(byAtiv)) {
       byAtivNorm[atv]=dashAtivGroupBy==='total'?cnt:parseFloat((cnt/distinctBuckets).toFixed(2));
     }
-    return {totalCusto,byProj,byPerson,byAtiv,byAtivNorm,byTime,byPeriodo};
+    // by tipo (Fixo vs Parceiro)
+    const byTipo={Fixo:{count:0,custo:0,people:new Set()},Parceiro:{count:0,custo:0,people:new Set()}};
+    for (const a of dashAlocs) {
+      const tt=a.ParceiroId==='FIXO'?'Fixo':'Parceiro';
+      byTipo[tt].count++; byTipo[tt].custo+=(a.ValorDia||0);
+      if (a.Parceiro) byTipo[tt].people.add(a.Parceiro);
+    }
+    return {totalCusto,byProj,byPerson,byAtiv,byAtivNorm,byTime,byPeriodo,byTipo};
   }, [dashAlocs, dashGroupBy, dashAtivGroupBy]);
 
   // ── Chart components (defined inside component so they can be used with CE) ──
@@ -8272,7 +8279,7 @@ function ParceirosView({ projects, token, headMembers: headMembersProp }) {
         CE('div',{className:'bg-white border border-slate-200 rounded-xl p-5'},
           CE('h3',{className:'text-sm font-semibold text-slate-700 mb-4'},'💼 Custo por Tipo de Contrato'),
           CE(HBarChart,{
-            data:[['Parceiro','#6366f1'],['Fixo','#3b82f6']].map(([label,color])=>({label,value:dashMetrics.byTipo[label]?dashMetrics.byTipo[label].custo:0,color})).filter(d=>d.value>0),
+            data:dashMetrics.byTipo?[['Parceiro','#6366f1'],['Fixo','#3b82f6']].map(([label,color])=>({label,value:dashMetrics.byTipo[label]?dashMetrics.byTipo[label].custo:0,color})).filter(d=>d.value>0):[],
             fmt:v=>v>=1000?`R$${(v/1000).toFixed(1)}k`:`R$${v.toFixed(0)}`
           })
         ),
@@ -8280,7 +8287,7 @@ function ParceirosView({ projects, token, headMembers: headMembersProp }) {
         CE('div',{className:'bg-white border border-slate-200 rounded-xl p-5'},
           CE('h3',{className:'text-sm font-semibold text-slate-700 mb-4'},'👥 Pessoas por Tipo de Contrato'),
           CE(HBarChart,{
-            data:[['Parceiro','#6366f1'],['Fixo','#3b82f6']].map(([label,color])=>({label,value:dashMetrics.byTipo[label]?dashMetrics.byTipo[label].people.size:0,color})).filter(d=>d.value>0),
+            data:dashMetrics.byTipo?[['Parceiro','#6366f1'],['Fixo','#3b82f6']].map(([label,color])=>({label,value:dashMetrics.byTipo[label]?dashMetrics.byTipo[label].people.size:0,color})).filter(d=>d.value>0):[],
             fmt:v=>String(v)
           })
         ),
