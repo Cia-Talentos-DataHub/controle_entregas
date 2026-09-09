@@ -36,6 +36,8 @@
   .cell-empty  { background:#f1f5f9; color:#cbd5e1; }
   th { position:sticky; top:0; z-index:10; }
   .scroll-table { overflow-x:auto; }
+  .scroll-table.sticky-wrap { overflow-y:auto; max-height:calc(100vh - 230px); }
+  .scroll-table.sticky-wrap thead th, .scroll-table.sticky-wrap thead td { position:sticky; top:0; z-index:15; background:#f8fafc; }
   .modal-overlay { position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:50;display:flex;align-items:center;justify-content:center; }
   input[type=text],input[type=number],input[type=date],select { outline:none; }
   .slide-down { animation:slideDown .3s ease; }
@@ -7954,7 +7956,7 @@ function ParceirosView({ projects, token, headMembers: headMembersProp }) {
 
       // Table
       CE('div',{className:'bg-white border border-slate-200 rounded-xl overflow-hidden'},
-        CE('div',{className:'scroll-table sticky-table-wrap'},
+        CE('div',{className:'scroll-table sticky-wrap'},
           CE('table',{className:'w-full text-sm'},
             CE('thead',{className:'sticky-thead'},
               CE('tr',{className:'border-b border-slate-100 bg-slate-50'},
@@ -8031,7 +8033,7 @@ function ParceirosView({ projects, token, headMembers: headMembersProp }) {
       ),
       parceiros.length===0
         ?CE('div',{className:'text-center py-16 text-slate-400'},'Nenhum parceiro cadastrado.')
-        :CE('div',{className:'scroll-table sticky-table-wrap'},
+        :CE('div',{className:'scroll-table sticky-wrap'},
             CE('table',{className:'text-xs border-collapse bg-white border border-slate-200 rounded-xl overflow-hidden'},
               CE('thead',{className:'sticky-thead'},
                 CE('tr',{className:'bg-slate-50 border-b border-slate-200'},
@@ -8124,7 +8126,7 @@ function ParceirosView({ projects, token, headMembers: headMembersProp }) {
         )
       ),
       CE('div',{className:'bg-white border border-slate-200 rounded-xl overflow-hidden'},
-        CE('div',{className:'scroll-table sticky-table-wrap'},
+        CE('div',{className:'scroll-table sticky-wrap'},
           CE('table',{className:'w-full text-sm'},
             CE('thead',{className:'sticky-thead'},
               CE('tr',{className:'border-b border-slate-100 bg-slate-50'},
