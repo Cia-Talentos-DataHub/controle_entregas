@@ -7131,7 +7131,7 @@ function ParceirosView({ projects, token, headMembers: headMembersProp }) {
   const [selectedProject, setSelectedProject] = useState('');
   const [showForm, setShowForm] = useState(false);
   const [formMode, setFormMode] = useState('single');
-  const [form, setForm] = useState({ parceiroId:'', parceiro:'', atividadeId:'', atividade:'', valorAtividade:0, data:'', dataFim:'', periodo:'Integral', frequencia:1 });
+  const [form, setForm] = useState({ parceiroId:'', parceiro:'', atividadeId:'', atividade:'', valorAtividade:0, data:'', dataFim:'', periodo:'Integral', frequencia:1, cobrarAlinhamento:false, ativAlinhamentoId:'', ativAlinhamento:'', valorAlinhamento:0, horasAlinhamento:1 });
   const [saving, setSaving] = useState(false);
   const [gradeStart, setGradeStart] = useState(() => { const d=new Date(); d.setDate(d.getDate()-3); return d.toISOString().slice(0,10); });
   const [gradeEnd, setGradeEnd] = useState(() => { const d=new Date(); d.setDate(d.getDate()+27); return d.toISOString().slice(0,10); });
@@ -7186,7 +7186,7 @@ function ParceirosView({ projects, token, headMembers: headMembersProp }) {
     try {
       const [pRes, aRes, atRes, tAloc, tParc, tAtiv] = await Promise.all([
         spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros')/items?$select=Id,Title,Telefone,Email,Estado,Ingles,AutodeclaracaoRacial,Status,Atuacao,Empresa,CNPJ,Vigencia,Classificacao,DataInicio,Gestor,OBS,Renovacao&$top=500&$orderby=Title`),
-        spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Alocacao')/items?$select=Id,Title,Parceiro,ParceiroId,Projeto,ProjetoSpId,Atividade,DataAtividade,Periodo,Frequencia,ValorAtividade,ValorDia&$top=2000&$orderby=DataAtividade`),
+        spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Alocacao')/items?$select=Id,Title,Parceiro,ParceiroId,Projeto,ProjetoSpId,Atividade,DataAtividade,Periodo,Frequencia,ValorAtividade,ValorDia,CobraAlinhamento,AtivAlinhamento,HorasAlinhamento,ValorAlinhamento&$top=2000&$orderby=DataAtividade`),
         spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Atividades')/items?$select=Id,Title,Valor&$top=200&$orderby=Title`),
         spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Alocacao')?$select=ListItemEntityTypeFullName`),
         spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros')?$select=ListItemEntityTypeFullName`),
@@ -7345,14 +7345,80 @@ function ParceirosView({ projects, token, headMembers: headMembersProp }) {
   async function exportAlocacoesXLSX() {
     try {
       const XLSX = await loadXLSX();
-      const rows = projAlocacoes.map(a => ({
-        'Parceiro':a.Parceiro||'', 'Status':parcStatusMap[a.Parceiro]||'—', 'Projeto':a.Projeto||'',
-        'Atividade':a.Atividade||'', 'Data':a.DataAtividade?new Date(a.DataAtividade).toLocaleDateString('pt-BR'):'',
-        'Período':a.Periodo||'', 'Frequência':a.Frequencia||1,
-        'Valor Atividade (R$)':a.ValorAtividade||0, 'Valor Dia (R$)':a.ValorDia||0
+      const isFixo = a => a.ParceiroId==='FIXO';
+      const fmtDate = d => d?new Date(d).toLocaleDateString('pt-BR'):'';
+      const fmtR = v => v?Number(v).toFixed(2):'—';
+
+      // Section 1: Alocações por dia
+      const alocRows = projAlocacoes.map(a => ({
+        'Parceiro': a.Parceiro||'',
+        'Tipo': isFixo(a)?'Fixo':'Parceiro',
+        'Status': parcStatusMap[a.Parceiro]||'—',
+        'Projeto': a.Projeto||'',
+        'Atividade': a.Atividade||'',
+        'Data': fmtDate(a.DataAtividade),
+        'Período': a.Periodo||'',
+        'Frequência': a.Frequencia||1,
+        'Valor Atividade (R$)': isFixo(a)?'—':fmtR(a.ValorAtividade),
+        'Valor Dia (R$)': isFixo(a)?'—':fmtR(a.ValorDia)
       }));
-      const ws=XLSX.utils.json_to_sheet(rows); const wb=XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb,ws,'Alocações'); XLSX.writeFile(wb,`alocacoes_${new Date().toISOString().slice(0,10)}.xlsx`);
+
+      // Section 2: Alinhamento consolidado por consultor (somente Parceiros)
+      const alinhByParc = {};
+      for (const a of projAlocacoes) {
+        if (isFixo(a) || a.CobraAlinhamento!=='Sim' || !a.AtivAlinhamento) continue;
+        const k = a.Parceiro||'';
+        if (!alinhByParc[k]) alinhByParc[k]={parceiro:k,atividade:a.AtivAlinhamento,horas:0,valor:a.ValorAlinhamento&&a.HorasAlinhamento?Number(a.ValorAlinhamento)/Number(a.HorasAlinhamento):0};
+        alinhByParc[k].horas += Number(a.HorasAlinhamento)||0;
+      }
+      const alinhRows = Object.values(alinhByParc).map(r => ({
+        'Parceiro': r.parceiro,
+        'Tipo': 'Parceiro',
+        'Status': parcStatusMap[r.parceiro]||'—',
+        'Projeto': '',
+        'Atividade': `Alinhamento (${r.atividade})`,
+        'Data': '',
+        'Período': '',
+        'Frequência': '',
+        'Valor Atividade (R$)': fmtR(r.valor),
+        'Valor Dia (R$)': '',
+        'Total Alinhamento (R$)': fmtR(r.horas*r.valor)
+      }));
+
+      // Section 3: Total por pessoa
+      const totByParc = {};
+      for (const a of projAlocacoes) {
+        const k = a.Parceiro||'(sem nome)';
+        if (!totByParc[k]) totByParc[k]={parceiro:k,fixo:isFixo(a),dias:0,custo:0,alinhamento:0};
+        totByParc[k].dias++;
+        if (!isFixo(a)) totByParc[k].custo += Number(a.ValorDia)||0;
+      }
+      for (const r of Object.values(alinhByParc)) {
+        if (totByParc[r.parceiro]) totByParc[r.parceiro].alinhamento += r.horas*r.valor;
+        else totByParc[r.parceiro]={parceiro:r.parceiro,fixo:false,dias:0,custo:0,alinhamento:r.horas*r.valor};
+      }
+      const totalRows = Object.values(totByParc).sort((a,b)=>a.parceiro.localeCompare(b.parceiro)).map(r => ({
+        'Parceiro': r.parceiro,
+        'Tipo': r.fixo?'Fixo':'Parceiro',
+        'Dias Alocados': r.dias,
+        'Total Atividades (R$)': r.fixo?'—':fmtR(r.custo),
+        'Total Alinhamento (R$)': r.fixo?'—':fmtR(r.alinhamento),
+        'TOTAL GERAL (R$)': r.fixo?'—':fmtR(r.custo+r.alinhamento)
+      }));
+
+      const wb = XLSX.utils.book_new();
+      // Sheet 1: Alocações
+      const ws1 = XLSX.utils.json_to_sheet(alocRows);
+      XLSX.utils.book_append_sheet(wb, ws1, 'Alocações');
+      // Sheet 2: Alinhamento
+      if (alinhRows.length) {
+        const ws2 = XLSX.utils.json_to_sheet(alinhRows);
+        XLSX.utils.book_append_sheet(wb, ws2, 'Alinhamento');
+      }
+      // Sheet 3: Totais
+      const ws3 = XLSX.utils.json_to_sheet(totalRows);
+      XLSX.utils.book_append_sheet(wb, ws3, 'Totais por Pessoa');
+      XLSX.writeFile(wb, `alocacoes_${new Date().toISOString().slice(0,10)}.xlsx`);
     } catch(e) { setError('Erro ao exportar: '+e.message); }
   }
 
@@ -7450,14 +7516,18 @@ function ParceirosView({ projects, token, headMembers: headMembersProp }) {
           Projeto:proj?proj.title:selectedProject,
           ProjetoSpId:proj&&proj.spId?String(proj.spId):selectedProject,
           Atividade:form.atividade, DataAtividade:d, Periodo:form.periodo,
-          Frequencia:freq, ValorAtividade:valorAtiv, ValorDia:valorAtiv*freq
+          Frequencia:freq, ValorAtividade:valorAtiv, ValorDia:valorAtiv*freq,
+          CobraAlinhamento:form.cobrarAlinhamento?'Sim':'Não',
+          AtivAlinhamento:form.cobrarAlinhamento?form.ativAlinhamento:'',
+          HorasAlinhamento:form.cobrarAlinhamento?Number(form.horasAlinhamento):0,
+          ValorAlinhamento:form.cobrarAlinhamento?(Number(form.valorAlinhamento)*Number(form.horasAlinhamento)):0
         };
         await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Alocacao')/items`, {
           method:'POST', headers:{'Content-Type':'application/json;odata=verbose'}, body:JSON.stringify(body)
         });
       }
       setShowForm(false);
-      setForm({parceiroId:'',parceiro:'',atividadeId:'',atividade:'',valorAtividade:0,data:'',dataFim:'',periodo:'Integral',frequencia:1});
+      setForm({parceiroId:'',parceiro:'',atividadeId:'',atividade:'',valorAtividade:0,data:'',dataFim:'',periodo:'Integral',frequencia:1,cobrarAlinhamento:false,ativAlinhamentoId:'',ativAlinhamento:'',valorAlinhamento:0,horasAlinhamento:1});
       await loadAll();
     } catch(e) { setError(e.message); }
     setSaving(false);
@@ -7714,7 +7784,9 @@ function ParceirosView({ projects, token, headMembers: headMembersProp }) {
   }, [alocacoes, dashCiclo, dashFrom, dashTo, dashProject, dashPerson, dashTipo, projects]);
 
   const dashMetrics = useMemo(() => {
-    const totalCusto=dashAlocs.reduce((s,a)=>s+(a.ValorDia||0),0);
+    const totalCusto=dashAlocs.filter(a=>a.ParceiroId!=='FIXO').reduce((s,a)=>s+(a.ValorDia||0),0);
+    const valorFixos=dashAlocs.filter(a=>a.ParceiroId==='FIXO').reduce((s,a)=>s+(a.ValorDia||0),0);
+    const valorTotal=totalCusto+valorFixos;
     const byProj={}, byPerson={}, byAtiv={}, byTime={}, byPeriodo={};
     for (const a of dashAlocs) {
       // by project: unique people + cost
@@ -7760,7 +7832,7 @@ function ParceirosView({ projects, token, headMembers: headMembersProp }) {
       byTipo[tt].count++; byTipo[tt].custo+=(a.ValorDia||0);
       if (a.Parceiro) byTipo[tt].people.add(a.Parceiro);
     }
-    return {totalCusto,byProj,byPerson,byAtiv,byAtivNorm,byTime,byPeriodo,byTipo};
+    return {totalCusto,valorFixos,valorTotal,byProj,byPerson,byAtiv,byAtivNorm,byTime,byPeriodo,byTipo};
   }, [dashAlocs, dashGroupBy, dashAtivGroupBy]);
 
   // ── Chart components (defined inside component so they can be used with CE) ──
@@ -7939,6 +8011,28 @@ function ParceirosView({ projects, token, headMembers: headMembersProp }) {
           ),
           CE('div',{className:'self-end'},
             CE('button',{onClick:saveAlocacao,disabled:saving||!form.parceiroId||!form.atividadeId||!form.data,className:'w-full px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-lg transition disabled:opacity-40'},saving?'⏳ Salvando...':'✓ Salvar')
+          )
+        ),
+        tipoAlocacaoForm==='parceiros'&&CE('div',{className:'border-t border-slate-100 pt-3'},
+          CE('label',{className:'flex items-center gap-2 cursor-pointer select-none text-sm text-slate-700 mb-2'},
+            CE('input',{type:'checkbox',checked:form.cobrarAlinhamento,onChange:e=>setForm(f=>({...f,cobrarAlinhamento:e.target.checked})),className:'w-4 h-4 rounded accent-indigo-600'}),
+            '🤝 Cobrar Alinhamento?'
+          ),
+          form.cobrarAlinhamento&&CE('div',{className:'flex gap-3 flex-wrap items-end mt-1'},
+            CE('div',{className:'min-w-48'},
+              CE('label',{className:labelCls},'Atividade de Alinhamento'),
+              CE('select',{className:inputCls,value:form.ativAlinhamentoId,onChange:e=>{const at=atividades.find(a=>String(a.Id)===e.target.value);setForm(f=>({...f,ativAlinhamentoId:e.target.value,ativAlinhamento:at?at.Title:'',valorAlinhamento:at?Number(at.Valor)||0:0}));}},
+                CE('option',{value:''},'Selecione...'),
+                atividades.map(a=>CE('option',{key:a.Id,value:a.Id},`${a.Title}${a.Valor?' — R$'+Number(a.Valor).toFixed(0)+'/h':''}`) )
+              )
+            ),
+            CE('div',{className:'w-24'},
+              CE('label',{className:labelCls},'Horas'),
+              CE('input',{type:'number',min:0.5,step:0.5,className:inputCls,value:form.horasAlinhamento,onChange:e=>setForm(f=>({...f,horasAlinhamento:e.target.value}))})
+            ),
+            form.valorAlinhamento>0&&CE('div',{className:'text-xs text-blue-700 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2 self-end'},
+              `Alinhamento: R$ ${(Number(form.valorAlinhamento)*(Number(form.horasAlinhamento)||0)).toFixed(2)}`
+            )
           )
         )
       ),
@@ -8232,9 +8326,9 @@ function ParceirosView({ projects, token, headMembers: headMembersProp }) {
 
       CE('div',{className:'grid grid-cols-2 gap-4 md:grid-cols-4'},
         [
-          ['💰 Custo Total',`R$ ${dashMetrics.totalCusto.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}`,`${dashAlocs.length} alocações`,'bg-indigo-600'],
-          ['📁 Projetos',Object.keys(dashMetrics.byProj).length,'com alocações','bg-emerald-600'],
-          ['👥 Parceiros',Object.keys(dashMetrics.byPerson).length,'alocados','bg-sky-600'],
+          ['💰 Custo c/ Parceiros',`R$ ${dashMetrics.totalCusto.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}`,`${dashAlocs.filter(a=>a.ParceiroId!=='FIXO').length} alocações`,'bg-indigo-600'],
+          ['📋 Valor Total Atividades',`R$ ${dashMetrics.valorTotal.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}`,`parceiros + fixos`,'bg-emerald-600'],
+          ['💡 Economizado c/ Fixos',`R$ ${dashMetrics.valorFixos.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}`,`${dashAlocs.filter(a=>a.ParceiroId==='FIXO').length} atividades fixos`,'bg-sky-600'],
           ['🎯 Atividades',Object.keys(dashMetrics.byAtiv).length,'tipos usados','bg-violet-600'],
         ].map(([label,value,sub,bg])=>CE('div',{key:label,className:`${bg} rounded-xl p-4 text-white`},
           CE('div',{className:'text-xs font-medium opacity-80 mb-1'},label),
