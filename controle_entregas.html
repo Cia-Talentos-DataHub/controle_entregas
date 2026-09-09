@@ -7174,6 +7174,7 @@ function ParceirosView({ projects, token, headMembers: headMembersProp }) {
   const [dashAtivGroupBy, setDashAtivGroupBy] = useState('total');
   const [tipoAlocacaoForm, setTipoAlocacaoForm] = useState('parceiros');
   const [gradeTipoFilter, setGradeTipoFilter] = useState('todos');
+  const [dashTipo, setDashTipo] = useState('');
 
   const PARC_SITE = SP_PARC_SITE_URL;
   const DAY_MS = 86400000;
@@ -7707,8 +7708,10 @@ function ParceirosView({ projects, token, headMembers: headMembersProp }) {
     if (dashTo) al=al.filter(a=>a.DataAtividade&&a.DataAtividade<=dashTo);
     if (dashProject) al=al.filter(a=>a.Projeto===dashProject||a.ProjetoSpId===dashProject);
     if (dashPerson) al=al.filter(a=>a.Parceiro===dashPerson);
+    if (dashTipo==='fixos') al=al.filter(a=>a.ParceiroId==='FIXO');
+    else if (dashTipo==='parceiros') al=al.filter(a=>a.ParceiroId!=='FIXO');
     return al;
-  }, [alocacoes, dashCiclo, dashFrom, dashTo, dashProject, dashPerson, projects]);
+  }, [alocacoes, dashCiclo, dashFrom, dashTo, dashProject, dashPerson, dashTipo, projects]);
 
   const dashMetrics = useMemo(() => {
     const totalCusto=dashAlocs.reduce((s,a)=>s+(a.ValorDia||0),0);
