@@ -7232,7 +7232,8 @@ function ParceirosView({ projects, token, headMembers: headMembersProp }) {
 
   const filteredParceiros = useMemo(() => {
     let ps = parceiros;
-    if (statusFilter) ps = ps.filter(p=>p.Status===statusFilter);
+    if (statusFilter==='Inativo') ps = ps.filter(p=>p.Status && p.Status!=='Ativo');
+    else if (statusFilter) ps = ps.filter(p=>p.Status===statusFilter);
     if (parcFilter) { const f=parcFilter.toLowerCase(); ps=ps.filter(p=>(p.Title||'').toLowerCase().includes(f)||(p.Empresa||'').toLowerCase().includes(f)); }
     return ps;
   }, [parceiros, parcFilter, statusFilter]);
@@ -7659,7 +7660,8 @@ function ParceirosView({ projects, token, headMembers: headMembersProp }) {
     let result = [];
     if (gradeTipoFilter !== 'fixos') {
       let ps = parceiros;
-      if (gradeStatusFilter) ps = ps.filter(p => p.Status === gradeStatusFilter);
+      if (gradeStatusFilter==='Inativo') ps = ps.filter(p => p.Status && p.Status!=='Ativo');
+      else if (gradeStatusFilter) ps = ps.filter(p => p.Status === gradeStatusFilter);
       const sorted = [...ps].sort((a,b) => {
         const sa = a.Status==='Ativo'?0:1; const sb = b.Status==='Ativo'?0:1;
         if (sa!==sb) return sa-sb;
@@ -8004,7 +8006,7 @@ function ParceirosView({ projects, token, headMembers: headMembersProp }) {
           CE('input',{type:'date',className:'border border-slate-200 rounded-lg px-2 py-1 text-xs',value:gradeEnd,onChange:e=>setGradeEnd(e.target.value)})
         ),
         CE('select',{className:'border border-slate-200 rounded-lg px-2 py-1 text-xs bg-white',value:gradeStatusFilter,onChange:e=>setGradeStatusFilter(e.target.value)},
-          CE('option',{value:''},'Todos os status'),
+          CE('option',{value:''},'Todos'),
           CE('option',{value:'Ativo'},'✅ Ativos'),
           CE('option',{value:'Inativo'},'⚪ Inativos')
         ),
@@ -8102,7 +8104,7 @@ function ParceirosView({ projects, token, headMembers: headMembersProp }) {
       CE('div',{className:'flex gap-2 flex-wrap items-center'},
         CE('input',{type:'text',placeholder:'Buscar por nome ou empresa...',className:'border border-slate-200 rounded-lg px-3 py-2 text-sm min-w-[220px]',value:parcFilter,onChange:e=>setParcFilter(e.target.value)}),
         CE('select',{className:'border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white',value:statusFilter,onChange:e=>setStatusFilter(e.target.value)},
-          CE('option',{value:''},'Todos os status'),CE('option',{value:'Ativo'},'✅ Ativos'),CE('option',{value:'Inativo'},'⚪ Inativos')
+          CE('option',{value:''},'Todos'),CE('option',{value:'Ativo'},'✅ Ativos'),CE('option',{value:'Inativo'},'⚪ Inativos')
         ),
         CE('span',{className:'self-center text-xs text-slate-400'},`${filteredParceiros.length} parceiros`),
         CE('div',{className:'ml-auto flex gap-2'},
