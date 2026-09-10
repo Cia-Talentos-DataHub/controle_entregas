@@ -4239,6 +4239,7 @@ function InscricoesView({ projects, token }) {
   const [collapsed, setCollapsed] = useState({});
   const [dbgCols, setDbgCols]   = useState(null);
   const [colAnalysis, setColAnalysis] = useState(null); // colunas do Parquet sem gráfico
+  const [exportingXlsx, setExportingXlsx] = useState(false);
 
   useEffect(() => {
     if (!token) return;
@@ -4507,18 +4508,91 @@ function InscricoesView({ projects, token }) {
   const clearCol = useCallback(col => setFilters(f => { const nf={...f}; delete nf[col]; return nf; }), []);
   const clearAll = useCallback(() => setFilters({}), []);
 
-  // Tabela de programas
+  // Tabela de programas — faceted: exclui o próprio filtro _NomeProg da fonte,
+  // assim como os demais gráficos, para permitir selecionar mais de um programa
+  // sem que os outros desapareçam da tabela.
+  const progSourceRows = useMemo(() => {
+    const others = Object.entries(filters).filter(([col,s]) => col !== '_NomeProg' && s?.size > 0);
+    return others.length ? rows.filter(row => others.every(([col,vals]) => vals.has(String(row[col]??'')))) : rows;
+  }, [rows, filters]);
+
   const progTableData = useMemo(()=>{
-    if (!filteredRows.length) return [];
+    if (!progSourceRows.length) return [];
     const map = {};
-    for (const row of filteredRows) {
+    for (const row of progSourceRows) {
       const key = String(row._NomeProg || '').trim();
       if (!key) continue;
       if (!map[key]) map[key] = { nome:key, publico:String(row._Publico||''), segmento:String(row._Segmento||''), count:0 };
       map[key].count++;
     }
     return Object.values(map).sort((a,b)=>b.count-a.count);
-  },[filteredRows]);
+  },[progSourceRows]);
+
+  // ── Exportação completa (Excel): aba "Pessoas" com os dados detalhados
+  // (respeitando os filtros aplicados) + aba "Gráficos" com a quebra de cada
+  // gráfico do relatório (inclui a tabela de Programas), também respeitando os
+  // filtros ativos de cada facet (mesma fonte usada para renderizar a tela).
+  async function loadXLSXInsc() {
+    if (window.XLSX) return window.XLSX;
+    return new Promise((res, rej) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+      s.onload = () => res(window.XLSX);
+      s.onerror = rej;
+      document.head.appendChild(s);
+    });
+  }
+
+  async function exportInscricoesFullXLSX() {
+    if (!filteredRows.length) { alert('Não há dados para exportar com os filtros atuais.'); return; }
+    setExportingXlsx(true);
+    try {
+      const XLSX = await loadXLSXInsc();
+      const wb = XLSX.utils.book_new();
+      const FRIENDLY = {
+        _NomeProg:'Nome do Programa', _Publico:'Público', _Segmento:'Segmento',
+        _MicroSegmento:'Micro Segmento', _Idade:'Faixa Etária', _Termino:'Ano de Conclusão'
+      };
+
+      // Aba "Pessoas" — dados detalhados das pessoas, respeitando os filtros aplicados
+      const rawHeaders = Object.keys(filteredRows[0]);
+      const headerLabels = rawHeaders.map(h => FRIENDLY[h] || h);
+      const peopleAOA = [headerLabels, ...filteredRows.map(r => rawHeaders.map(h => r[h] ?? ''))];
+      const wsPeople = XLSX.utils.aoa_to_sheet(peopleAOA);
+      XLSX.utils.book_append_sheet(wb, wsPeople, 'Pessoas');
+
+      // Aba "Gráficos" — todas as quebras exibidas no relatório (Programas + cada _IC)
+      const chartAOA = [];
+      const progTotal = progTableData.reduce((s,r)=>s+r.count,0);
+      chartAOA.push(['📋 Programas']);
+      chartAOA.push(['Programa','Público','Segmento','Inscrições','%']);
+      progTableData.forEach(r => chartAOA.push([
+        r.nome, r.publico, r.segmento, r.count,
+        progTotal>0 ? (r.count/progTotal*100).toFixed(2)+'%' : '0%'
+      ]));
+      chartAOA.push([]);
+
+      for (const c of _IC) {
+        const entries = chartData[c.col] || [];
+        const tot = entries.reduce((s,[,n])=>s+n,0);
+        chartAOA.push([c.label]);
+        chartAOA.push([c.label,'Inscrições','%']);
+        entries.forEach(([v,n]) => chartAOA.push([
+          v, n, tot>0 ? (n/tot*100).toFixed(2)+'%' : '0%'
+        ]));
+        chartAOA.push([]);
+      }
+      const wsCharts = XLSX.utils.aoa_to_sheet(chartAOA);
+      XLSX.utils.book_append_sheet(wb, wsCharts, 'Gráficos');
+
+      const stamp = new Date().toISOString().slice(0,10);
+      XLSX.writeFile(wb, `Pessoas_Inscritas_${stamp}.xlsx`);
+    } catch(e) {
+      alert('Erro ao exportar: ' + (e.message||e));
+    } finally {
+      setExportingXlsx(false);
+    }
+  }
 
   const activeN = Object.values(filters).reduce((n,s) => n+(s?.size||0), 0);
   const total   = filteredRows.length;
@@ -4545,6 +4619,11 @@ function InscricoesView({ projects, token }) {
       activeN > 0 && React.createElement('button',{onClick:clearAll,className:'flex items-center gap-1.5 text-sm text-red-600 border border-red-200 hover:bg-red-50 rounded-lg px-3 py-1.5 transition'},
         '✕ Limpar ',activeN,' filtro(s)'
       ),
+      React.createElement('button',{
+        onClick: exportInscricoesFullXLSX,
+        disabled: exportingXlsx,
+        className:'flex items-center gap-1.5 text-sm text-indigo-700 border border-indigo-200 hover:bg-indigo-50 rounded-lg px-3 py-1.5 transition disabled:opacity-50'
+      }, exportingXlsx ? 'Exportando…' : '⬇ Exportar Excel (dados + gráficos)'),
       React.createElement('p',{className:'ml-auto text-xs text-slate-400 hidden sm:block'},'Clique em qualquer valor para filtrar · Múltipla seleção')
     ),
     // Tabela de programas
