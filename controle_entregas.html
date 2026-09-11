@@ -6976,7 +6976,7 @@ function App() {
         module: module, onHome: () => setModule(null),
         onBackupDownload: handleBackupDownload, onBackupUpload: handleBackupUpload
       }),
-      React.createElement(ParceirosView, { projects: projects, token: authState.token, headMembers: headMembers })
+      React.createElement(ParceirosView, { projects: projects, token: authState.token, headMembers: headMembers, currentUser: { name: authState.user, email: authState.email } })
     );
   }
 
@@ -7196,7 +7196,7 @@ function AppHeader({
 }
 
 // ─── Painel de Controle de Parceiros ─────────────────────────────────────────
-function ParceirosView({ projects, token, headMembers: headMembersProp }) {
+function ParceirosView({ projects, token, headMembers: headMembersProp, currentUser }) {
   const CE = React.createElement;
   const { useState, useEffect, useMemo, useRef } = React;
 
@@ -7266,12 +7266,59 @@ function ParceirosView({ projects, token, headMembers: headMembersProp }) {
   const [histEntityType, setHistEntityType] = useState('');
   const [headEmailMap, setHeadEmailMap] = useState({});
   const [sentAlocsMap, setSentAlocsMap] = useState({});
+  // ── Solicitação de Consultores Parceiros ──
+  const [etapas, setEtapas] = useState([]);
+  const [etapasEntityType, setEtapasEntityType] = useState('');
+  const [solicitacoes, setSolicitacoes] = useState([]);
+  const [solicEntityType, setSolicEntityType] = useState('');
+  const [configEntityType, setConfigEntityType] = useState('');
+  const [configItemId, setConfigItemId] = useState(null);
+  const [teamsWebhookUrl, setTeamsWebhookUrl] = useState('');
+  const [teamsUrlDraft, setTeamsUrlDraft] = useState('');
+  const [editingTeamsUrl, setEditingTeamsUrl] = useState(false);
+  const [savingTeamsUrl, setSavingTeamsUrl] = useState(false);
+  const [solicProjetoSpId, setSolicProjetoSpId] = useState('');
+  const [solicEtapa, setSolicEtapa] = useState('');
+  const [solicNovaEtapa, setSolicNovaEtapa] = useState('');
+  const [savingNovaEtapa, setSavingNovaEtapa] = useState(false);
+  const [solicPeriodoInicio, setSolicPeriodoInicio] = useState('');
+  const [solicPeriodoFim, setSolicPeriodoFim] = useState('');
+  const [solicDias, setSolicDias] = useState({}); // { 'YYYY-MM-DD': {horarios:string[], quantidade:string} }
+  const [solicObs, setSolicObs] = useState('');
+  const [savingSolic, setSavingSolic] = useState(false);
+  const [togglingSolicId, setTogglingSolicId] = useState(null);
+  const [solicStatusFilter, setSolicStatusFilter] = useState('Pendente');
 
   const PARC_SITE = SP_PARC_SITE_URL;
   const DAY_MS = 86400000;
 
   useEffect(() => { if (token) loadAll(); }, [token]);
   useEffect(() => { if (token) { loadHeadEmails(); loadHistorico(); } }, [token]);
+  useEffect(() => { if (token) { loadEtapas(); loadSolicitacoes(); loadTeamsConfig(); } }, [token]);
+
+  // Gera/atualiza uma linha por dia do período selecionado, preservando o que já
+  // foi preenchido para dias que continuam dentro do novo período.
+  useEffect(() => {
+    if (!solicPeriodoInicio) { setSolicDias({}); return; }
+    const start = solicPeriodoInicio;
+    const end = solicPeriodoFim || solicPeriodoInicio;
+    const sD = new Date(start+'T00:00:00');
+    const eD = new Date(end+'T00:00:00');
+    if (isNaN(sD) || isNaN(eD) || eD < sD) return;
+    const keys = [];
+    let cur = new Date(sD);
+    let guard = 0;
+    while (cur <= eD && guard < 62) {
+      keys.push(cur.toISOString().slice(0,10));
+      cur.setDate(cur.getDate()+1);
+      guard++;
+    }
+    setSolicDias(prev => {
+      const next = {};
+      for (const k of keys) next[k] = prev[k] || {horarios:[], quantidade:''};
+      return next;
+    });
+  }, [solicPeriodoInicio, solicPeriodoFim]);
 
   async function loadAll() {
     setLoading(true); setError(null);
@@ -7334,6 +7381,186 @@ function ParceirosView({ projects, token, headMembers: headMembersProp }) {
           AlocacoesIds:(alocIds||[]).join(',')})
       });
     } catch {}
+  }
+
+  // ── Solicitação de Consultores Parceiros ──────────────────────────────────
+  async function loadEtapas() {
+    try {
+      const r = await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Etapas_Avaliacao')/items?$select=Id,Title&$top=200&$orderby=Title`);
+      setEtapas(r.value || []);
+      const t = await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Etapas_Avaliacao')?$select=ListItemEntityTypeFullName`);
+      if (t && t.ListItemEntityTypeFullName) setEtapasEntityType(t.ListItemEntityTypeFullName);
+    } catch {}
+  }
+
+  async function loadSolicitacoes() {
+    try {
+      const r = await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Solicitacoes')/items?$select=Id,Title,ProjetoSpId,NomeProjeto,NumeroProposta,NomeEtapa,PeriodoInicio,PeriodoFim,DetalhesDias,Observacoes,SolicitanteNome,SolicitanteEmail,Status,Created&$top=500&$orderby=Created desc`);
+      setSolicitacoes(r.value || []);
+      const t = await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Solicitacoes')?$select=ListItemEntityTypeFullName`);
+      if (t && t.ListItemEntityTypeFullName) setSolicEntityType(t.ListItemEntityTypeFullName);
+    } catch {}
+  }
+
+  async function loadTeamsConfig() {
+    try {
+      const r = await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Config')/items?$select=Id,TeamsWebhookUrl&$top=1`);
+      const item = (r.value||[])[0];
+      if (item) { setConfigItemId(item.Id); setTeamsWebhookUrl(item.TeamsWebhookUrl||''); }
+      const t = await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Config')?$select=ListItemEntityTypeFullName`);
+      if (t && t.ListItemEntityTypeFullName) setConfigEntityType(t.ListItemEntityTypeFullName);
+    } catch {}
+  }
+
+  async function saveNovaEtapa() {
+    const nome = solicNovaEtapa.trim();
+    if (!nome || !etapasEntityType) return;
+    setSavingNovaEtapa(true);
+    try {
+      await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Etapas_Avaliacao')/items`, {
+        method:'POST', headers:{'Content-Type':'application/json;odata=verbose'},
+        body: JSON.stringify({__metadata:{type:etapasEntityType}, Title:nome})
+      });
+      setSolicNovaEtapa('');
+      await loadEtapas();
+      setSolicEtapa(nome);
+    } catch(e) { alert('Erro ao criar etapa: '+e.message); }
+    setSavingNovaEtapa(false);
+  }
+
+  async function saveTeamsWebhook() {
+    if (!configEntityType || !configItemId) return;
+    setSavingTeamsUrl(true);
+    try {
+      await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Config')/items(${configItemId})`, {
+        method:'POST', headers:{'X-HTTP-Method':'MERGE','IF-MATCH':'*','Content-Type':'application/json;odata=verbose'},
+        body: JSON.stringify({__metadata:{type:configEntityType}, TeamsWebhookUrl:teamsUrlDraft.trim()})
+      });
+      setTeamsWebhookUrl(teamsUrlDraft.trim());
+      setEditingTeamsUrl(false);
+    } catch(e) { alert('Erro ao salvar URL do Teams: '+e.message); }
+    setSavingTeamsUrl(false);
+  }
+
+  function addHorario(dateKey) {
+    setSolicDias(prev => ({...prev, [dateKey]: {...(prev[dateKey]||{quantidade:''}), horarios:[...(prev[dateKey]?.horarios||[]), '09:00']}}));
+  }
+  function updateHorario(dateKey, idx, value) {
+    setSolicDias(prev => {
+      const h = [...(prev[dateKey]?.horarios||[])];
+      h[idx] = value;
+      return {...prev, [dateKey]: {...prev[dateKey], horarios:h}};
+    });
+  }
+  function removeHorario(dateKey, idx) {
+    setSolicDias(prev => {
+      const h = (prev[dateKey]?.horarios||[]).filter((_,i)=>i!==idx);
+      return {...prev, [dateKey]: {...prev[dateKey], horarios:h}};
+    });
+  }
+  function updateQuantidadeDia(dateKey, value) {
+    setSolicDias(prev => ({...prev, [dateKey]: {...(prev[dateKey]||{horarios:[]}), quantidade:value}}));
+  }
+  function ymdToBR(ymd) {
+    const [y,m,d] = String(ymd||'').split('-');
+    return (y&&m&&d) ? `${d}/${m}/${y}` : (ymd||'');
+  }
+
+  async function enviarComRetentativa(url, payload, tentativas = 3) {
+    let ultimoErro;
+    for (let i = 0; i < tentativas; i++) {
+      try {
+        const res = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+        if (res.ok) return res;
+        ultimoErro = new Error('HTTP ' + res.status);
+      } catch (err) { ultimoErro = err; }
+      if (i < tentativas - 1) { await new Promise(r => setTimeout(r, 1500 * (i + 1))); }
+    }
+    throw ultimoErro;
+  }
+
+  async function notifyTeamsNovaSolicitacao(body, dias) {
+    if (!teamsWebhookUrl) return; // ainda não configurado — a solicitação já foi salva no SharePoint de qualquer forma
+    try {
+      const diasTxt = dias.map(d => `• ${d.data}: ${d.horarios.join(', ')||'(sem horário)'} — ${d.quantidade} consultor(es)`).join('\n');
+      const resumo = [
+        '📝 Nova solicitação de consultores parceiros',
+        `Projeto: ${body.NomeProjeto} (Proposta ${body.NumeroProposta || '—'})`,
+        `Etapa de avaliação: ${body.NomeEtapa}`,
+        `Período: ${body.PeriodoInicio} a ${body.PeriodoFim}`,
+        diasTxt,
+        body.Observacoes ? `Observações: ${body.Observacoes}` : '',
+        `Solicitado por: ${body.SolicitanteNome} (${body.SolicitanteEmail})`
+      ].filter(Boolean).join('\n');
+      await enviarComRetentativa(teamsWebhookUrl, {
+        resumoTexto: resumo,
+        projeto: body.NomeProjeto, numeroProposta: body.NumeroProposta, etapa: body.NomeEtapa,
+        periodoInicio: body.PeriodoInicio, periodoFim: body.PeriodoFim,
+        dias, observacoes: body.Observacoes||'',
+        solicitanteNome: body.SolicitanteNome, solicitanteEmail: body.SolicitanteEmail
+      });
+    } catch(e) {
+      console.warn('Falha ao notificar Teams (a solicitação já foi salva no SharePoint):', e.message);
+    }
+  }
+
+  async function submitSolicitacao() {
+    const proj = filteredProjects.find(p => (p.spId?String(p.spId):p.id) === solicProjetoSpId);
+    if (!proj) { alert('Selecione um projeto.'); return; }
+    if (!solicEtapa) { alert('Selecione a etapa de avaliação.'); return; }
+    if (!solicPeriodoInicio) { alert('Selecione o período/data das avaliações.'); return; }
+    if (!solicEntityType) { alert('A lista de solicitações ainda está carregando — tente novamente em instantes.'); return; }
+    const dias = Object.entries(solicDias)
+      .filter(([,d]) => (d.horarios||[]).some(Boolean) || Number(d.quantidade) > 0)
+      .sort(([a],[b]) => a.localeCompare(b))
+      .map(([data,d]) => ({
+        data: ymdToBR(data),
+        horarios: (d.horarios||[]).filter(Boolean),
+        quantidade: Number(d.quantidade)||0
+      }));
+    if (!dias.length) { alert('Preencha ao menos um horário e a quantidade de consultores para algum dia do período.'); return; }
+
+    setSavingSolic(true);
+    try {
+      const body = {
+        __metadata: {type: solicEntityType},
+        Title: `${proj.title} — ${solicEtapa}`.slice(0,255),
+        ProjetoSpId: proj.spId ? Number(proj.spId) : null,
+        NomeProjeto: proj.title || '',
+        NumeroProposta: proj.codigoProposta || '',
+        NomeEtapa: solicEtapa,
+        PeriodoInicio: ymdToBR(solicPeriodoInicio),
+        PeriodoFim: ymdToBR(solicPeriodoFim || solicPeriodoInicio),
+        DetalhesDias: JSON.stringify(dias),
+        Observacoes: solicObs || '',
+        SolicitanteNome: currentUser?.name || '',
+        SolicitanteEmail: currentUser?.email || '',
+        Status: 'Pendente'
+      };
+      await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Solicitacoes')/items`, {
+        method:'POST', headers:{'Content-Type':'application/json;odata=verbose'}, body: JSON.stringify(body)
+      });
+      await notifyTeamsNovaSolicitacao(body, dias);
+      setSolicProjetoSpId(''); setSolicEtapa(''); setSolicPeriodoInicio(''); setSolicPeriodoFim('');
+      setSolicDias({}); setSolicObs('');
+      await loadSolicitacoes();
+      alert('✅ Solicitação enviada!');
+    } catch(e) { alert('Erro ao enviar solicitação: '+e.message); }
+    setSavingSolic(false);
+  }
+
+  async function toggleSolicitacaoStatus(item) {
+    if (!solicEntityType) return;
+    const novoStatus = item.Status === 'Concluído' ? 'Pendente' : 'Concluído';
+    setTogglingSolicId(item.Id);
+    try {
+      await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Solicitacoes')/items(${item.Id})`, {
+        method:'POST', headers:{'X-HTTP-Method':'MERGE','IF-MATCH':'*','Content-Type':'application/json;odata=verbose'},
+        body: JSON.stringify({__metadata:{type:solicEntityType}, Status:novoStatus})
+      });
+      await loadSolicitacoes();
+    } catch(e) { alert('Erro ao atualizar status: '+e.message); }
+    setTogglingSolicId(null);
   }
 
   function initSendModal() {
@@ -8217,7 +8444,7 @@ function ParceirosView({ projects, token, headMembers: headMembersProp }) {
     // Tabs + ciclo
     CE('div',{className:'flex items-center justify-between flex-wrap gap-3'},
       CE('div',{className:'flex gap-1 bg-white border border-slate-200 rounded-xl p-1 flex-wrap'},
-        [['alocacoes','📋 Alocações'],['grade','📅 Grade'],['parceiros','👥 Parceiros'],['atividades','🎯 Atividades'],['dashboard','📊 Dashboard'],['historico','📨 Histórico']].map(([k,l])=>
+        [['solicitacao','📝 Solicitação de Consultores'],['alocacoes','📋 Alocações'],['grade','📅 Grade'],['parceiros','👥 Parceiros'],['atividades','🎯 Atividades'],['dashboard','📊 Dashboard'],['historico','📨 Histórico']].map(([k,l])=>
           CE('button',{key:k,onClick:()=>setTab(k),className:`px-3 py-1.5 rounded-lg text-xs font-medium transition ${tab===k?'bg-indigo-600 text-white shadow':'text-slate-500 hover:text-slate-700'}`},l)
         )
       ),
@@ -8226,6 +8453,135 @@ function ParceirosView({ projects, token, headMembers: headMembersProp }) {
           CE('option',{value:''},'Todos os ciclos'),ciclos.map(c=>CE('option',{key:c,value:c},c))
         ),
         CE('button',{onClick:loadAll,disabled:loading,className:'text-xs border border-slate-200 rounded-lg px-3 py-1.5 text-slate-500 hover:text-indigo-600 transition disabled:opacity-40'},loading?'⏳ Carregando...':'🔄 Atualizar')
+      )
+    ),
+
+    // ══════════ SOLICITAÇÃO DE CONSULTORES PARCEIROS ══════════
+    tab==='solicitacao'&&CE('div',{className:'space-y-5 max-w-4xl'},
+      CE('div',{className:'flex items-center justify-between flex-wrap gap-2'},
+        CE('h2',{className:'text-base font-bold text-slate-700'},'📝 Solicitação de Consultores Parceiros'),
+        CE('button',{onClick:()=>{setTeamsUrlDraft(teamsWebhookUrl);setEditingTeamsUrl(s=>!s);},className:'text-xs px-3 py-1.5 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 transition'},
+          teamsWebhookUrl?'⚙️ Notificação Teams (configurada)':'⚙️ Configurar notificação Teams'
+        )
+      ),
+      editingTeamsUrl&&CE('div',{className:'bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-2'},
+        CE('label',{className:labelCls},'URL do fluxo do Power Automate'),
+        CE('p',{className:'text-xs text-slate-500 mb-1'},'Cole aqui a URL de acionamento HTTP de um fluxo do Power Automate ("Fluxo de nuvem instantâneo" com gatilho "Quando uma solicitação HTTP for recebida"), configurado para notificar o Teams de quem for responsável por essas solicitações. Pode trocar essa URL quando o responsável mudar — sem precisar mexer no código do app.'),
+        CE('div',{className:'flex gap-2'},
+          CE('input',{type:'text',className:inputCls,placeholder:'https://...',value:teamsUrlDraft,onChange:e=>setTeamsUrlDraft(e.target.value)}),
+          CE('button',{onClick:saveTeamsWebhook,disabled:savingTeamsUrl,className:'px-4 py-2 text-sm font-medium rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white transition disabled:opacity-50 whitespace-nowrap'},savingTeamsUrl?'Salvando...':'Salvar')
+        )
+      ),
+
+      CE('div',{className:'bg-white rounded-2xl shadow-sm border border-slate-200 p-5 space-y-4'},
+        CE('div',{className:'grid grid-cols-1 md:grid-cols-2 gap-4'},
+          CE('div',null,
+            CE('label',{className:labelCls},'Projeto'),
+            CE('select',{className:inputCls,value:solicProjetoSpId,onChange:e=>setSolicProjetoSpId(e.target.value)},
+              CE('option',{value:''},'— Selecione o projeto —'),
+              filteredProjects.map(p=>CE('option',{key:p.id,value:p.spId?String(p.spId):p.id},(p.title||'')+(p.client?` — ${p.client}`:'')))
+            )
+          ),
+          CE('div',null,
+            CE('label',{className:labelCls},'Número da Proposta'),
+            CE('input',{type:'text',className:inputCls+' bg-slate-50 text-slate-500',value:(filteredProjects.find(p=>(p.spId?String(p.spId):p.id)===solicProjetoSpId)||{}).codigoProposta||'',readOnly:true,placeholder:'Preenchido automaticamente'})
+          )
+        ),
+        CE('div',{className:'grid grid-cols-1 md:grid-cols-2 gap-4'},
+          CE('div',null,
+            CE('label',{className:labelCls},'Nome da etapa de avaliação'),
+            CE('select',{className:inputCls,value:solicEtapa,onChange:e=>setSolicEtapa(e.target.value)},
+              CE('option',{value:''},'— Selecione a etapa —'),
+              etapas.map(et=>CE('option',{key:et.Id,value:et.Title},et.Title))
+            )
+          ),
+          CE('div',null,
+            CE('label',{className:labelCls},'Nova etapa (se não estiver na lista)'),
+            CE('div',{className:'flex gap-2'},
+              CE('input',{type:'text',className:inputCls,placeholder:'Ex: Dinâmica de grupo',value:solicNovaEtapa,onChange:e=>setSolicNovaEtapa(e.target.value)}),
+              CE('button',{onClick:saveNovaEtapa,disabled:savingNovaEtapa||!solicNovaEtapa.trim(),className:'px-3 py-2 text-sm rounded-lg border border-indigo-200 text-indigo-600 hover:bg-indigo-50 transition disabled:opacity-40 whitespace-nowrap'},savingNovaEtapa?'...':'+ Adicionar')
+            )
+          )
+        ),
+        CE('div',{className:'grid grid-cols-1 md:grid-cols-2 gap-4'},
+          CE('div',null,
+            CE('label',{className:labelCls},'Período das avaliações — De'),
+            CE('input',{type:'date',className:inputCls,value:solicPeriodoInicio,onChange:e=>setSolicPeriodoInicio(e.target.value)})
+          ),
+          CE('div',null,
+            CE('label',{className:labelCls},'Até (opcional — deixe vazio para um único dia)'),
+            CE('input',{type:'date',className:inputCls,value:solicPeriodoFim,onChange:e=>setSolicPeriodoFim(e.target.value),min:solicPeriodoInicio||undefined})
+          )
+        ),
+
+        Object.keys(solicDias).length>0&&CE('div',{className:'space-y-3'},
+          CE('label',{className:labelCls},'Horários e quantidade de consultores por dia'),
+          ...Object.keys(solicDias).sort().map(dateKey=>{
+            const d = solicDias[dateKey]||{horarios:[],quantidade:''};
+            return CE('div',{key:dateKey,className:'border border-slate-200 rounded-xl p-3'},
+              CE('div',{className:'flex items-center justify-between flex-wrap gap-2 mb-2'},
+                CE('span',{className:'text-sm font-semibold text-slate-700'},ymdToBR(dateKey)),
+                CE('div',{className:'flex items-center gap-2'},
+                  CE('label',{className:'text-xs text-slate-500'},'Qtd. consultores:'),
+                  CE('input',{type:'number',min:0,className:'w-20 border border-slate-200 rounded-lg px-2 py-1 text-sm',value:d.quantidade,onChange:e=>updateQuantidadeDia(dateKey,e.target.value)})
+                )
+              ),
+              CE('div',{className:'flex items-center gap-2 flex-wrap'},
+                ...(d.horarios||[]).map((h,idx)=>CE('div',{key:idx,className:'flex items-center gap-1 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1'},
+                  CE('input',{type:'time',className:'text-sm bg-transparent outline-none',value:h,onChange:e=>updateHorario(dateKey,idx,e.target.value)}),
+                  CE('button',{onClick:()=>removeHorario(dateKey,idx),className:'text-slate-400 hover:text-red-500 text-xs font-bold ml-1'},'✕')
+                )),
+                CE('button',{onClick:()=>addHorario(dateKey),className:'text-xs px-2 py-1 rounded-lg border border-indigo-200 text-indigo-600 hover:bg-indigo-50 transition'},'+ Horário')
+              )
+            );
+          })
+        ),
+
+        CE('div',null,
+          CE('label',{className:labelCls},'Observações objetivas'),
+          CE('textarea',{className:inputCls,rows:3,placeholder:'Ex: consultor precisa falar inglês.',value:solicObs,onChange:e=>setSolicObs(e.target.value)})
+        ),
+
+        CE('div',{className:'flex justify-end'},
+          CE('button',{onClick:submitSolicitacao,disabled:savingSolic,className:'px-5 py-2.5 text-sm font-medium rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white transition disabled:opacity-50'},savingSolic?'Enviando...':'📤 Enviar Solicitação')
+        )
+      ),
+
+      CE('div',{className:'space-y-3'},
+        CE('div',{className:'flex items-center justify-between flex-wrap gap-2'},
+          CE('h3',{className:'text-sm font-bold text-slate-700'},'📋 Painel de Pedidos'),
+          CE('div',{className:'flex gap-1 bg-white border border-slate-200 rounded-xl p-1'},
+            [['Pendente','Pendentes'],['Concluído','Concluídos'],['','Todos']].map(([v,l])=>
+              CE('button',{key:v||'todos',onClick:()=>setSolicStatusFilter(v),className:`px-3 py-1 rounded-lg text-xs font-medium transition ${solicStatusFilter===v?'bg-indigo-600 text-white':'text-slate-500 hover:text-slate-700'}`},l)
+            )
+          )
+        ),
+        (()=>{
+          const list = solicitacoes.filter(s=>!solicStatusFilter||s.Status===solicStatusFilter||(solicStatusFilter==='Pendente'&&!s.Status));
+          return list.length===0
+            ? CE('div',{className:'text-center py-10 text-slate-400 text-sm'},'Nenhum pedido nesse filtro.')
+            : CE('div',{className:'scroll-table sticky-wrap'},
+                CE('table',{className:'w-full text-sm'},
+                  CE('thead',null,CE('tr',{className:'border-b border-slate-100 bg-slate-50'},
+                    ['Solicitado em','Projeto','Proposta','Etapa','Período','Solicitante','Observações','Concluído'].map(h=>CE('th',{key:h,className:'text-left px-4 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wide'},h))
+                  )),
+                  CE('tbody',null,
+                    ...list.map(s=>CE('tr',{key:s.Id,className:'border-b border-slate-50 hover:bg-slate-50'},
+                      CE('td',{className:'px-4 py-2.5 text-slate-500 whitespace-nowrap text-xs'},s.Created?new Date(s.Created).toLocaleString('pt-BR'):'—'),
+                      CE('td',{className:'px-4 py-2.5 font-medium text-slate-800 text-xs max-w-[200px] truncate',title:s.NomeProjeto},s.NomeProjeto||'—'),
+                      CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs'},s.NumeroProposta||'—'),
+                      CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs'},s.NomeEtapa||'—'),
+                      CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs whitespace-nowrap'},`${s.PeriodoInicio||'—'}${s.PeriodoFim&&s.PeriodoFim!==s.PeriodoInicio?' a '+s.PeriodoFim:''}`),
+                      CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs'},s.SolicitanteNome||s.SolicitanteEmail||'—'),
+                      CE('td',{className:'px-4 py-2.5 text-slate-500 text-xs max-w-[220px] truncate',title:s.Observacoes||''},s.Observacoes||'—'),
+                      CE('td',{className:'px-4 py-2.5 text-center'},
+                        CE('input',{type:'checkbox',checked:s.Status==='Concluído',disabled:togglingSolicId===s.Id,onChange:()=>toggleSolicitacaoStatus(s),className:'w-4 h-4 accent-indigo-600 cursor-pointer'})
+                      )
+                    ))
+                  )
+                )
+              );
+        })()
       )
     ),
 
