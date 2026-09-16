@@ -7277,6 +7277,10 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
   const [teamsUrlDraft, setTeamsUrlDraft] = useState('');
   const [editingTeamsUrl, setEditingTeamsUrl] = useState(false);
   const [savingTeamsUrl, setSavingTeamsUrl] = useState(false);
+  const [emailFlowUrl, setEmailFlowUrl] = useState('');
+  const [emailFlowUrlDraft, setEmailFlowUrlDraft] = useState('');
+  const [editingEmailFlowUrl, setEditingEmailFlowUrl] = useState(false);
+  const [savingEmailFlowUrl, setSavingEmailFlowUrl] = useState(false);
   const [solicProjetoSpId, setSolicProjetoSpId] = useState('');
   const [solicEtapa, setSolicEtapa] = useState('');
   const [solicNovaEtapa, setSolicNovaEtapa] = useState('');
@@ -7404,9 +7408,9 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
 
   async function loadTeamsConfig() {
     try {
-      const r = await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Config')/items?$select=Id,TeamsWebhookUrl&$top=1`);
+      const r = await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Config')/items?$select=Id,TeamsWebhookUrl,EmailFlowUrl&$top=1`);
       const item = (r.value||[])[0];
-      if (item) { setConfigItemId(item.Id); setTeamsWebhookUrl(item.TeamsWebhookUrl||''); }
+      if (item) { setConfigItemId(item.Id); setTeamsWebhookUrl(item.TeamsWebhookUrl||''); setEmailFlowUrl(item.EmailFlowUrl||''); }
       const t = await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Config')?$select=ListItemEntityTypeFullName`);
       if (t && t.ListItemEntityTypeFullName) setConfigEntityType(t.ListItemEntityTypeFullName);
     } catch {}
@@ -7440,6 +7444,20 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
       setEditingTeamsUrl(false);
     } catch(e) { alert('Erro ao salvar URL do Teams: '+e.message); }
     setSavingTeamsUrl(false);
+  }
+
+  async function saveEmailFlowUrl() {
+    if (!configEntityType || !configItemId) return;
+    setSavingEmailFlowUrl(true);
+    try {
+      await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Config')/items(${configItemId})`, {
+        method:'POST', headers:{'X-HTTP-Method':'MERGE','IF-MATCH':'*','Content-Type':'application/json;odata=verbose'},
+        body: JSON.stringify({__metadata:{type:configEntityType}, EmailFlowUrl:emailFlowUrlDraft.trim()})
+      });
+      setEmailFlowUrl(emailFlowUrlDraft.trim());
+      setEditingEmailFlowUrl(false);
+    } catch(e) { alert('Erro ao salvar URL do fluxo de e-mail: '+e.message); }
+    setSavingEmailFlowUrl(false);
   }
 
   function addHorario(dateKey) {
@@ -7615,6 +7633,44 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
 
   async function trySendEmail(token, toEmails, ccEmails, subject, body, filename, b64) {
     const htmlBody = `<pre style="font-family:Arial,sans-serif;white-space:pre-wrap">${body.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</pre>`;
+    const msg = {
+      message:{
+        subject,
+        body:{contentType:'HTML',content:htmlBody},
+        toRecipients:toEmails.map(e=>({emailAddress:{address:e}})),
+        ccRecipients:ccEmails.map(e=>({emailAddress:{address:e}})),
+        attachments:b64?[{'@odata.type':'#microsoft.graph.fileAttachment',name:filename,
+          contentType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',contentBytes:b64}]:[]
+      }, saveToSentItems:true
+    };
+    function autoDownloadAttachment() {
+      if (!b64) return;
+      const bytes=atob(b64); const arr=new Uint8Array(bytes.length);
+      for (let i=0;i<bytes.length;i++) arr[i]=bytes.charCodeAt(i);
+      const blob=new Blob([arr],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+      const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=filename; a.click();
+    }
+
+    // 0. Try the secure Power Automate relay first ("App Only" — envia via permissão de
+    // Aplicativo do Graph, sem depender do usuário logado ter escopo Mail.Send delegado).
+    if (emailFlowUrl) {
+      try {
+        let senderUpn = '';
+        try {
+          const app0 = getMsalApp(APP_CONFIG.clientId, APP_CONFIG.tenantId);
+          await app0.initialize();
+          senderUpn = app0.getAllAccounts()[0]?.username || '';
+        } catch {}
+        if (senderUpn) {
+          const res = await fetch(emailFlowUrl, {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({...msg, senderUpn})
+          });
+          if (res.ok) { autoDownloadAttachment(); return true; }
+        }
+      } catch {}
+    }
+
     // 1. Try to acquire Graph token via MSAL (silent first, then popup)
     let graphToken = null;
     try {
@@ -7635,29 +7691,10 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
     // 2. If Graph token obtained, send via Graph API (with attachment)
     if (graphToken) {
       try {
-        const msg = {
-          message:{
-            subject,
-            body:{contentType:'HTML',content:htmlBody},
-            toRecipients:toEmails.map(e=>({emailAddress:{address:e}})),
-            ccRecipients:ccEmails.map(e=>({emailAddress:{address:e}})),
-            attachments:b64?[{'@odata.type':'#microsoft.graph.fileAttachment',name:filename,
-              contentType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',contentBytes:b64}]:[]
-          }, saveToSentItems:true
-        };
         const res = await fetch('https://graph.microsoft.com/v1.0/me/sendMail',{
           method:'POST', headers:{'Authorization':`Bearer ${graphToken}`,'Content-Type':'application/json'}, body:JSON.stringify(msg)
         });
-        if (res.ok||res.status===202) {
-          // Also auto-download the attachment locally
-          if (b64) {
-            const bytes=atob(b64); const arr=new Uint8Array(bytes.length);
-            for (let i=0;i<bytes.length;i++) arr[i]=bytes.charCodeAt(i);
-            const blob=new Blob([arr],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
-            const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=filename; a.click();
-          }
-          return true;
-        }
+        if (res.ok||res.status===202) { autoDownloadAttachment(); return true; }
       } catch {}
     }
 
@@ -9149,7 +9186,20 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
         CE('div',{className:'p-6 space-y-5'},
           CE('div',{className:'flex items-center justify-between'},
             CE('h2',{className:'text-lg font-bold text-slate-800'},'📧 Enviar Comunicações'),
-            CE('button',{onClick:()=>setShowSendModal(false),className:'text-slate-400 hover:text-slate-600 text-xl font-bold leading-none'},'✕')
+            CE('div',{className:'flex items-center gap-2'},
+              CE('button',{onClick:()=>{setEmailFlowUrlDraft(emailFlowUrl);setEditingEmailFlowUrl(s=>!s);},className:'text-xs px-3 py-1.5 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 transition'},
+                emailFlowUrl?'⚙️ Envio via fluxo (configurado)':'⚙️ Configurar envio via fluxo'
+              ),
+              CE('button',{onClick:()=>setShowSendModal(false),className:'text-slate-400 hover:text-slate-600 text-xl font-bold leading-none'},'✕')
+            )
+          ),
+          editingEmailFlowUrl&&CE('div',{className:'bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-2'},
+            CE('label',{className:labelCls},'URL do fluxo do Power Automate (envio de e-mail)'),
+            CE('p',{className:'text-xs text-slate-500 mb-1'},'Cole aqui a URL de acionamento HTTP de um fluxo do Power Automate que envie o e-mail via Microsoft Graph (permissão de Aplicativo), usado como primeira opção antes do envio direto pelo navegador. Deixe em branco para pular essa etapa e usar apenas os métodos abaixo.'),
+            CE('div',{className:'flex gap-2'},
+              CE('input',{type:'text',className:inputCls,placeholder:'https://...',value:emailFlowUrlDraft,onChange:e=>setEmailFlowUrlDraft(e.target.value)}),
+              CE('button',{onClick:saveEmailFlowUrl,disabled:savingEmailFlowUrl,className:'px-4 py-2 text-sm font-medium rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white transition disabled:opacity-50 whitespace-nowrap'},savingEmailFlowUrl?'Salvando...':'Salvar')
+            )
           ),
           CE('div',{className:'space-y-3'},
             ...Object.entries(sendEmailFields).map(([proj,fields])=>
