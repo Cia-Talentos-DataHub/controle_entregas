@@ -7279,6 +7279,8 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
   const [emailFlowUrlDraft, setEmailFlowUrlDraft] = useState('');
   const [editingEmailFlowUrl, setEditingEmailFlowUrl] = useState(false);
   const [savingEmailFlowUrl, setSavingEmailFlowUrl] = useState(false);
+  const [teamsRecipients, setTeamsRecipients] = useState([]);
+  const [teamsRecipientsDraft, setTeamsRecipientsDraft] = useState('');
   const [solicProjetoSpId, setSolicProjetoSpId] = useState('');
   const [solicEtapa, setSolicEtapa] = useState('');
   const [solicPeriodoInicio, setSolicPeriodoInicio] = useState('');
@@ -7393,11 +7395,25 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
     } catch {}
   }
 
+  function parseEmailList(text) {
+    return Array.from(new Set(
+      String(text||'')
+        .split(/[\n,;]+/)
+        .map(s => s.trim())
+        .filter(s => s && /\S+@\S+\.\S+/.test(s))
+    ));
+  }
+
   async function loadTeamsConfig() {
     try {
-      const r = await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Config')/items?$select=Id,TeamsWebhookUrl,EmailFlowUrl&$top=1`);
+      const r = await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Config')/items?$select=Id,TeamsWebhookUrl,EmailFlowUrl,TeamsRecipientEmails&$top=1`);
       const item = (r.value||[])[0];
-      if (item) { setConfigItemId(item.Id); setTeamsWebhookUrl(item.TeamsWebhookUrl||''); setEmailFlowUrl(item.EmailFlowUrl||''); }
+      if (item) {
+        setConfigItemId(item.Id);
+        setTeamsWebhookUrl(item.TeamsWebhookUrl||'');
+        setEmailFlowUrl(item.EmailFlowUrl||'');
+        setTeamsRecipients(parseEmailList(item.TeamsRecipientEmails||''));
+      }
       const t = await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Config')?$select=ListItemEntityTypeFullName`);
       if (t && t.ListItemEntityTypeFullName) setConfigEntityType(t.ListItemEntityTypeFullName);
     } catch {}
@@ -7407,13 +7423,15 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
     if (!configEntityType || !configItemId) return;
     setSavingTeamsUrl(true);
     try {
+      const emailsArr = parseEmailList(teamsRecipientsDraft);
       await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Config')/items(${configItemId})`, {
         method:'POST', headers:{'X-HTTP-Method':'MERGE','IF-MATCH':'*','Content-Type':'application/json;odata=verbose'},
-        body: JSON.stringify({__metadata:{type:configEntityType}, TeamsWebhookUrl:teamsUrlDraft.trim()})
+        body: JSON.stringify({__metadata:{type:configEntityType}, TeamsWebhookUrl:teamsUrlDraft.trim(), TeamsRecipientEmails:emailsArr.join('\n')})
       });
       setTeamsWebhookUrl(teamsUrlDraft.trim());
+      setTeamsRecipients(emailsArr);
       setEditingTeamsUrl(false);
-    } catch(e) { alert('Erro ao salvar URL do Teams: '+e.message); }
+    } catch(e) { alert('Erro ao salvar configuração do Teams: '+e.message); }
     setSavingTeamsUrl(false);
   }
 
@@ -7495,8 +7513,13 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
       ].join('<br>') + tabelaDias +
         (body.Observacoes ? `Observações: ${escHtml(body.Observacoes)}<br>` : '') +
         `Solicitado por: ${escHtml(body.SolicitanteNome)} (${escHtml(body.SolicitanteEmail)})`;
+      // O solicitante sempre recebe a notificação, além de quem estiver configurado.
+      const notificarEmails = Array.from(new Set(
+        [...teamsRecipients, body.SolicitanteEmail].map(e => String(e||'').trim()).filter(Boolean)
+      ));
       await enviarComRetentativa(teamsWebhookUrl, {
         resumoTexto: resumo,
+        notificarEmails,
         projeto: body.NomeProjeto, numeroProposta: body.NumeroProposta, etapa: body.NomeEtapa,
         periodoInicio: body.PeriodoInicio, periodoFim: body.PeriodoFim,
         dias, observacoes: body.Observacoes||'',
@@ -8481,15 +8504,22 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
     tab==='solicitacao'&&CE('div',{className:'space-y-5'},
       CE('div',{className:'flex items-center justify-between flex-wrap gap-2'},
         CE('h2',{className:'text-base font-bold text-slate-700'},'📝 Solicitação de Consultores Parceiros'),
-        CE('button',{onClick:()=>{setTeamsUrlDraft(teamsWebhookUrl);setEditingTeamsUrl(s=>!s);},className:'text-xs px-3 py-1.5 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 transition'},
+        CE('button',{onClick:()=>{setTeamsUrlDraft(teamsWebhookUrl);setTeamsRecipientsDraft(teamsRecipients.join('\n'));setEditingTeamsUrl(s=>!s);},className:'text-xs px-3 py-1.5 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 transition'},
           teamsWebhookUrl?'⚙️ Notificação Teams (configurada)':'⚙️ Configurar notificação Teams'
         )
       ),
-      editingTeamsUrl&&CE('div',{className:'bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-2'},
-        CE('label',{className:labelCls},'URL do fluxo do Power Automate'),
-        CE('p',{className:'text-xs text-slate-500 mb-1'},'Cole aqui a URL de acionamento HTTP de um fluxo do Power Automate ("Fluxo de nuvem instantâneo" com gatilho "Quando uma solicitação HTTP for recebida"), configurado para notificar o Teams de quem for responsável por essas solicitações. Pode trocar essa URL quando o responsável mudar — sem precisar mexer no código do app.'),
-        CE('div',{className:'flex gap-2'},
-          CE('input',{type:'text',className:inputCls,placeholder:'https://...',value:teamsUrlDraft,onChange:e=>setTeamsUrlDraft(e.target.value)}),
+      editingTeamsUrl&&CE('div',{className:'bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-4'},
+        CE('div',{className:'space-y-2'},
+          CE('label',{className:labelCls},'URL do fluxo do Power Automate'),
+          CE('p',{className:'text-xs text-slate-500 mb-1'},'Cole aqui a URL de acionamento HTTP de um fluxo do Power Automate ("Fluxo de nuvem instantâneo" com gatilho "Quando uma solicitação HTTP for recebida"), configurado para notificar o Teams de quem for responsável por essas solicitações. Pode trocar essa URL quando o responsável mudar — sem precisar mexer no código do app.'),
+          CE('input',{type:'text',className:inputCls,placeholder:'https://...',value:teamsUrlDraft,onChange:e=>setTeamsUrlDraft(e.target.value)})
+        ),
+        CE('div',{className:'space-y-2'},
+          CE('label',{className:labelCls},'Quem recebe a notificação no Teams'),
+          CE('p',{className:'text-xs text-slate-500 mb-1'},'Um e-mail por linha (ou separados por vírgula). O solicitante de cada pedido sempre recebe a notificação também, mesmo que o e-mail dele não esteja aqui. Essa lista fica salva no SharePoint e vale para qualquer pessoa que acessar o app.'),
+          CE('textarea',{className:inputCls,rows:3,placeholder:'nome1@ciadetalentos.com\nnome2@ciadetalentos.com',value:teamsRecipientsDraft,onChange:e=>setTeamsRecipientsDraft(e.target.value)})
+        ),
+        CE('div',{className:'flex justify-end'},
           CE('button',{onClick:saveTeamsWebhook,disabled:savingTeamsUrl,className:'px-4 py-2 text-sm font-medium rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white transition disabled:opacity-50 whitespace-nowrap'},savingTeamsUrl?'Salvando...':'Salvar')
         )
       ),
