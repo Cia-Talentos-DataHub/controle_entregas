@@ -7262,7 +7262,7 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
   const [editAtivForm, setEditAtivForm] = useState({});
   const [savingAtiv, setSavingAtiv] = useState(false);
   const [deletingAtivId, setDeletingAtivId] = useState(null);
-  const [newAtivForm, setNewAtivForm] = useState({ titulo:'', valor:'' });
+  const [newAtivForm, setNewAtivForm] = useState({ titulo:'', valor:'', tempoPadrao:'', oculto:false });
   const [savingNewAtiv, setSavingNewAtiv] = useState(false);
   const [uploadingAtiv, setUploadingAtiv] = useState(false);
   // Dashboard
@@ -7358,7 +7358,7 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
       const [pRes, aRes, atRes, tAloc, tParc, tAtiv] = await Promise.all([
         spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros')/items?$select=Id,Title,Telefone,Email,Estado,Ingles,AutodeclaracaoRacial,Status,Atuacao,Empresa,CNPJ,Vigencia,Classificacao,DataInicio,Gestor,OBS,Renovacao&$top=500&$orderby=Title`),
         spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Alocacao')/items?$select=Id,Title,Parceiro,ParceiroId,Projeto,ProjetoSpId,Atividade,DataAtividade,Periodo,Frequencia,ValorAtividade,ValorDia,CobraAlinhamento,AtivAlinhamento,HorasAlinhamento,ValorAlinhamento&$top=2000&$orderby=DataAtividade`),
-        spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Atividades')/items?$select=Id,Title,Valor&$top=200&$orderby=Title`),
+        spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Atividades')/items?$select=Id,Title,Valor,TempoPadrao,OcultoSolicitacao&$top=200&$orderby=Title`),
         spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Alocacao')?$select=ListItemEntityTypeFullName`),
         spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros')?$select=ListItemEntityTypeFullName`),
         spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Atividades')?$select=ListItemEntityTypeFullName`)
@@ -7378,7 +7378,7 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
   // os dados de Parceiros/Alocações (valores, contratos etc.) que ficam restritos.
   async function loadAtividadesOnly() {
     try {
-      const atRes = await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Atividades')/items?$select=Id,Title,Valor&$top=200&$orderby=Title`);
+      const atRes = await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Atividades')/items?$select=Id,Title,Valor,TempoPadrao,OcultoSolicitacao&$top=200&$orderby=Title`);
       setAtividades(atRes.value || []);
     } catch (e) { setError(e.message); }
   }
@@ -8375,7 +8375,7 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
     if (!editingAtiv) return;
     setSavingAtiv(true);
     try {
-      const body={__metadata:{type:ativEntityType},Title:editAtivForm.titulo,Valor:Number(editAtivForm.valor)||0};
+      const body={__metadata:{type:ativEntityType},Title:editAtivForm.titulo,Valor:Number(editAtivForm.valor)||0,TempoPadrao:editAtivForm.tempoPadrao===''||editAtivForm.tempoPadrao===undefined?null:Number(editAtivForm.tempoPadrao),OcultoSolicitacao:!!editAtivForm.oculto};
       await spFetch(token,`${PARC_SITE}/_api/web/lists/getbytitle('List_Atividades')/items(${editingAtiv.Id})`,{method:'POST',headers:{'X-HTTP-Method':'MERGE','IF-MATCH':'*','Content-Type':'application/json;odata=verbose'},body:JSON.stringify(body)});
       setEditingAtiv(null); await loadAll();
     } catch(e) { setError(e.message); }
@@ -8396,9 +8396,9 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
     if (!newAtivForm.titulo) return;
     setSavingNewAtiv(true);
     try {
-      const body={__metadata:{type:ativEntityType},Title:newAtivForm.titulo,Valor:Number(newAtivForm.valor)||0};
+      const body={__metadata:{type:ativEntityType},Title:newAtivForm.titulo,Valor:Number(newAtivForm.valor)||0,TempoPadrao:newAtivForm.tempoPadrao===''||newAtivForm.tempoPadrao===undefined?null:Number(newAtivForm.tempoPadrao),OcultoSolicitacao:!!newAtivForm.oculto};
       await spFetch(token,`${PARC_SITE}/_api/web/lists/getbytitle('List_Atividades')/items`,{method:'POST',headers:{'Content-Type':'application/json;odata=verbose'},body:JSON.stringify(body)});
-      setNewAtivForm({titulo:'',valor:''}); await loadAll();
+      setNewAtivForm({titulo:'',valor:'',tempoPadrao:'',oculto:false}); await loadAll();
     } catch(e) { setError(e.message); }
     setSavingNewAtiv(false);
   }
@@ -8406,7 +8406,7 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
   async function downloadAtivTemplate() {
     try {
       const XLSX=await loadXLSX();
-      const ws=XLSX.utils.json_to_sheet([{Atividade:'',Valor_R$:0}]); const wb=XLSX.utils.book_new();
+      const ws=XLSX.utils.json_to_sheet([{Atividade:'',Valor_R$:0,Tempo_Padrao_h:'',Ocultar_Solicitacao:'Não'}]); const wb=XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb,ws,'Atividades'); XLSX.writeFile(wb,'modelo_atividades.xlsx');
     } catch(e) { setError('Erro: '+e.message); }
   }
@@ -8421,8 +8421,12 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
       for (const row of rows) {
         const titulo=row['Atividade']||row['Title']||row['ATIVIDADE']||'';
         const valor=Number(row['Valor_R$']||row['Valor']||row['VALOR']||0);
+        const tempoRaw=row['Tempo_Padrao_h']||row['Tempo Padrao']||row['TempoPadrao']||'';
+        const tempoPadrao=tempoRaw===''?null:Number(tempoRaw);
+        const ocultoRaw=String(row['Ocultar_Solicitacao']||row['Oculto']||'').trim().toLowerCase();
+        const oculto=['sim','true','1','yes','x'].includes(ocultoRaw);
         if (!titulo) continue;
-        const body={__metadata:{type:ativEntityType},Title:titulo,Valor:valor};
+        const body={__metadata:{type:ativEntityType},Title:titulo,Valor:valor,TempoPadrao:tempoPadrao,OcultoSolicitacao:oculto};
         await spFetch(token,`${PARC_SITE}/_api/web/lists/getbytitle('List_Atividades')/items`,{method:'POST',headers:{'Content-Type':'application/json;odata=verbose'},body:JSON.stringify(body)});
         count++;
       }
@@ -8686,7 +8690,7 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
             CE('label',{className:labelCls},'Atividade'),
             CE('select',{className:inputCls,value:solicEtapa,onChange:e=>setSolicEtapa(e.target.value)},
               CE('option',{value:''},'— Selecione a atividade —'),
-              atividades.map(at=>CE('option',{key:at.Id,value:at.Title},at.Title))
+              atividades.filter(at=>!at.OcultoSolicitacao).map(at=>CE('option',{key:at.Id,value:at.Title},at.Title))
             )
           )
         ),
@@ -9160,6 +9164,14 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
           CE('label',{className:labelCls},'Valor (R$)'),
           CE('input',{type:'number',min:0,step:'0.01',placeholder:'0.00',className:inputCls,value:newAtivForm.valor,onChange:e=>setNewAtivForm(f=>({...f,valor:e.target.value}))})
         ),
+        CE('div',{className:'w-32'},
+          CE('label',{className:labelCls},'Tempo padrão (h)'),
+          CE('input',{type:'number',min:0,step:'0.25',placeholder:'—',className:inputCls,value:newAtivForm.tempoPadrao,onChange:e=>setNewAtivForm(f=>({...f,tempoPadrao:e.target.value}))})
+        ),
+        CE('label',{className:'flex items-center gap-2 cursor-pointer select-none text-xs text-slate-600 pb-2'},
+          CE('input',{type:'checkbox',checked:newAtivForm.oculto,onChange:e=>setNewAtivForm(f=>({...f,oculto:e.target.checked})),className:'w-4 h-4 rounded accent-indigo-600'}),
+          'Ocultar na Solicitação'
+        ),
         CE('button',{onClick:saveNewAtiv,disabled:savingNewAtiv||!newAtivForm.titulo,className:'px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg transition disabled:opacity-40'},savingNewAtiv?'⏳ Salvando...':'+ Adicionar')
       ),
       editingAtiv&&CE('div',{className:'bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-end gap-3 flex-wrap'},
@@ -9171,6 +9183,14 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
           CE('label',{className:labelCls},'Valor (R$)'),
           CE('input',{type:'number',min:0,step:'0.01',className:inputCls,value:editAtivForm.valor,onChange:e=>setEditAtivForm(f=>({...f,valor:e.target.value}))})
         ),
+        CE('div',{className:'w-32'},
+          CE('label',{className:labelCls},'Tempo padrão (h)'),
+          CE('input',{type:'number',min:0,step:'0.25',placeholder:'—',className:inputCls,value:editAtivForm.tempoPadrao,onChange:e=>setEditAtivForm(f=>({...f,tempoPadrao:e.target.value}))})
+        ),
+        CE('label',{className:'flex items-center gap-2 cursor-pointer select-none text-xs text-slate-600 pb-2'},
+          CE('input',{type:'checkbox',checked:editAtivForm.oculto,onChange:e=>setEditAtivForm(f=>({...f,oculto:e.target.checked})),className:'w-4 h-4 rounded accent-indigo-600'}),
+          'Ocultar na Solicitação'
+        ),
         CE('div',{className:'flex gap-2'},
           CE('button',{onClick:saveEditAtiv,disabled:savingAtiv,className:'px-4 py-2 bg-green-600 text-white text-sm rounded-lg disabled:opacity-40'},savingAtiv?'⏳...':'✓ Salvar'),
           CE('button',{onClick:()=>setEditingAtiv(null),className:'px-4 py-2 bg-white border border-slate-200 text-slate-600 text-sm rounded-lg hover:bg-slate-50'},'Cancelar')
@@ -9178,14 +9198,16 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
       ),
       CE('div',{className:'bg-white border border-slate-200 rounded-xl overflow-hidden'},
         CE('table',{className:'w-full text-sm'},
-          CE('thead',null,CE('tr',{className:'border-b border-slate-100 bg-slate-50'},['Atividade','Valor (R$)','Ações'].map(h=>CE('th',{key:h,className:'text-left px-4 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wide'},h)))),
+          CE('thead',null,CE('tr',{className:'border-b border-slate-100 bg-slate-50'},['Atividade','Valor (R$)','Tempo Padrão','Oculta na Solicitação','Ações'].map(h=>CE('th',{key:h,className:'text-left px-4 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wide'},h)))),
           CE('tbody',null,
-            atividades.length===0?CE('tr',null,CE('td',{colSpan:3,className:'text-center py-10 text-slate-400'},'Nenhuma atividade.'))
+            atividades.length===0?CE('tr',null,CE('td',{colSpan:5,className:'text-center py-10 text-slate-400'},'Nenhuma atividade.'))
             :atividades.map(a=>CE('tr',{key:a.Id,className:`border-b border-slate-50 hover:bg-slate-50 ${editingAtiv&&editingAtiv.Id===a.Id?'bg-amber-50':''}`},
                 CE('td',{className:'px-4 py-2.5 font-medium text-slate-800'},a.Title),
                 CE('td',{className:'px-4 py-2.5 text-slate-600'},a.Valor?`R$ ${Number(a.Valor).toFixed(2)}`:'—'),
+                CE('td',{className:'px-4 py-2.5 text-slate-600'},(a.TempoPadrao!==null&&a.TempoPadrao!==undefined&&a.TempoPadrao!=='')?`${Number(a.TempoPadrao)}h`:'—'),
+                CE('td',{className:'px-4 py-2.5'},a.OcultoSolicitacao?CE('span',{className:'text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-700'},'Oculta'):CE('span',{className:'text-xs text-slate-400'},'—')),
                 CE('td',{className:'px-4 py-2.5'},CE('div',{className:'flex gap-1.5'},
-                  CE('button',{onClick:()=>{setEditingAtiv(a);setEditAtivForm({titulo:a.Title,valor:a.Valor||0});},className:'p-1 rounded hover:bg-amber-100 text-amber-600 transition'},'✏️'),
+                  CE('button',{onClick:()=>{setEditingAtiv(a);setEditAtivForm({titulo:a.Title,valor:a.Valor||0,tempoPadrao:(a.TempoPadrao!==null&&a.TempoPadrao!==undefined)?a.TempoPadrao:'',oculto:!!a.OcultoSolicitacao});},className:'p-1 rounded hover:bg-amber-100 text-amber-600 transition'},'✏️'),
                   CE('button',{onClick:()=>deleteAtividade(a.Id),disabled:deletingAtivId===a.Id,className:'p-1 rounded hover:bg-red-100 text-red-500 transition disabled:opacity-40'},deletingAtivId===a.Id?'⏳':'🗑️')
                 ))
               ))
