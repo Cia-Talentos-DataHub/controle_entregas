@@ -6982,11 +6982,11 @@ function App() {
   }
 
   // ── Parceiros module ──
+  // A tela "Solicitação de Consultores Parceiros" fica liberada para qualquer pessoa;
+  // as demais telas do módulo (Alocações, Grade, Parceiros, Atividades, Dashboard,
+  // Histórico) continuam restritas pelas regras de Acesso 1/2 já existentes — ver
+  // o prop accessLevel repassado ao ParceirosView.
   if (module === 'parceiros') {
-    if (accessLevel !== null && accessLevel >= 3) {
-      setModule(null);
-      return null;
-    }
     return React.createElement("div", { className: "min-h-screen bg-slate-50" },
       React.createElement(AppHeader, {
         view: view, setView: setView, authState: authState, onSignOut: signOut,
@@ -6995,7 +6995,7 @@ function App() {
         module: module, onHome: () => setModule(null),
         onBackupDownload: handleBackupDownload, onBackupUpload: handleBackupUpload
       }),
-      React.createElement(ParceirosView, { projects: projects, token: authState.token, headMembers: headMembers, currentUser: { name: authState.user, email: authState.email } })
+      React.createElement(ParceirosView, { projects: projects, token: authState.token, headMembers: headMembers, currentUser: { name: authState.user, email: authState.email }, accessLevel: accessLevel })
     );
   }
 
@@ -7215,11 +7215,14 @@ function AppHeader({
 }
 
 // ─── Painel de Controle de Parceiros ─────────────────────────────────────────
-function ParceirosView({ projects, token, headMembers: headMembersProp, currentUser }) {
+function ParceirosView({ projects, token, headMembers: headMembersProp, currentUser, accessLevel }) {
   const CE = React.createElement;
   const { useState, useEffect, useMemo, useRef } = React;
 
-  const [tab, setTab] = useState('alocacoes');
+  // Acesso 1/2 = acesso completo ao módulo; 3+ (ou não encontrado) só enxerga a tela
+  // de Solicitação de Consultores Parceiros — as demais abas seguem bloqueadas.
+  const fullAccess = accessLevel === null || accessLevel === undefined || accessLevel <= 2;
+  const [tab, setTab] = useState(() => fullAccess ? 'alocacoes' : 'solicitacao');
   const [parceiros, setParceiros] = useState([]);
   const [alocacoes, setAlocacoes] = useState([]);
   const [atividades, setAtividades] = useState([]);
@@ -7309,13 +7312,21 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
   const [savingSolic, setSavingSolic] = useState(false);
   const [togglingSolicId, setTogglingSolicId] = useState(null);
   const [solicStatusFilter, setSolicStatusFilter] = useState('Pendente');
+  const [solicNumeroPropostaManual, setSolicNumeroPropostaManual] = useState('');
+  const [deletingSolicId, setDeletingSolicId] = useState(null);
+  const [deletingHistId, setDeletingHistId] = useState(null);
+  const [savingMsgPadrao, setSavingMsgPadrao] = useState(''); // '' | 'head' | 'fixo' | 'parceiro'
+  const [configMsgFieldsReady, setConfigMsgFieldsReady] = useState(true); // true até detectarmos que as colunas ainda não existem
 
   const PARC_SITE = SP_PARC_SITE_URL;
   const DAY_MS = 86400000;
 
-  useEffect(() => { if (token) loadAll(); }, [token]);
-  useEffect(() => { if (token) { loadHeadEmails(); loadHistorico(); } }, [token]);
+  useEffect(() => { if (token) { if (fullAccess) loadAll(); else loadAtividadesOnly(); } }, [token, fullAccess]);
+  useEffect(() => { if (token && fullAccess) { loadHeadEmails(); loadHistorico(); } }, [token, fullAccess]);
   useEffect(() => { if (token) { loadSolicitacoes(); loadTeamsConfig(); } }, [token]);
+  // Ao trocar de projeto, limpa o número de proposta digitado manualmente (só existe
+  // quando o projeto selecionado não tem proposta cadastrada automaticamente).
+  useEffect(() => { setSolicNumeroPropostaManual(''); }, [solicProjetoSpId]);
 
   // Gera/atualiza uma linha por dia do período selecionado, preservando o que já
   // foi preenchido para dias que continuam dentro do novo período.
@@ -7362,6 +7373,16 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
     setLoading(false);
   }
 
+  // Usado por quem só tem acesso à tela de Solicitação (accessLevel >= 3): carrega
+  // apenas a lista de Atividades (necessária para o formulário de pedido), sem expor
+  // os dados de Parceiros/Alocações (valores, contratos etc.) que ficam restritos.
+  async function loadAtividadesOnly() {
+    try {
+      const atRes = await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Atividades')/items?$select=Id,Title,Valor&$top=200&$orderby=Title`);
+      setAtividades(atRes.value || []);
+    } catch (e) { setError(e.message); }
+  }
+
   // ── Comunicações: funções ──
   async function loadHeadEmails() {
     try {
@@ -7404,6 +7425,19 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
     } catch {}
   }
 
+  async function deleteHistoricoEntry(item) {
+    if (!histEntityType) return;
+    if (!window.confirm('Excluir esta mensagem do histórico de envios?')) return;
+    setDeletingHistId(item.Id);
+    try {
+      await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Comunicacao_Historico')/items(${item.Id})`, {
+        method:'POST', headers:{'X-HTTP-Method':'DELETE','IF-MATCH':'*','Content-Type':'application/json;odata=verbose'}
+      });
+      await loadHistorico();
+    } catch(e) { setError(e.message); }
+    setDeletingHistId(null);
+  }
+
   // ── Solicitação de Consultores Parceiros ──────────────────────────────────
   async function loadSolicitacoes() {
     try {
@@ -7425,17 +7459,78 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
 
   async function loadTeamsConfig() {
     try {
-      const r = await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Config')/items?$select=Id,TeamsWebhookUrl,EmailFlowUrl,TeamsRecipientEmails&$top=1`);
+      const fullSelect = 'Id,TeamsWebhookUrl,EmailFlowUrl,TeamsRecipientEmails,MsgHeadAssunto,MsgHeadCorpo,MsgFixoAssunto,MsgFixoCorpo,MsgParceiroAssunto,MsgParceiroCorpo';
+      let r;
+      try {
+        r = await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Config')/items?$select=${fullSelect}&$top=1`);
+      } catch {
+        // As colunas de mensagem padrão ainda não existem nessa lista — usa "⚙️ Setup SP" para criá-las.
+        setConfigMsgFieldsReady(false);
+        r = await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Config')/items?$select=Id,TeamsWebhookUrl,EmailFlowUrl,TeamsRecipientEmails&$top=1`);
+      }
       const item = (r.value||[])[0];
       if (item) {
         setConfigItemId(item.Id);
         setTeamsWebhookUrl(item.TeamsWebhookUrl||'');
         setEmailFlowUrl(item.EmailFlowUrl||'');
         setTeamsRecipients(parseEmailList(item.TeamsRecipientEmails||''));
+        if (item.MsgHeadAssunto || item.MsgHeadCorpo) setSendMsgHead({assunto:item.MsgHeadAssunto||'Alocações do projeto', corpo:item.MsgHeadCorpo||''});
+        if (item.MsgFixoAssunto || item.MsgFixoCorpo) setSendMsgFixo({assunto:item.MsgFixoAssunto||'Suas alocações no projeto', corpo:item.MsgFixoCorpo||''});
+        if (item.MsgParceiroAssunto || item.MsgParceiroCorpo) setSendMsgParceiro({assunto:item.MsgParceiroAssunto||'Suas alocações no projeto', corpo:item.MsgParceiroCorpo||''});
       }
       const t = await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Config')?$select=ListItemEntityTypeFullName`);
       if (t && t.ListItemEntityTypeFullName) setConfigEntityType(t.ListItemEntityTypeFullName);
     } catch {}
+  }
+
+  async function createConfigMsgColumns() {
+    const fields = [
+      {name:'MsgHeadAssunto',     type:'SP.Field',            kind:2},
+      {name:'MsgHeadCorpo',       type:'SP.FieldMultiLineText', kind:3},
+      {name:'MsgFixoAssunto',     type:'SP.Field',            kind:2},
+      {name:'MsgFixoCorpo',       type:'SP.FieldMultiLineText', kind:3},
+      {name:'MsgParceiroAssunto', type:'SP.Field',            kind:2},
+      {name:'MsgParceiroCorpo',   type:'SP.FieldMultiLineText', kind:3},
+    ];
+    let created=0, skipped=0;
+    for (const f of fields) {
+      try {
+        await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Config')/fields`, {
+          method:'POST',
+          headers:{'Content-Type':'application/json;odata=verbose'},
+          body:JSON.stringify({"__metadata":{"type":f.type},"Title":f.name,"StaticName":f.name,"FieldTypeKind":f.kind,...(f.type==='SP.FieldMultiLineText'?{"RichText":false}:{})})
+        });
+        created++;
+      } catch(e) {
+        if (e.message&&(e.message.includes('já existe')||e.message.includes('already exists')||e.message.includes('duplicate')||e.message.includes('-2130575338'))) skipped++;
+        else { alert(`Erro ao criar coluna ${f.name}: ${e.message}`); return; }
+      }
+    }
+    setConfigMsgFieldsReady(true);
+    await loadTeamsConfig();
+    alert(`✅ Colunas de mensagem padrão: ${created} criadas | ${skipped} já existiam.`);
+  }
+
+  async function saveMsgPadrao(tipo) {
+    if (!configEntityType || !configItemId) { alert('Configuração ainda não carregada — tente novamente em instantes.'); return; }
+    const map = {
+      head:     {assuntoField:'MsgHeadAssunto',     corpoField:'MsgHeadCorpo',     msg:sendMsgHead},
+      fixo:     {assuntoField:'MsgFixoAssunto',      corpoField:'MsgFixoCorpo',     msg:sendMsgFixo},
+      parceiro: {assuntoField:'MsgParceiroAssunto',  corpoField:'MsgParceiroCorpo', msg:sendMsgParceiro}
+    };
+    const cfg = map[tipo];
+    if (!cfg) return;
+    setSavingMsgPadrao(tipo);
+    try {
+      await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Config')/items(${configItemId})`, {
+        method:'POST', headers:{'X-HTTP-Method':'MERGE','IF-MATCH':'*','Content-Type':'application/json;odata=verbose'},
+        body: JSON.stringify({__metadata:{type:configEntityType}, [cfg.assuntoField]: cfg.msg.assunto||'', [cfg.corpoField]: cfg.msg.corpo||''})
+      });
+      alert('✅ Mensagem padrão salva! Vai aparecer assim para qualquer pessoa que usar este módulo.');
+    } catch(e) {
+      alert('Erro ao salvar mensagem padrão: '+e.message+(!configMsgFieldsReady?'\n\nAs colunas dessa mensagem padrão ainda não existem no SharePoint — clique em "⚙️ Setup SP" ao lado antes de salvar.':''));
+    }
+    setSavingMsgPadrao('');
   }
 
   async function saveTeamsWebhook() {
@@ -7555,6 +7650,10 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
     if (!solicEtapa) { alert('Selecione a atividade.'); return; }
     if (!solicPeriodoInicio) { alert('Selecione o período/data das avaliações.'); return; }
     if (!solicEntityType) { alert('A lista de solicitações ainda está carregando — tente novamente em instantes.'); return; }
+    // Quando o projeto não tem número de proposta cadastrado automaticamente, o campo
+    // vira obrigatório para digitação manual.
+    const numeroProposta = proj.codigoProposta || solicNumeroPropostaManual.trim();
+    if (!numeroProposta) { alert('Este projeto não tem número de proposta cadastrado — digite o número da proposta.'); return; }
     const dias = Object.entries(solicDias)
       .filter(([,d]) => (d.horarios||[]).some(h => h.hora))
       .sort(([a],[b]) => a.localeCompare(b))
@@ -7571,7 +7670,7 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
         Title: `${proj.title} — ${solicEtapa}`.slice(0,255),
         ProjetoSpId: proj.spId ? Number(proj.spId) : null,
         NomeProjeto: proj.title || '',
-        NumeroProposta: proj.codigoProposta || '',
+        NumeroProposta: numeroProposta,
         NomeEtapa: solicEtapa,
         PeriodoInicio: ymdToBR(solicPeriodoInicio),
         PeriodoFim: ymdToBR(solicPeriodoFim || solicPeriodoInicio),
@@ -7586,7 +7685,7 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
       });
       await notifyTeamsNovaSolicitacao(body, dias);
       setSolicProjetoSpId(''); setSolicEtapa(''); setSolicPeriodoInicio(''); setSolicPeriodoFim('');
-      setSolicDias({}); setSolicObs('');
+      setSolicDias({}); setSolicObs(''); setSolicNumeroPropostaManual('');
       await loadSolicitacoes();
       alert('✅ Solicitação enviada!');
     } catch(e) { alert('Erro ao enviar solicitação: '+e.message); }
@@ -7605,6 +7704,22 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
       await loadSolicitacoes();
     } catch(e) { alert('Erro ao atualizar status: '+e.message); }
     setTogglingSolicId(null);
+  }
+
+  // Só permite excluir pedidos já concluídos — os pendentes continuam só com a opção
+  // de marcar como concluído, para não perder um pedido ainda em aberto por engano.
+  async function deleteSolicitacao(item) {
+    if (!solicEntityType) return;
+    if (item.Status !== 'Concluído') return;
+    if (!window.confirm('Excluir este pedido concluído? Esta ação não pode ser desfeita.')) return;
+    setDeletingSolicId(item.Id);
+    try {
+      await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Solicitacoes')/items(${item.Id})`, {
+        method:'POST', headers:{'X-HTTP-Method':'DELETE','IF-MATCH':'*','Content-Type':'application/json;odata=verbose'}
+      });
+      await loadSolicitacoes();
+    } catch(e) { alert('Erro ao excluir pedido: '+e.message); }
+    setDeletingSolicId(null);
   }
 
   function initSendModal() {
@@ -8507,11 +8622,14 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
     // Tabs + ciclo
     CE('div',{className:'flex items-center justify-between flex-wrap gap-3'},
       CE('div',{className:'flex gap-1 bg-white border border-slate-200 rounded-xl p-1 flex-wrap'},
-        [['solicitacao','📝 Solicitação de Consultores'],['alocacoes','📋 Alocações'],['grade','📅 Grade'],['parceiros','👥 Parceiros'],['atividades','🎯 Atividades'],['dashboard','📊 Dashboard'],['historico','📨 Histórico']].map(([k,l])=>
+        (fullAccess
+          ? [['solicitacao','📝 Solicitação de Consultores'],['alocacoes','📋 Alocações'],['grade','📅 Grade'],['parceiros','👥 Parceiros'],['atividades','🎯 Atividades'],['dashboard','📊 Dashboard'],['historico','📨 Histórico']]
+          : [['solicitacao','📝 Solicitação de Consultores']]
+        ).map(([k,l])=>
           CE('button',{key:k,onClick:()=>setTab(k),className:`px-3 py-1.5 rounded-lg text-xs font-medium transition ${tab===k?'bg-indigo-600 text-white shadow':'text-slate-500 hover:text-slate-700'}`},l)
         )
       ),
-      CE('div',{className:'flex items-center gap-2'},
+      fullAccess&&CE('div',{className:'flex items-center gap-2'},
         ciclos.length>0&&CE('select',{className:'border border-slate-200 rounded-lg px-3 py-1.5 text-sm bg-white',value:cicloFilter,onChange:e=>{setCicloFilter(e.target.value);setSelectedProject('');}},
           CE('option',{value:''},'Todos os ciclos'),ciclos.map(c=>CE('option',{key:c,value:c},c))
         ),
@@ -8552,10 +8670,16 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
               filteredProjects.map(p=>CE('option',{key:p.id,value:p.spId?String(p.spId):p.id},(p.title||'')+(p.client?` — ${p.client}`:'')))
             )
           ),
-          CE('div',null,
-            CE('label',{className:labelCls},'Número da Proposta'),
-            CE('input',{type:'text',className:inputCls+' bg-slate-50 text-slate-500',value:(filteredProjects.find(p=>(p.spId?String(p.spId):p.id)===solicProjetoSpId)||{}).codigoProposta||'',readOnly:true,placeholder:'Preenchido automaticamente'})
-          )
+          (()=>{
+            const projSel = filteredProjects.find(p=>(p.spId?String(p.spId):p.id)===solicProjetoSpId);
+            const autoProposta = projSel?.codigoProposta || '';
+            return CE('div',null,
+              CE('label',{className:labelCls},'Número da Proposta'+(autoProposta?'':' *')),
+              autoProposta
+                ? CE('input',{type:'text',className:inputCls+' bg-slate-50 text-slate-500',value:autoProposta,readOnly:true,placeholder:'Preenchido automaticamente'})
+                : CE('input',{type:'text',className:inputCls,value:solicNumeroPropostaManual,onChange:e=>setSolicNumeroPropostaManual(e.target.value),placeholder:'Este projeto não tem proposta cadastrada — digite o número'})
+            );
+          })()
         ),
         CE('div',{className:'grid grid-cols-1 md:grid-cols-2 gap-4'},
           CE('div',{className:'md:col-span-2'},
@@ -8624,7 +8748,7 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
             : CE('div',{className:'scroll-table sticky-wrap'},
                 CE('table',{className:'w-full text-sm'},
                   CE('thead',null,CE('tr',{className:'border-b border-slate-100 bg-slate-50'},
-                    ['Solicitado em','Projeto','Proposta','Atividade','Período','Solicitante','Observações','Concluído'].map(h=>CE('th',{key:h,className:'text-left px-4 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wide'},h))
+                    ['Solicitado em','Projeto','Proposta','Atividade','Período','Solicitante','E-mail','Observações','Concluído',''].map(h=>CE('th',{key:h,className:'text-left px-4 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wide'},h))
                   )),
                   CE('tbody',null,
                     ...list.map(s=>CE('tr',{key:s.Id,className:'border-b border-slate-50 hover:bg-slate-50'},
@@ -8633,10 +8757,14 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
                       CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs'},s.NumeroProposta||'—'),
                       CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs'},s.NomeEtapa||'—'),
                       CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs whitespace-nowrap'},`${s.PeriodoInicio||'—'}${s.PeriodoFim&&s.PeriodoFim!==s.PeriodoInicio?' a '+s.PeriodoFim:''}`),
-                      CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs'},s.SolicitanteNome||s.SolicitanteEmail||'—'),
+                      CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs'},s.SolicitanteNome||'—'),
+                      CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs max-w-[180px] truncate',title:s.SolicitanteEmail||''},s.SolicitanteEmail||'—'),
                       CE('td',{className:'px-4 py-2.5 text-slate-500 text-xs max-w-[220px] truncate',title:s.Observacoes||''},s.Observacoes||'—'),
                       CE('td',{className:'px-4 py-2.5 text-center'},
                         CE('input',{type:'checkbox',checked:s.Status==='Concluído',disabled:togglingSolicId===s.Id,onChange:()=>toggleSolicitacaoStatus(s),className:'w-4 h-4 accent-indigo-600 cursor-pointer'})
+                      ),
+                      CE('td',{className:'px-4 py-2.5 text-center'},
+                        s.Status==='Concluído'&&CE('button',{onClick:()=>deleteSolicitacao(s),disabled:deletingSolicId===s.Id,title:'Excluir pedido concluído',className:'text-slate-400 hover:text-red-500 text-xs font-bold disabled:opacity-40'},deletingSolicId===s.Id?'⏳':'🗑️')
                       )
                     ))
                   )
@@ -8647,7 +8775,7 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
     ),
 
     // ══════════ ALOCAÇÕES ══════════
-    tab==='alocacoes'&&CE('div',{className:'space-y-4'},
+    fullAccess&&tab==='alocacoes'&&CE('div',{className:'space-y-4'},
       CE('div',{className:'flex items-center gap-3 flex-wrap'},
         CE('select',{className:'border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white min-w-[260px] max-w-xs',value:selectedProject,onChange:e=>{setSelectedProject(e.target.value);setShowForm(false);setSelectedAlocIds(new Set());}},
           CE('option',{value:''},'— Todos os projetos —'),
@@ -8856,7 +8984,7 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
     ),
 
     // ══════════ GRADE ══════════
-    tab==='grade'&&CE('div',{className:'space-y-3'},
+    fullAccess&&tab==='grade'&&CE('div',{className:'space-y-3'},
       CE('div',{className:'flex items-center gap-3 flex-wrap'},
         CE('div',{className:'flex items-center gap-2'},
           CE('label',{className:'text-xs text-slate-500'},'De:'),
@@ -8922,7 +9050,7 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
     ),
 
     // ══════════ PARCEIROS ══════════
-    tab==='parceiros'&&CE('div',{className:'space-y-4'},
+    fullAccess&&tab==='parceiros'&&CE('div',{className:'space-y-4'},
       // KPI expiring
       expiringCount>0&&CE('div',{className:'bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 flex items-center gap-3'},
         CE('span',{className:'text-2xl'},'⚠️'),
@@ -9012,7 +9140,7 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
     ),
 
     // ══════════ ATIVIDADES ══════════
-    tab==='atividades'&&CE('div',{className:'space-y-4'},
+    fullAccess&&tab==='atividades'&&CE('div',{className:'space-y-4'},
       CE('div',{className:'flex items-center gap-3 flex-wrap justify-between'},
         CE('h2',{className:'text-base font-semibold text-slate-800'},'Gestão de Atividades'),
         CE('div',{className:'flex gap-2'},
@@ -9067,7 +9195,7 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
     ),
 
     // ══════════ DASHBOARD ══════════
-    tab==='dashboard'&&CE('div',{className:'space-y-5'},
+    fullAccess&&tab==='dashboard'&&CE('div',{className:'space-y-5'},
       CE('div',{className:'bg-white border border-slate-200 rounded-xl p-4 grid grid-cols-2 gap-3 md:grid-cols-6'},
         CE('div',null,CE('label',{className:labelCls},'Ciclo'),CE('select',{className:inputCls,value:dashCiclo,onChange:e=>setDashCiclo(e.target.value)},CE('option',{value:''},'Todos'),ciclos.map(c=>CE('option',{key:c,value:c},c)))),
         CE('div',null,CE('label',{className:labelCls},'De'),CE('input',{type:'date',className:inputCls,value:dashFrom,onChange:e=>setDashFrom(e.target.value)})),
@@ -9175,7 +9303,7 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
     ),
 
     // ══════════ HISTÓRICO ══════════
-    tab==='historico'&&CE('div',{className:'space-y-4'},
+    fullAccess&&tab==='historico'&&CE('div',{className:'space-y-4'},
       CE('div',{className:'flex items-center justify-between'},
         CE('h2',{className:'text-base font-bold text-slate-700'},'📨 Histórico de Mensagens'),
         CE('button',{onClick:loadHistorico,className:'px-3 py-1.5 text-xs border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 transition'},'↻ Atualizar')
@@ -9185,7 +9313,7 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
         :CE('div',{className:'scroll-table sticky-wrap'},
           CE('table',{className:'w-full text-sm'},
             CE('thead',null,CE('tr',{className:'border-b border-slate-100 bg-slate-50'},
-              ['Data/Hora','Projeto','Destinatário','Tipo','Assunto','Status'].map(h=>CE('th',{key:h,className:'text-left px-4 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wide'},h))
+              ['Data/Hora','Projeto','Destinatário','Tipo','Assunto','Status',''].map(h=>CE('th',{key:h,className:'text-left px-4 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wide'},h))
             )),
             CE('tbody',null,
               ...historico.map(h=>CE('tr',{key:h.Id,className:'border-b border-slate-50 hover:bg-slate-50'},
@@ -9194,7 +9322,10 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
                 CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs'},h.Destinatario||'—'),
                 CE('td',{className:'px-4 py-2.5'},CE('span',{className:`text-xs px-2 py-0.5 rounded-full font-medium ${h.TipoDestinatario==='Head'?'bg-emerald-100 text-emerald-700':h.TipoDestinatario==='Fixo'?'bg-sky-100 text-sky-700':'bg-indigo-100 text-indigo-700'}`},h.TipoDestinatario||'—')),
                 CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs'},h.Assunto||'—'),
-                CE('td',{className:'px-4 py-2.5'},CE('span',{className:`text-xs px-2 py-0.5 rounded-full font-medium ${h.Status==='Enviado'?'bg-green-100 text-green-700':'bg-amber-100 text-amber-700'}`},h.Status||'—'))
+                CE('td',{className:'px-4 py-2.5'},CE('span',{className:`text-xs px-2 py-0.5 rounded-full font-medium ${h.Status==='Enviado'?'bg-green-100 text-green-700':'bg-amber-100 text-amber-700'}`},h.Status||'—')),
+                CE('td',{className:'px-4 py-2.5 text-center'},
+                  CE('button',{onClick:()=>deleteHistoricoEntry(h),disabled:deletingHistId===h.Id,title:'Excluir do histórico',className:'text-slate-400 hover:text-red-500 text-xs font-bold disabled:opacity-40'},deletingHistId===h.Id?'⏳':'🗑️')
+                )
               ))
             )
           )
@@ -9211,6 +9342,7 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
           CE('div',{className:'flex items-center justify-between'},
             CE('h2',{className:'text-lg font-bold text-slate-800'},'📧 Enviar Comunicações'),
             CE('div',{className:'flex items-center gap-2'},
+              !configMsgFieldsReady&&CE('button',{onClick:createConfigMsgColumns,title:'Criar no SharePoint as colunas para salvar as mensagens padrão (executar 1x)',className:'px-3 py-1.5 text-xs border border-amber-200 rounded-lg text-amber-700 hover:bg-amber-50 transition'},'⚙️ Setup SP'),
               CE('button',{onClick:()=>{setEmailFlowUrlDraft(emailFlowUrl);setEditingEmailFlowUrl(s=>!s);},className:'text-xs px-3 py-1.5 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 transition'},
                 emailFlowUrl?'⚙️ Envio via fluxo (configurado)':'⚙️ Configurar envio via fluxo'
               ),
@@ -9255,19 +9387,29 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
             )
           ),
           CE('div',{className:'space-y-3'},
-            CE('div',{className:'text-sm font-bold text-slate-700'},'✉️ Mensagens (salvas até próxima alteração)'),
+            CE('div',{className:'text-sm font-bold text-slate-700'},'✉️ Mensagens'),
+            CE('p',{className:'text-xs text-slate-500 -mt-2'},'Clique em "Salvar como padrão" para que o assunto/corpo fiquem prontos da próxima vez — para você e para qualquer outra pessoa que usar este módulo. Dá para editar antes de enviar sem perder o padrão salvo.'),
             CE('div',{className:'border border-emerald-200 bg-emerald-50 rounded-xl p-3 space-y-2'},
-              CE('div',{className:'text-xs font-semibold text-slate-700'},'📗 Para o Head (recebe tudo do projeto)'),
+              CE('div',{className:'flex items-center justify-between'},
+                CE('div',{className:'text-xs font-semibold text-slate-700'},'📗 Para o Head (recebe tudo do projeto)'),
+                CE('button',{onClick:()=>saveMsgPadrao('head'),disabled:savingMsgPadrao==='head',className:'text-xs px-2 py-1 rounded-lg border border-emerald-300 text-emerald-700 hover:bg-emerald-100 transition disabled:opacity-50 whitespace-nowrap'},savingMsgPadrao==='head'?'Salvando...':'💾 Salvar como padrão')
+              ),
               CE('input',{type:'text',className:inputCls,placeholder:'Assunto',value:sendMsgHead.assunto,onChange:e=>setSendMsgHead(m=>({...m,assunto:e.target.value}))}),
               CE('textarea',{className:`${inputCls} resize-none`,rows:3,placeholder:'Corpo da mensagem...',value:sendMsgHead.corpo,onChange:e=>setSendMsgHead(m=>({...m,corpo:e.target.value}))})
             ),
             CE('div',{className:'border border-sky-200 bg-sky-50 rounded-xl p-3 space-y-2'},
-              CE('div',{className:'text-xs font-semibold text-slate-700'},'📘 Para o Fixo (sem valores)'),
+              CE('div',{className:'flex items-center justify-between'},
+                CE('div',{className:'text-xs font-semibold text-slate-700'},'📘 Para o Fixo (sem valores)'),
+                CE('button',{onClick:()=>saveMsgPadrao('fixo'),disabled:savingMsgPadrao==='fixo',className:'text-xs px-2 py-1 rounded-lg border border-sky-300 text-sky-700 hover:bg-sky-100 transition disabled:opacity-50 whitespace-nowrap'},savingMsgPadrao==='fixo'?'Salvando...':'💾 Salvar como padrão')
+              ),
               CE('input',{type:'text',className:inputCls,placeholder:'Assunto',value:sendMsgFixo.assunto,onChange:e=>setSendMsgFixo(m=>({...m,assunto:e.target.value}))}),
               CE('textarea',{className:`${inputCls} resize-none`,rows:3,placeholder:'Corpo da mensagem...',value:sendMsgFixo.corpo,onChange:e=>setSendMsgFixo(m=>({...m,corpo:e.target.value}))})
             ),
             CE('div',{className:'border border-indigo-200 bg-indigo-50 rounded-xl p-3 space-y-2'},
-              CE('div',{className:'text-xs font-semibold text-slate-700'},'📙 Para o Parceiro Externo (só as dele, com valores)'),
+              CE('div',{className:'flex items-center justify-between'},
+                CE('div',{className:'text-xs font-semibold text-slate-700'},'📙 Para o Parceiro Externo (só as dele, com valores)'),
+                CE('button',{onClick:()=>saveMsgPadrao('parceiro'),disabled:savingMsgPadrao==='parceiro',className:'text-xs px-2 py-1 rounded-lg border border-indigo-300 text-indigo-700 hover:bg-indigo-100 transition disabled:opacity-50 whitespace-nowrap'},savingMsgPadrao==='parceiro'?'Salvando...':'💾 Salvar como padrão')
+              ),
               CE('input',{type:'text',className:inputCls,placeholder:'Assunto',value:sendMsgParceiro.assunto,onChange:e=>setSendMsgParceiro(m=>({...m,assunto:e.target.value}))}),
               CE('textarea',{className:`${inputCls} resize-none`,rows:3,placeholder:'Corpo da mensagem...',value:sendMsgParceiro.corpo,onChange:e=>setSendMsgParceiro(m=>({...m,corpo:e.target.value}))})
             )
@@ -9572,7 +9714,7 @@ function HomeScreen({
   }, "Modelos, templates e materiais de apoio para os processos de Avaliação e Seleção."), /*#__PURE__*/React.createElement("div", {
     className: "mt-6 flex items-center text-sm font-semibold text-rose-600 group-hover:text-rose-700"
   }, "Abrir ", /*#__PURE__*/React.createElement("span", { className: "ml-1.5" }, "→"))),
-  fullAccess && /*#__PURE__*/React.createElement("button", {
+  /*#__PURE__*/React.createElement("button", {
     onClick: () => onSelect('parceiros'),
     className: "group bg-white rounded-2xl border-2 border-slate-200 hover:border-teal-400 hover:shadow-xl transition-all p-8 text-left"
   }, /*#__PURE__*/React.createElement("div", {
@@ -9587,7 +9729,7 @@ function HomeScreen({
     className: "text-xl font-bold text-slate-900 mb-2"
   }, "Parceiros"), /*#__PURE__*/React.createElement("p", {
     className: "text-sm text-slate-500 leading-relaxed"
-  }, "Gestão de alocação de consultores parceiros freelas em projetos, com visão de calendário Gantt."), /*#__PURE__*/React.createElement("div", {
+  }, fullAccess ? "Gestão de alocação de consultores parceiros freelas em projetos, com visão de calendário Gantt." : "Solicitação de consultores parceiros para os seus projetos."), /*#__PURE__*/React.createElement("div", {
     className: "mt-6 flex items-center text-sm font-semibold text-teal-600 group-hover:text-teal-700"
   }, "Abrir ", /*#__PURE__*/React.createElement("span", { className: "ml-1.5" }, "→"))),
   Object.values(MODULE_CONFIGS).filter(cfg => fullAccess || cfg.key === 'cd' && isCandD || cfg.key === 'fi' && isLatam || cfg.key === 'eb' && isEB).map(cfg => {
