@@ -7762,9 +7762,15 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
       const alinhByP={};
       for (const a of alocs) {
         if (isFx(a)||a.CobraAlinhamento!=='Sim'||!a.AtivAlinhamento) continue;
-        const k=a.Parceiro||'';
-        if (!alinhByP[k]) alinhByP[k]={parc:k,ativ:a.AtivAlinhamento,horas:0,vH:a.HorasAlinhamento>0?Number(a.ValorAlinhamento)/Number(a.HorasAlinhamento):0};
-        alinhByP[k].horas+=Number(a.HorasAlinhamento)||0;
+        // O alinhamento é uma atividade à parte: cada linha de alocação repete as horas do setup,
+        // então NÃO somamos por dia — usamos as horas definidas no setup (uma vez por consultor/atividade).
+        const k=(a.Parceiro||'')+'||'+a.AtivAlinhamento;
+        if (!alinhByP[k]) alinhByP[k]={parc:a.Parceiro||'',ativ:a.AtivAlinhamento,horas:0,vH:0};
+        const hA=Number(a.HorasAlinhamento)||0;
+        if (hA>alinhByP[k].horas) {
+          alinhByP[k].horas=hA;
+          alinhByP[k].vH=hA>0?Number(a.ValorAlinhamento)/hA:0;
+        }
       }
       const ar=Object.values(alinhByP).map(r=>({'Parceiro':r.parc,'Atividade':r.ativ,'Horas':r.horas,'Valor/h':r.vH.toFixed(2),'Total (R$)':(r.horas*r.vH).toFixed(2)}));
       if (ar.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(ar), 'Alinhamento');
@@ -8073,9 +8079,14 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
       const alinhByParc = {};
       for (const a of projAlocacoes) {
         if (isFixo(a) || a.CobraAlinhamento!=='Sim' || !a.AtivAlinhamento) continue;
-        const k = a.Parceiro||'';
-        if (!alinhByParc[k]) alinhByParc[k]={parceiro:k,atividade:a.AtivAlinhamento,horas:0,valor:a.ValorAlinhamento&&a.HorasAlinhamento?Number(a.ValorAlinhamento)/Number(a.HorasAlinhamento):0};
-        alinhByParc[k].horas += Number(a.HorasAlinhamento)||0;
+        // Alinhamento é atividade à parte: usa só as horas do setup (não multiplica pelos dias alocados).
+        const k = (a.Parceiro||'')+'||'+a.AtivAlinhamento;
+        if (!alinhByParc[k]) alinhByParc[k]={parceiro:a.Parceiro||'',atividade:a.AtivAlinhamento,horas:0,valor:0};
+        const hA = Number(a.HorasAlinhamento)||0;
+        if (hA>alinhByParc[k].horas) {
+          alinhByParc[k].horas = hA;
+          alinhByParc[k].valor = Number(a.ValorAlinhamento)/hA;
+        }
       }
       const alinhRows = Object.values(alinhByParc).map(r => ({
         'Parceiro': r.parceiro,
@@ -8406,7 +8417,16 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
   async function downloadAtivTemplate() {
     try {
       const XLSX=await loadXLSX();
-      const ws=XLSX.utils.json_to_sheet([{Atividade:'',Valor_R$:0,Tempo_Padrao_h:'',Ocultar_Solicitacao:'Não'}]); const wb=XLSX.utils.book_new();
+      // Baixa o modelo já preenchido com as atividades atuais (editar, remover linhas ou adicionar novas).
+      const rows = atividades.length
+        ? atividades.map(a=>({
+            Atividade:a.Title||'',
+            Valor_R$:Number(a.Valor)||0,
+            Tempo_Padrao_h:(a.TempoPadrao!==null&&a.TempoPadrao!==undefined)?Number(a.TempoPadrao):'',
+            Ocultar_Solicitacao:a.OcultoSolicitacao?'Sim':'Não'
+          }))
+        : [{Atividade:'',Valor_R$:0,Tempo_Padrao_h:'',Ocultar_Solicitacao:'Não'}];
+      const ws=XLSX.utils.json_to_sheet(rows); const wb=XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb,ws,'Atividades'); XLSX.writeFile(wb,'modelo_atividades.xlsx');
     } catch(e) { setError('Erro: '+e.message); }
   }
@@ -8417,7 +8437,10 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
     try {
       const XLSX=await loadXLSX(); const buf=await file.arrayBuffer(); const wb=XLSX.read(buf);
       const ws=wb.Sheets[wb.SheetNames[0]]; const rows=XLSX.utils.sheet_to_json(ws);
-      let count=0;
+      let count=0, updated=0;
+      // Como o modelo agora vem preenchido, atividades com o mesmo nome são ATUALIZADAS (não duplicadas).
+      const existentes={};
+      for (const a of atividades) existentes[String(a.Title||'').trim().toLowerCase()]=a;
       for (const row of rows) {
         const titulo=row['Atividade']||row['Title']||row['ATIVIDADE']||'';
         const valor=Number(row['Valor_R$']||row['Valor']||row['VALOR']||0);
@@ -8427,10 +8450,16 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
         const oculto=['sim','true','1','yes','x'].includes(ocultoRaw);
         if (!titulo) continue;
         const body={__metadata:{type:ativEntityType},Title:titulo,Valor:valor,TempoPadrao:tempoPadrao,OcultoSolicitacao:oculto};
-        await spFetch(token,`${PARC_SITE}/_api/web/lists/getbytitle('List_Atividades')/items`,{method:'POST',headers:{'Content-Type':'application/json;odata=verbose'},body:JSON.stringify(body)});
-        count++;
+        const ex=existentes[String(titulo).trim().toLowerCase()];
+        if (ex) {
+          await spFetch(token,`${PARC_SITE}/_api/web/lists/getbytitle('List_Atividades')/items(${ex.Id})`,{method:'POST',headers:{'X-HTTP-Method':'MERGE','IF-MATCH':'*','Content-Type':'application/json;odata=verbose'},body:JSON.stringify(body)});
+          updated++;
+        } else {
+          await spFetch(token,`${PARC_SITE}/_api/web/lists/getbytitle('List_Atividades')/items`,{method:'POST',headers:{'Content-Type':'application/json;odata=verbose'},body:JSON.stringify(body)});
+          count++;
+        }
       }
-      alert(`${count} atividade(s) importada(s).`); await loadAll();
+      alert(`${count} atividade(s) nova(s) importada(s) e ${updated} atualizada(s).`); await loadAll();
     } catch(e) { setError('Erro ao importar: '+e.message); }
     setUploadingAtiv(false);
   }
@@ -9112,17 +9141,18 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
           CE('table',{className:'w-full text-sm'},
             CE('thead',{className:'sticky-thead'},
               CE('tr',{className:'border-b border-slate-100 bg-slate-50'},
-                ['Status','Nome','Classificação','Atuação','Empresa','Gestor','Data Início','Vigência','Renovação','Ações'].map(h=>
+                ['Status','Nome','E-mail','Classificação','Atuação','Empresa','Gestor','Data Início','Vigência','Renovação','Ações'].map(h=>
                   CE('th',{key:h,className:'text-left px-4 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap bg-slate-50'},h)
                 )
               )
             ),
             CE('tbody',null,
               filteredParceiros.length===0
-                ?CE('tr',null,CE('td',{colSpan:10,className:'text-center py-12 text-slate-400'},'Nenhum parceiro encontrado.'))
+                ?CE('tr',null,CE('td',{colSpan:11,className:'text-center py-12 text-slate-400'},'Nenhum parceiro encontrado.'))
                 :filteredParceiros.map(p=>CE('tr',{key:p.Id,className:`border-b border-slate-50 hover:bg-slate-50 transition ${editingParc&&editingParc.Id===p.Id?'bg-indigo-50':''}`},
                     CE('td',{className:'px-4 py-2.5'},CE('span',{className:`text-xs px-2 py-0.5 rounded-full font-semibold ${p.Status==='Ativo'?'bg-green-100 text-green-700':'bg-slate-100 text-slate-500'}`},p.Status||'—')),
                     CE('td',{className:'px-4 py-2.5 font-medium text-slate-800 whitespace-nowrap'},p.Title),
+                    CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs whitespace-nowrap'},p.Email?CE('a',{href:'mailto:'+p.Email,className:'hover:text-indigo-600 hover:underline'},p.Email):'—'),
                     CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs'},p.Classificacao||'—'),
                     CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs'},p.Atuacao||'—'),
                     CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs max-w-[160px] truncate'},p.Empresa||'—'),
@@ -9356,8 +9386,8 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
 
     // ══════════ MODAL ENVIO ══════════
     showSendModal&&CE('div',{
-      style:{position:'fixed',inset:0,zIndex:60,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.45)'},
-      onClick:e=>{if(e.target===e.currentTarget)setShowSendModal(false);}
+      // Não fecha ao clicar fora (evita perder a configuração dos envios) — só pelo botão ✕.
+      style:{position:'fixed',inset:0,zIndex:60,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.45)'}
     },
       CE('div',{className:'bg-white rounded-2xl shadow-2xl mx-4 w-full max-w-3xl overflow-y-auto',style:{maxHeight:'90vh'}},
         CE('div',{className:'p-6 space-y-5'},
