@@ -1402,8 +1402,11 @@ async function signOutMsal(clientId, tenantId) {
 
 // ─── Sistema Hunting (iframe): entrega do login já feito no App Entregas ─────
 // Só responde a mensagens 'hunting:token-request' vindas EXATAMENTE da origem do Hunting.
+// Entrega sempre um token do SharePoint (mesmo tipo de acesso dos outros módulos, sem consentimento de admin);
+// os escopos pedidos pelo iframe são ignorados de propósito (nada de Graph / Sites.ReadWrite.All).
 // Não altera o fluxo de login/tokens dos demais módulos; qualquer erro é respondido ao iframe e ignorado aqui.
 const HUNTING_ORIGIN = 'https://companhiadetalentos.com.br';
+const HUNTING_SP_SCOPE = 'https://ciadetalentos.sharepoint.com/.default';
 let _huntingTokenBusy = null;
 window.addEventListener('message', async (e) => {
   try {
@@ -1416,7 +1419,7 @@ window.addEventListener('message', async (e) => {
           await app.initialize();
           const account = app.getActiveAccount() || app.getAllAccounts()[0];
           if (!account) throw new Error('Usuário não autenticado no App Entregas');
-          const req = { scopes: ['User.Read', 'Sites.ReadWrite.All'], account };
+          const req = { scopes: [HUNTING_SP_SCOPE], account };
           try { return await app.acquireTokenSilent(req); }
           catch { return await app.acquireTokenPopup(req); }
         })().finally(() => { _huntingTokenBusy = null; });
