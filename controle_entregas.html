@@ -6981,6 +6981,25 @@ function App() {
     );
   }
 
+  // ── Sistema Hunting (gestão de hunting nos projetos de A&S) module ──
+  const SISTEMA_HUNTING_URL = 'https://companhiadetalentos.com.br/cia_hunting/sistema-hunting.html';
+  if (module === 'sistema_hunting') {
+    return React.createElement("div", { style:{display:'flex',flexDirection:'column',height:'100vh',overflow:'hidden'} },
+      React.createElement(AppHeader, {
+        view: view, setView: setView, authState: authState, onSignOut: signOut,
+        projectCount: projects.length, loading: loading,
+        onRefresh: () => loadAll(authState.token),
+        module: module, onHome: () => setModule(null),
+        onBackupDownload: handleBackupDownload, onBackupUpload: handleBackupUpload
+      }),
+      React.createElement('iframe', {
+        src: SISTEMA_HUNTING_URL,
+        style:{flex:1,border:'none',display:'block',width:'100%'},
+        allow:'fullscreen; clipboard-write'
+      })
+    );
+  }
+
   // ── Parceiros module ──
   // A tela "Solicitação de Consultores Parceiros" fica liberada para qualquer pessoa;
   // as demais telas do módulo (Alocações, Grade, Parceiros, Atividades, Dashboard,
@@ -7165,7 +7184,7 @@ function AppHeader({
     key: e,
     onClick: () => setEntityView(e),
     className: `px-3 py-1 rounded-md text-xs font-semibold transition ${entityView === e ? 'bg-white shadow text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`
-  }, e === 'analyst' ? '👤 Analistas' : '🎯 Heads')))), (module === 'pulse' || module === 'calendar' || module === 'analytics' || module === 'nps' || module === 'clientes' || module === 'cx' || module === 'cx_atend' || module === 'globe_fotografia' || module === 'parceiros' || module === 'hub_as') && /*#__PURE__*/React.createElement("div", {
+  }, e === 'analyst' ? '👤 Analistas' : '🎯 Heads')))), (module === 'pulse' || module === 'calendar' || module === 'analytics' || module === 'nps' || module === 'clientes' || module === 'cx' || module === 'cx_atend' || module === 'globe_fotografia' || module === 'parceiros' || module === 'hub_as' || module === 'sistema_hunting') && /*#__PURE__*/React.createElement("div", {
     className: "flex-1"
   }), /*#__PURE__*/React.createElement("div", {
     className: "flex items-center gap-2 ml-auto shrink-0"
@@ -9765,6 +9784,24 @@ function HomeScreen({
     className: "text-sm text-slate-500 leading-relaxed"
   }, "Modelos, templates e materiais de apoio para os processos de Avaliação e Seleção."), /*#__PURE__*/React.createElement("div", {
     className: "mt-6 flex items-center text-sm font-semibold text-rose-600 group-hover:text-rose-700"
+  }, "Abrir ", /*#__PURE__*/React.createElement("span", { className: "ml-1.5" }, "→"))),
+  /*#__PURE__*/React.createElement("button", {
+    onClick: () => onSelect('sistema_hunting'),
+    className: "group bg-white rounded-2xl border-2 border-slate-200 hover:border-amber-400 hover:shadow-xl transition-all p-8 text-left"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "w-14 h-14 bg-amber-100 rounded-2xl flex items-center justify-center mb-5 group-hover:bg-amber-200 transition-colors"
+  }, /*#__PURE__*/React.createElement("svg", {
+    xmlns: "http://www.w3.org/2000/svg", className: "w-7 h-7 text-amber-600",
+    fill: "none", viewBox: "0 0 24 24", stroke: "currentColor", strokeWidth: "1.8"
+  }, /*#__PURE__*/React.createElement("path", {
+    strokeLinecap: "round", strokeLinejoin: "round",
+    d: "M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"
+  }))), /*#__PURE__*/React.createElement("h2", {
+    className: "text-xl font-bold text-slate-900 mb-2"
+  }, "Sistema Hunting"), /*#__PURE__*/React.createElement("p", {
+    className: "text-sm text-slate-500 leading-relaxed"
+  }, "Gestão de hunting nos projetos de Avaliação e Seleção."), /*#__PURE__*/React.createElement("div", {
+    className: "mt-6 flex items-center text-sm font-semibold text-amber-600 group-hover:text-amber-700"
   }, "Abrir ", /*#__PURE__*/React.createElement("span", { className: "ml-1.5" }, "→"))),
   /*#__PURE__*/React.createElement("button", {
     onClick: () => onSelect('parceiros'),
@@ -18312,13 +18349,22 @@ const FD_PRIORITY_COLOR = {
 };
 
 // ── Shared date-range helpers for CX views ──────────────────────────────────
+// Datas "YYYY-MM-DD" dos filtros são do dia LOCAL do usuário. new Date('YYYY-MM-DD') interpreta como
+// UTC (meia-noite), o que no Brasil (UTC-3) vira o dia anterior às 21h — por isso o fim do período
+// terminava às 23:59 de ONTEM e os tickets de hoje ficavam de fora.
+function cxLocalDateStr(d) {
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+function cxParseLocal(str) {
+  return new Date(str + 'T00:00:00');
+}
 function todayStr() {
-  return new Date().toISOString().slice(0, 10);
+  return cxLocalDateStr(new Date());
 }
 function daysAgoStr(n) {
   const d = new Date();
   d.setDate(d.getDate() - n);
-  return d.toISOString().slice(0, 10);
+  return cxLocalDateStr(d);
 }
 function CxDateRangeBar({
   dateFrom, setDateFrom,
@@ -18401,7 +18447,7 @@ async function cxFetchTickets({
     // todo o histórico de tickets.
     since = encodeURIComponent('2018-01-01T00:00:00Z');
   } else if (dateFrom) {
-    const d = new Date(dateFrom);
+    const d = cxParseLocal(dateFrom);
     d.setHours(0, 0, 0, 0);
     since = encodeURIComponent(d.toISOString());
   }
@@ -18416,7 +18462,7 @@ async function cxFetchTickets({
   if (setBacklog) setBacklog(backlogRes.total ?? 0);
   let all = [...firstPage],
     page = 2;
-  const fromMs = !showAll && dateFrom ? new Date(dateFrom).setHours(0, 0, 0, 0) : null;
+  const fromMs = !showAll && dateFrom ? cxParseLocal(dateFrom).setHours(0, 0, 0, 0) : null;
   const maxPage = showAll ? 300 : 150;
 
   // ── Busca paralela em lotes de 5 páginas — usada tanto no showAll quanto no filtro de data ──
@@ -18456,7 +18502,7 @@ async function cxFetchTickets({
     page = endPage + 1;
   }
   if (setTruncated) setTruncated(hasMore && page > maxPage && !earlyExit);
-  const toMs = !showAll && dateTo ? new Date(dateTo).setHours(23, 59, 59, 999) : null;
+  const toMs = !showAll && dateTo ? cxParseLocal(dateTo).setHours(23, 59, 59, 999) : null;
   let result = all;
   if (fromMs) result = result.filter(t => new Date(t.created_at) >= fromMs);
   if (toMs) result = result.filter(t => new Date(t.created_at) <= toMs);
@@ -18588,8 +18634,8 @@ function CxAnalyticsView() {
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
     // dias no intervalo selecionado (para avgDaily)
-    const fromMs = dateFrom ? new Date(dateFrom).setHours(0, 0, 0, 0) : null;
-    const toMs = dateTo ? new Date(dateTo).setHours(23, 59, 59, 999) : now.getTime();
+    const fromMs = dateFrom ? cxParseLocal(dateFrom).setHours(0, 0, 0, 0) : null;
+    const toMs = dateTo ? cxParseLocal(dateTo).setHours(23, 59, 59, 999) : now.getTime();
     const days = fromMs ? Math.max(1, Math.round((toMs - fromMs) / 86400000) + 1) : 7;
     // usa o campo de data correto conforme a visão ativa
     const dateOf = t => new Date(viewMode === 'updated' ? t.updated_at : t.created_at);
