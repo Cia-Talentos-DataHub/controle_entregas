@@ -7270,6 +7270,263 @@ function AppHeader({
   }, "Sair")))));
 }
 
+// ─── Parceiros: lista oficial vinda do Base44 + input manual ─────────────────
+// Lista SharePoint nova (a antiga List_Parceiros fica intacta como backup).
+// Regras: linha por PESSOA (CPF = chave). Empresa sem pessoa entra como linha "só empresa".
+// Campos do Base44 são sobrescritos a cada sync; campos manuais NUNCA são sobrescritos pela API.
+const PARC_BASE_LIST = 'List_Parceiros_Base';
+const BASE44_DEFAULT_APP_ID = '6a8726ab1122732adccfcf8c'; // ID do app não é segredo; a API KEY nunca vai no código
+const PARC_MANUAL_FIELDS = ['Telefone', 'Email', 'Estado', 'Ingles', 'AutodeclaracaoRacial', 'Classificacao', 'OBS'];
+const PARC_LEGACY_FIELDS = ['Empresa', 'CNPJ', 'Status', 'Atuacao', 'Vigencia', 'DataInicio', 'Gestor', 'Renovacao'];
+const PARC_SELECT = 'Id,Title,CPF,Origem,SemPessoa,Base44EmpresaId,Empresa,CNPJ,Status,Atuacao,Vigencia,DataInicio,Gestor,Renovacao,Classificacao,Telefone,Email,Estado,Ingles,AutodeclaracaoRacial,OBS,ObsBase44,NomesAnteriores,SyncEm,ConfigJson';
+
+function parcDigits(s) { return String(s == null ? '' : s).replace(/\D/g, ''); }
+function parcNorm(s) {
+  return String(s == null ? '' : s).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
+    .replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+function parcFmtCpf(s) {
+  const d = parcDigits(s);
+  return d.length === 11 ? d.slice(0, 3) + '.' + d.slice(3, 6) + '.' + d.slice(6, 9) + '-' + d.slice(9) : String(s || '');
+}
+function parcCpfValido(s) {
+  const d = parcDigits(s);
+  if (d.length !== 11 || /^(\d)\1{10}$/.test(d)) return false;
+  for (const n of [9, 10]) {
+    let t = 0;
+    for (let i = 0; i < n; i++) t += Number(d[i]) * (n + 1 - i);
+    if (((t * 10) % 11) % 10 !== Number(d[n])) return false;
+  }
+  return true;
+}
+function parcAliases(s) { return String(s || '').split('|').map(x => x.trim()).filter(Boolean); }
+function parcAddAlias(cur, name) {
+  const list = parcAliases(cur);
+  const n = String(name || '').trim();
+  if (!n || list.some(a => parcNorm(a) === parcNorm(n))) return list.join(' | ');
+  list.push(n);
+  return list.join(' | ');
+}
+function parcEmpty(v) { return v === null || v === undefined || String(v).trim() === ''; }
+function parcSame(key, a, b) {
+  if (key === 'SemPessoa') return !!a === !!b;
+  if (key === 'DataInicio') return String(a || '').slice(0, 10) === String(b || '').slice(0, 10);
+  if (key === 'CPF') return parcDigits(a) === parcDigits(b);
+  return String(a == null ? '' : a).trim() === String(b == null ? '' : b).trim();
+}
+// Campos que vêm do Base44 (nível empresa) -> colunas da lista
+function parcEmpresaFields(e) {
+  const atu = [];
+  if (e.atuacao_eb) atu.push('EB');
+  if (e.atuacao_aes) atu.push('AES');
+  if (e.atuacao_ced) atu.push('CED');
+  const fim = String(e.data_fim || '').slice(0, 10);
+  const ini = String(e.data_inicio || '').slice(0, 10);
+  let vig = '';
+  if (fim) vig = fim; else if (/indetermin/i.test(String(e.renovacao || ''))) vig = 'indeterminado';
+  return {
+    Empresa: String(e.razao_social || '').trim(),
+    CNPJ: String(e.cnpj || '').trim(),
+    Status: e.ativo ? 'Ativo' : 'Inativo',
+    Atuacao: atu.join(', '),
+    Vigencia: vig,
+    DataInicio: ini ? ini + 'T12:00:00Z' : null,
+    Gestor: String(e.gestor || '').trim(),
+    Renovacao: String(e.renovacao || '').trim(),
+    ObsBase44: String(e.observacao_alocadores || '').trim(),
+    Base44EmpresaId: String(e.id || '')
+  };
+}
+
+// ── Plano de sincronização (puro, sem I/O) ───────────────────────────────────
+// existing = itens atuais da lista nova; empresas = resposta da API Base44 (entidade Empresa)
+function parcBuildSyncPlan(existing, empresas, nowIso) {
+  const rows = (existing || []).filter(r => r.Origem !== 'Config');
+  const ops = [];
+  const sum = { criados: 0, atualizados: 0, adotados: 0, placeholdersRemovidos: 0, ausentes: 0, avisos: [], adotadosNomes: [] };
+  const byCpf = new Map(), byEmp = new Map(), manualByName = new Map();
+  for (const r of rows) {
+    const c = parcDigits(r.CPF);
+    if (r.SemPessoa) { if (r.Base44EmpresaId) byEmp.set(String(r.Base44EmpresaId), r); continue; }
+    if (c) { if (!byCpf.has(c)) byCpf.set(c, r); }
+    else if (r.Origem !== 'Base44') {
+      for (const n of [r.Title, ...parcAliases(r.NomesAnteriores)]) {
+        const k = parcNorm(n); if (!k) continue;
+        if (!manualByName.has(k)) manualByName.set(k, new Set());
+        manualByName.get(k).add(r);
+      }
+    }
+  }
+  const desired = new Map(); // cpf -> {nome, e}
+  const empSem = [], empCom = new Set(), empIds = new Set();
+  for (const e of (empresas || [])) {
+    empIds.add(String(e.id));
+    const ps = (Array.isArray(e.parceiros) ? e.parceiros : []).filter(p => p && String(p.nome_completo || '').trim());
+    let any = false;
+    for (const p of ps) {
+      const c = parcDigits(p.cpf);
+      if (c.length !== 11) { sum.avisos.push('CPF ausente/inválido para "' + String(p.nome_completo).trim() + '" (' + e.razao_social + ') — ignorado'); continue; }
+      if (desired.has(c)) sum.avisos.push('CPF repetido no Base44 para "' + String(p.nome_completo).trim() + '" — vale o último');
+      desired.set(c, { nome: String(p.nome_completo).trim(), e });
+      any = true;
+    }
+    if (any) empCom.add(String(e.id)); else empSem.push(e);
+  }
+  const nameCount = new Map();
+  for (const d of desired.values()) { const k = parcNorm(d.nome); nameCount.set(k, (nameCount.get(k) || 0) + 1); }
+  const used = new Set();
+  const diffBody = (row, want) => {
+    const body = {};
+    for (const k of Object.keys(want)) if (!parcSame(k, row[k], want[k])) body[k] = want[k];
+    return body;
+  };
+  for (const [cpf, d] of desired) {
+    let row = byCpf.get(cpf);
+    let adotado = false;
+    if (!row && nameCount.get(parcNorm(d.nome)) === 1) {
+      const cand = [...(manualByName.get(parcNorm(d.nome)) || [])].filter(r => !used.has(r.Id));
+      if (cand.length === 1) { row = cand[0]; adotado = true; }
+    }
+    const want = Object.assign(parcEmpresaFields(d.e), { Title: d.nome, CPF: cpf, Origem: 'Base44', SemPessoa: false });
+    if (row) {
+      used.add(row.Id);
+      const body = diffBody(row, want);
+      if (row.Title && parcNorm(row.Title) !== parcNorm(d.nome)) {
+        const al = parcAddAlias(row.NomesAnteriores, row.Title);
+        if (al !== String(row.NomesAnteriores || '')) body.NomesAnteriores = al;
+      }
+      if (adotado) { sum.adotados++; sum.adotadosNomes.push(d.nome); }
+      if (Object.keys(body).length) { body.SyncEm = nowIso; ops.push({ op: 'update', id: row.Id, title: d.nome, body }); if (!adotado) sum.atualizados++; }
+    } else {
+      ops.push({ op: 'create', title: d.nome, body: Object.assign({}, want, { SyncEm: nowIso }) });
+      sum.criados++;
+    }
+  }
+  for (const e of empSem) {
+    const row = byEmp.get(String(e.id));
+    const base = parcEmpresaFields(e);
+    const want = Object.assign(base, { Title: base.Empresa, CPF: '', Origem: 'Base44', SemPessoa: true });
+    if (row) {
+      const body = diffBody(row, want);
+      if (Object.keys(body).length) { body.SyncEm = nowIso; ops.push({ op: 'update', id: row.Id, title: base.Empresa, body }); sum.atualizados++; }
+    } else {
+      ops.push({ op: 'create', title: base.Empresa, body: Object.assign({}, want, { SyncEm: nowIso }) });
+      sum.criados++;
+    }
+  }
+  for (const [eid, row] of byEmp) {
+    if (empCom.has(eid) && row.Origem === 'Base44') { ops.push({ op: 'delete', id: row.Id, title: row.Title }); sum.placeholdersRemovidos++; }
+  }
+  for (const r of rows) {
+    if (r.Origem !== 'Base44') continue;
+    if (r.SemPessoa) { if (!empIds.has(String(r.Base44EmpresaId))) sum.ausentes++; }
+    else if (!desired.has(parcDigits(r.CPF))) sum.ausentes++;
+  }
+  return { ops, sum };
+}
+
+// ── Plano de migração da lista antiga (List_Parceiros) para a nova (puro) ────
+// Idempotente: reexecutar não duplica (casa por nome normalizado / apelidos).
+function parcBuildMigrationPlan(rows, oldItems, nowIso) {
+  const ops = [];
+  const sum = { mesclados: 0, criados: 0, avisos: [], sugestoes: [] };
+  const clones = (rows || []).filter(r => r.Origem !== 'Config' && !r.SemPessoa).map(r => Object.assign({}, r));
+  const idx = new Map();
+  const reg = r => {
+    for (const n of [r.Title, ...parcAliases(r.NomesAnteriores)]) {
+      const k = parcNorm(n); if (!k) continue;
+      if (!idx.has(k)) idx.set(k, []);
+      if (!idx.get(k).includes(r)) idx.get(k).push(r);
+    }
+  };
+  clones.forEach(reg);
+  const updOps = new Map(); // Id -> op
+  const newOps = [];
+  let tmp = 0;
+  const legacyOf = o => ({
+    Telefone: o.Telefone, Email: o.Email, Estado: o.Estado, Ingles: o.Ingles, AutodeclaracaoRacial: o.AutodeclaracaoRacial,
+    Classificacao: o.Classificacao, OBS: o.OBS, Empresa: o.Empresa, CNPJ: o.CNPJ, Status: o.Status, Atuacao: o.Atuacao,
+    Vigencia: o.Vigencia, DataInicio: o.DataInicio, Gestor: o.Gestor, Renovacao: o.Renovacao
+  });
+  for (const o of (oldItems || [])) {
+    const title = String(o.Title || '').trim();
+    if (!title) continue;
+    const k = parcNorm(title);
+    const lf = legacyOf(o);
+    const cands = idx.get(k) || [];
+    if (cands.length > 1) { sum.avisos.push('Nome repetido na lista nova: "' + title + '" — não mesclado'); continue; }
+    if (cands.length === 1) {
+      const row = cands[0];
+      const keys = row.Origem === 'Base44' ? PARC_MANUAL_FIELDS : PARC_MANUAL_FIELDS.concat(PARC_LEGACY_FIELDS);
+      const body = {};
+      for (const f of keys) if (parcEmpty(row[f]) && !parcEmpty(lf[f])) { body[f] = lf[f]; row[f] = lf[f]; }
+      if (Object.keys(body).length) {
+        if (String(row.Id).startsWith('tmp')) { const nop = newOps.find(x => x.tmp === row.Id); Object.assign(nop.body, body); }
+        else {
+          let op = updOps.get(row.Id);
+          if (!op) { op = { op: 'update', id: row.Id, title: row.Title, body: {} }; updOps.set(row.Id, op); }
+          Object.assign(op.body, body);
+        }
+        sum.mesclados++;
+      }
+      continue;
+    }
+    const nrow = {
+      Id: 'tmp' + (++tmp), Title: title, CPF: '', Origem: 'Manual', SemPessoa: false, NomesAnteriores: '',
+      Status: parcEmpty(lf.Status) ? 'Inativo' : lf.Status
+    };
+    for (const f of PARC_MANUAL_FIELDS.concat(PARC_LEGACY_FIELDS)) if (f !== 'Status') nrow[f] = parcEmpty(lf[f]) ? null : lf[f];
+    reg(nrow);
+    const body = Object.assign({}, nrow); delete body.Id;
+    body.SyncEm = nowIso;
+    newOps.push({ op: 'create', tmp: nrow.Id, title, body });
+    sum.criados++;
+  }
+  // sugestões: manual criado x pessoa Base44 com 1º e último nome iguais
+  const b44 = (rows || []).filter(r => r.Origem === 'Base44' && !r.SemPessoa);
+  const fl = t => { const p = parcNorm(t).split(' ').filter(Boolean); return p.length >= 2 ? p[0] + ' ' + p[p.length - 1] : ''; };
+  for (const nop of newOps) {
+    const key = fl(nop.title); if (!key) continue;
+    const hit = b44.filter(r => fl(r.Title) === key);
+    for (const h of hit) sum.sugestoes.push({ manual: nop.title, base44: h.Title });
+  }
+  for (const nop of newOps) delete nop.tmp;
+  return { ops: [...updOps.values(), ...newOps], sum };
+}
+
+// ── Execução dos planos no SharePoint ────────────────────────────────────────
+function parcCleanBody(body) {
+  const out = {};
+  for (const k of Object.keys(body)) {
+    const v = body[k];
+    out[k] = (v === '' || v === undefined) ? null : v;
+  }
+  if (out.Title === null) delete out.Title;
+  return out;
+}
+async function parcRunOps(token, siteUrl, entityType, ops, onProgress) {
+  const L = `${siteUrl}/_api/web/lists/getbytitle('${PARC_BASE_LIST}')/items`;
+  let i = 0;
+  for (const op of ops) {
+    i++;
+    if (onProgress) onProgress(i, ops.length, op);
+    if (op.op === 'create') {
+      await spFetch(token, L, { method: 'POST', headers: { 'Content-Type': 'application/json;odata=verbose' }, body: JSON.stringify(Object.assign({ __metadata: { type: entityType } }, parcCleanBody(op.body))) });
+    } else if (op.op === 'update') {
+      await spFetch(token, `${L}(${op.id})`, { method: 'POST', headers: { 'X-HTTP-Method': 'MERGE', 'IF-MATCH': '*', 'Content-Type': 'application/json;odata=verbose' }, body: JSON.stringify(Object.assign({ __metadata: { type: entityType } }, parcCleanBody(op.body))) });
+    } else if (op.op === 'delete') {
+      await spFetch(token, `${L}(${op.id})`, { method: 'POST', headers: { 'X-HTTP-Method': 'DELETE', 'IF-MATCH': '*', 'Content-Type': 'application/json;odata=verbose' } });
+    }
+  }
+}
+async function base44FetchEmpresas(appId, apiKey) {
+  const r = await fetch(`https://base44.app/api/apps/${encodeURIComponent(appId || BASE44_DEFAULT_APP_ID)}/entities/Empresa?limit=2000`, { headers: { api_key: apiKey } });
+  if (!r.ok) throw new Error('Base44 respondeu HTTP ' + r.status + (r.status === 401 || r.status === 403 ? ' (chave inválida ou sem permissão)' : ''));
+  const j = await r.json();
+  if (!Array.isArray(j)) throw new Error('Resposta inesperada do Base44');
+  return j;
+}
+
 // ─── Painel de Controle de Parceiros ─────────────────────────────────────────
 function ParceirosView({ projects, token, headMembers: headMembersProp, currentUser, accessLevel }) {
   const CE = React.createElement;
@@ -7313,6 +7570,14 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
   const [parcFilter, setParcFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [uploadingParc, setUploadingParc] = useState(false);
+  // Base44 (lista oficial) — configuração fica na própria lista restrita (nunca no código)
+  const [b44Cfg, setB44Cfg] = useState({});
+  const [b44CfgRowId, setB44CfgRowId] = useState(null);
+  const [b44Panel, setB44Panel] = useState(false);
+  const [b44Draft, setB44Draft] = useState({appId:'', apiKey:''});
+  const [syncState, setSyncState] = useState({running:false, msg:'', error:'', avisos:[]});
+  const [migrating, setMigrating] = useState(false);
+  const [origemFilter, setOrigemFilter] = useState('');
   // Atividades
   const [editingAtiv, setEditingAtiv] = useState(null);
   const [editAtivForm, setEditAtivForm] = useState({});
@@ -7377,7 +7642,7 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
   const PARC_SITE = SP_PARC_SITE_URL;
   const DAY_MS = 86400000;
 
-  useEffect(() => { if (token) { if (fullAccess) loadAll(); else loadAtividadesOnly(); } }, [token, fullAccess]);
+  useEffect(() => { if (token) { if (fullAccess) loadAll().then(ctx => { if (ctx) runBase44Sync(ctx); }); else loadAtividadesOnly(); } }, [token, fullAccess]);
   useEffect(() => { if (token && fullAccess) { loadHeadEmails(); loadHistorico(); } }, [token, fullAccess]);
   useEffect(() => { if (token) { loadSolicitacoes(); loadTeamsConfig(); } }, [token]);
   // Ao trocar de projeto, limpa o número de proposta digitado manualmente (só existe
@@ -7410,16 +7675,25 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
 
   async function loadAll() {
     setLoading(true); setError(null);
+    let result = null;
     try {
       const [pRes, aRes, atRes, tAloc, tParc, tAtiv] = await Promise.all([
-        spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros')/items?$select=Id,Title,Telefone,Email,Estado,Ingles,AutodeclaracaoRacial,Status,Atuacao,Empresa,CNPJ,Vigencia,Classificacao,DataInicio,Gestor,OBS,Renovacao&$top=500&$orderby=Title`),
+        spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('${PARC_BASE_LIST}')/items?$select=${PARC_SELECT}&$top=2000&$orderby=Title`),
         spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Alocacao')/items?$select=Id,Title,Parceiro,ParceiroId,Projeto,ProjetoSpId,Atividade,DataAtividade,Periodo,Frequencia,ValorAtividade,ValorDia,CobraAlinhamento,AtivAlinhamento,HorasAlinhamento,ValorAlinhamento&$top=2000&$orderby=DataAtividade`),
         spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Atividades')/items?$select=Id,Title,Valor,TempoPadrao,OcultoSolicitacao&$top=200&$orderby=Title`),
         spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros_Alocacao')?$select=ListItemEntityTypeFullName`),
-        spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros')?$select=ListItemEntityTypeFullName`),
+        spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('${PARC_BASE_LIST}')?$select=ListItemEntityTypeFullName`),
         spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Atividades')?$select=ListItemEntityTypeFullName`)
       ]);
-      setParceiros(pRes.value || []);
+      const allRows = pRes.value || [];
+      const cfgRow = allRows.find(r => r.Origem === 'Config');
+      let cfgObj = {};
+      try { cfgObj = cfgRow && cfgRow.ConfigJson ? JSON.parse(cfgRow.ConfigJson) : {}; } catch {}
+      const parcRows = allRows.filter(r => r.Origem !== 'Config');
+      setB44Cfg(cfgObj); setB44CfgRowId(cfgRow ? cfgRow.Id : null);
+      setB44Draft(d => ({ appId: cfgObj.appId || BASE44_DEFAULT_APP_ID, apiKey: '' }));
+      setParceiros(parcRows);
+      result = { rows: parcRows, cfg: cfgObj, cfgRowId: cfgRow ? cfgRow.Id : null, entityType: (tParc && tParc.ListItemEntityTypeFullName) || '' };
       setAlocacoes(aRes.value || []);
       setAtividades(atRes.value || []);
       if (tAloc && tAloc.ListItemEntityTypeFullName) setAlocEntityType(tAloc.ListItemEntityTypeFullName);
@@ -7427,6 +7701,57 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
       if (tAtiv && tAtiv.ListItemEntityTypeFullName) setAtivEntityType(tAtiv.ListItemEntityTypeFullName);
     } catch (e) { setError(e.message); }
     setLoading(false);
+    return result;
+  }
+
+  // ── Base44: configuração, sincronização e migração da lista antiga ──
+  async function saveB44Cfg(patch, baseCfg, rowId, entityType) {
+    const next = { ...(baseCfg || b44Cfg), ...patch };
+    const rid = rowId !== undefined ? rowId : b44CfgRowId;
+    const L = `${PARC_SITE}/_api/web/lists/getbytitle('${PARC_BASE_LIST}')/items`;
+    const body = { __metadata: { type: entityType || parcEntityType }, Title: '__config_base44', Origem: 'Config', ConfigJson: JSON.stringify(next) };
+    if (rid) await spFetch(token, `${L}(${rid})`, { method: 'POST', headers: { 'X-HTTP-Method': 'MERGE', 'IF-MATCH': '*', 'Content-Type': 'application/json;odata=verbose' }, body: JSON.stringify(body) });
+    else { const r = await spFetch(token, L, { method: 'POST', headers: { 'Content-Type': 'application/json;odata=verbose' }, body: JSON.stringify(body) }); if (r && r.Id) setB44CfgRowId(r.Id); }
+    setB44Cfg(next);
+    return next;
+  }
+
+  async function runBase44Sync(ctx) {
+    const cfg = ctx.cfg || {};
+    if (!cfg.apiKey) { setSyncState({ running: false, msg: 'Base44 ainda não configurado: informe a chave da API em ⚙️ Configurar.', error: '', avisos: [] }); return null; }
+    setSyncState({ running: true, msg: 'Sincronizando com o Base44…', error: '', avisos: [] });
+    try {
+      const empresas = await base44FetchEmpresas(cfg.appId, cfg.apiKey);
+      if (!empresas.length && ctx.rows.some(r => r.Origem === 'Base44')) throw new Error('O Base44 devolveu 0 empresas — sincronização cancelada por segurança.');
+      const plan = parcBuildSyncPlan(ctx.rows, empresas, new Date().toISOString());
+      const et = ctx.entityType || parcEntityType;
+      await parcRunOps(token, PARC_SITE, et, plan.ops, (i, n) => setSyncState(st => ({ ...st, msg: `Sincronizando com o Base44… ${i}/${n}` })));
+      const sm = plan.sum;
+      const resumo = `${sm.criados} novo(s), ${sm.atualizados} atualizado(s)` + (sm.adotados ? `, ${sm.adotados} cadastro(s) manual(is) agora vindo(s) do Base44` : '') + (sm.ausentes ? `, ${sm.ausentes} não vem(êm) mais no Base44 (mantido(s))` : '');
+      await saveB44Cfg({ lastSync: new Date().toISOString() }, cfg, ctx.cfgRowId, et);
+      setSyncState({ running: false, msg: 'Base44 sincronizado: ' + resumo + '.', error: '', avisos: sm.avisos });
+      if (plan.ops.length) await loadAll();
+      return sm;
+    } catch (e) {
+      setSyncState({ running: false, msg: '', error: e.message, avisos: [] });
+      return null;
+    }
+  }
+
+  async function migrateOldParceiros() {
+    if (!window.confirm('Importar os parceiros da lista antiga (List_Parceiros) para a lista nova? A lista antiga não é alterada e a ação pode ser repetida sem duplicar.')) return;
+    setMigrating(true);
+    try {
+      const old = await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros')/items?$select=Id,Title,Telefone,Email,Estado,Ingles,AutodeclaracaoRacial,Status,Atuacao,Empresa,CNPJ,Vigencia,Classificacao,DataInicio,Gestor,OBS,Renovacao&$top=2000`);
+      const plan = parcBuildMigrationPlan(parceiros, old.value || [], new Date().toISOString());
+      await parcRunOps(token, PARC_SITE, parcEntityType, plan.ops);
+      await saveB44Cfg({ migratedAt: new Date().toISOString() });
+      let msg = `Migração concluída: ${plan.sum.criados} pessoa(s) adicionada(s) como input manual e ${plan.sum.mesclados} cadastro(s) complementado(s).`;
+      if (plan.sum.sugestoes.length) msg += `\n\nPossíveis mesmas pessoas (informe o CPF na linha manual para unificar):\n` + plan.sum.sugestoes.slice(0, 12).map(x => `• ${x.manual}  ≈  ${x.base44}`).join('\n');
+      alert(msg);
+      await loadAll();
+    } catch (e) { setError('Erro na migração: ' + e.message); }
+    setMigrating(false);
   }
 
   // Usado por quem só tem acesso à tela de Solicitação (accessLevel >= 3): carrega
@@ -7794,7 +8119,7 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
       const headNames = proj?_projHeads(proj):[];
       const headEmails = headNames.map(n=>headEmailMap[n]||'').filter(Boolean);
       const fixoEmails = [...data.fixoNames].map(n=>headEmailMap[n]||'').filter(Boolean);
-      const parcEmails = [...data.parcNames].map(n=>{const p=parceiros.find(x=>x.Title===n);return p&&p.Email?p.Email:'';}).filter(Boolean);
+      const parcEmails = [...data.parcNames].map(n=>{const p=resolveParc(n);return p&&p.Email?p.Email:'';}).filter(Boolean);
       fields[pk] = {alocacoes:data.alocs, headInput:headEmails.join(', '), fixoInput:fixoEmails.join(', '), parceiroInput:parcEmails.join(', '), cc:''};
     }
     setSendEmailFields(fields);
@@ -7935,8 +8260,8 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
         // Parceiros (individuais por email)
         const parcEmails = fields.parceiroInput.split(',').map(s=>s.trim()).filter(Boolean);
         for (const em of parcEmails) {
-          const parc = parceiros.find(p=>p.Email===em);
-          const myAlocs = parc?alocs.filter(a=>a.Parceiro===parc.Title&&a.ParceiroId!=='FIXO'):alocs.filter(a=>a.ParceiroId!=='FIXO');
+          const parc = pessoas.find(p=>p.Email===em);
+          const myAlocs = parc?alocs.filter(a=>a.ParceiroId!=='FIXO'&&(resolveParc(a.Parceiro)||{}).Id===parc.Id):alocs.filter(a=>a.ParceiroId!=='FIXO');
           const b64 = await generateExcelB64(myAlocs,'parceiro');
           const ok = await trySendEmail(token,[em],fields.cc.split(',').map(s=>s.trim()).filter(Boolean),sendMsgParceiro.assunto,sendMsgParceiro.corpo,`alocacoes_${projeto}.xlsx`,b64);
           const status = ok?'Enviado':'Falha (sem escopo Graph)';
@@ -7995,27 +8320,42 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
     return al;
   }, [alocacoes, selectedProject, cicloFilter, filteredProjects]);
 
-  const parcStatusMap = useMemo(() => {
-    const m = {};
-    for (const p of parceiros) m[p.Title] = p.Status;
+  // Pessoas alocáveis (linhas "só empresa" do Base44 não entram em Alocação/Grade).
+  const pessoas = useMemo(() => parceiros.filter(p => !p.SemPessoa), [parceiros]);
+  // As alocações guardam o NOME do parceiro; o resolvedor liga nome (atual ou antigo/apelido) ao cadastro.
+  const parcByNorm = useMemo(() => {
+    const m = new Map();
+    for (const p of pessoas) for (const n of [p.Title, ...parcAliases(p.NomesAnteriores)]) { const k = parcNorm(n); if (k && !m.has(k)) m.set(k, p); }
     return m;
-  }, [parceiros]);
+  }, [pessoas]);
+  const resolveParc = name => parcByNorm.get(parcNorm(name)) || null;
+  const statusOf = name => { const p = resolveParc(name); return p ? p.Status : undefined; };
 
   const filteredParceiros = useMemo(() => {
     let ps = parceiros;
     if (statusFilter==='Inativo') ps = ps.filter(p=>p.Status && p.Status!=='Ativo');
     else if (statusFilter) ps = ps.filter(p=>p.Status===statusFilter);
-    if (parcFilter) { const f=parcFilter.toLowerCase(); ps=ps.filter(p=>(p.Title||'').toLowerCase().includes(f)||(p.Empresa||'').toLowerCase().includes(f)); }
+    if (origemFilter==='Base44') ps = ps.filter(p=>p.Origem==='Base44'&&!p.SemPessoa);
+    else if (origemFilter==='Manual') ps = ps.filter(p=>p.Origem!=='Base44');
+    else if (origemFilter==='SemPessoa') ps = ps.filter(p=>p.SemPessoa);
+    if (parcFilter) {
+      const f=parcNorm(parcFilter); const fd=parcDigits(parcFilter);
+      ps=ps.filter(p=>parcNorm(p.Title).includes(f)||parcNorm(p.Empresa).includes(f)||(fd.length>=3&&parcDigits(p.CPF).includes(fd))||parcAliases(p.NomesAnteriores).some(n=>parcNorm(n).includes(f)));
+    }
     return ps;
-  }, [parceiros, parcFilter, statusFilter]);
+  }, [parceiros, parcFilter, statusFilter, origemFilter]);
 
   const expiringCount = useMemo(() => {
     const now = new Date(); now.setHours(0,0,0,0);
     const soon = new Date(now.getTime() + 7*DAY_MS);
+    const seen = new Set();
     return parceiros.filter(p => {
       if (!p.Vigencia || p.Vigencia.toLowerCase()==='indeterminado') return false;
       const v = new Date(p.Vigencia);
-      return !isNaN(v) && v <= soon && v >= now;
+      if (!(!isNaN(v) && v <= soon && v >= now)) return false;
+      const key = p.Base44EmpresaId || ('p'+p.Id);   // várias pessoas da mesma empresa = 1 contrato
+      if (seen.has(key)) return false;
+      seen.add(key); return true;
     }).length;
   }, [parceiros]);
 
@@ -8081,7 +8421,7 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
             else if (s.match(/^\d{4}-\d{2}-\d{2}/)) dataISO = s.slice(0,10);
             else { erros.push(`Data inválida: ${s}`); continue; }
           }
-          const parc = parceiros.find(p=>p.Title.toLowerCase()===parcNome.toLowerCase());
+          const parc = resolveParc(parcNome);
           const proj = projects.find(p=>(p.title||'').toLowerCase()===projNome.toLowerCase());
           const atv = atividades.find(a=>a.Title.toLowerCase()===atividadeNome.toLowerCase());
           const valorAtiv = atv ? (atv.Valor||0) : 0;
@@ -8121,7 +8461,7 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
       const alocRows = projAlocacoes.map(a => ({
         'Parceiro': a.Parceiro||'',
         'Tipo': isFixo(a)?'Fixo':'Parceiro',
-        'Status': parcStatusMap[a.Parceiro]||'—',
+        'Status': statusOf(a.Parceiro)||'—',
         'Projeto': a.Projeto||'',
         'Atividade': a.Atividade||'',
         'Data': fmtDate(a.DataAtividade),
@@ -8147,7 +8487,7 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
       const alinhRows = Object.values(alinhByParc).map(r => ({
         'Parceiro': r.parceiro,
         'Tipo': 'Parceiro',
-        'Status': parcStatusMap[r.parceiro]||'—',
+        'Status': statusOf(r.parceiro)||'—',
         'Projeto': '',
         'Atividade': `Alinhamento (${r.atividade})`,
         'Data': '',
@@ -8195,28 +8535,69 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
     } catch(e) { setError('Erro ao exportar: '+e.message); }
   }
 
+  // ── Excel de Parceiros (input manual) ──
+  const PARC_XLS_COLS = [
+    ['Nome','Title'],['CPF','CPF'],['Origem','Origem'],['Empresa','Empresa'],['CNPJ','CNPJ'],['Status','Status'],['Atuação','Atuacao'],
+    ['Vigência','Vigencia'],['Data Início','DataInicio'],['Gestor','Gestor'],['Renovação','Renovacao'],['Classificação','Classificacao'],
+    ['Telefone','Telefone'],['E-mail','Email'],['Estado','Estado'],['Inglês','Ingles'],['Autodeclaração Racial','AutodeclaracaoRacial'],['OBS','OBS']
+  ];
+  const PARC_XLS_ALT = {
+    Title:['Nome','Title','NOME'], CPF:['CPF','Cpf'], Atuacao:['Atuação','Atuacao'], Vigencia:['Vigência','Vigencia'], DataInicio:['Data Início','Data Inicio','DataInicio'],
+    Renovacao:['Renovação','Renovacao'], Classificacao:['Classificação','Classificacao'], Email:['E-mail','Email','E-Mail'], Ingles:['Inglês','Ingles'],
+    AutodeclaracaoRacial:['Autodeclaração Racial','AutodeclaracaoRacial','Autodeclaracao Racial']
+  };
+  function parcXlsDate(v) {
+    if (v===undefined||v===null||String(v).trim()==='') return null;
+    if (typeof v==='number') { const d=new Date(Math.round((v-25569)*86400*1000)); return d.toISOString().slice(0,10)+'T12:00:00Z'; }
+    const t=String(v).trim();
+    let m=t.match(/^(\d{2})\/(\d{2})\/(\d{4})$/); if (m) return `${m[3]}-${m[2]}-${m[1]}T12:00:00Z`;
+    m=t.match(/^(\d{4})-(\d{2})-(\d{2})/); if (m) return `${m[1]}-${m[2]}-${m[3]}T12:00:00Z`;
+    return null;
+  }
+  function parcOrigemLabel(p) { return p.SemPessoa ? 'Base44 (só empresa)' : (p.Origem==='Base44' ? 'Base44' : 'Input manual'); }
+
   async function exportParceirosXLSX() {
     try {
       const XLSX = await loadXLSX();
-      const rows = filteredParceiros.map(p => ({
-        'Nome':p.Title||'', 'Status':p.Status||'', 'Classificação':p.Classificacao||'',
-        'Atuação':p.Atuacao||'', 'Empresa':p.Empresa||'', 'CNPJ':p.CNPJ||'',
-        'Vigência':p.Vigencia||'', 'Data Início':p.DataInicio?new Date(p.DataInicio).toLocaleDateString('pt-BR'):'',
-        'Gestor':p.Gestor||'', 'Renovação':p.Renovacao||'', 'Telefone':p.Telefone||'',
-        'E-mail':p.Email||'', 'Estado':p.Estado||'', 'Inglês':p.Ingles||'',
-        'Autodeclaração Racial':p.AutodeclaracaoRacial||'', 'OBS':p.OBS||''
-      }));
+      const rows = filteredParceiros.map(p => {
+        const o = {};
+        for (const [h,k] of PARC_XLS_COLS) {
+          if (k==='Title') o[h] = p.SemPessoa ? '' : (p.Title||'');
+          else if (k==='CPF') o[h] = parcFmtCpf(p.CPF);
+          else if (k==='Origem') o[h] = parcOrigemLabel(p);
+          else if (k==='DataInicio') o[h] = p.DataInicio ? new Date(p.DataInicio).toLocaleDateString('pt-BR') : '';
+          else o[h] = p[k]||'';
+        }
+        o['Obs. alocadores (Base44)'] = p.ObsBase44||'';
+        return o;
+      });
       const ws=XLSX.utils.json_to_sheet(rows); const wb=XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb,ws,'Parceiros'); XLSX.writeFile(wb,`parceiros_${new Date().toISOString().slice(0,10)}.xlsx`);
+      XLSX.utils.book_append_sheet(wb,ws,'Parceiros');
+      XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(parcXlsInstrucoes()),'Instruções');
+      XLSX.writeFile(wb,`parceiros_${new Date().toISOString().slice(0,10)}.xlsx`);
     } catch(e) { setError('Erro ao exportar: '+e.message); }
+  }
+
+  function parcXlsInstrucoes() {
+    return [
+      ['Como usar esta planilha'],
+      ['• A lista oficial vem do Base44 e é atualizada sozinha sempre que o módulo Parceiros abre. Pessoas de origem "Base44" NÃO são alteradas por esta planilha, exceto nos campos manuais: Telefone, E-mail, Estado, Inglês, Autodeclaração Racial, Classificação e OBS.'],
+      ['• Pessoas que não existem no Base44 são cadastradas como "Input manual" (todas as colunas valem). Se depois entrarem no Base44, o cadastro passa a ser do Base44 automaticamente (pelo CPF) e os campos manuais são preservados.'],
+      ['• O CPF é a chave de comparação. Informe sempre que possível (11 dígitos, com ou sem pontuação). Sem CPF, a linha é casada só pelo nome.'],
+      ['• Só as colunas presentes na planilha são atualizadas; célula vazia limpa o campo (nas colunas que existirem).'],
+      ['• As colunas Origem e "Obs. alocadores (Base44)" são apenas informativas e ignoradas na importação. Linhas sem Nome (empresas sem pessoa) também são ignoradas.']
+    ];
   }
 
   async function downloadParcTemplate() {
     try {
       const XLSX = await loadXLSX();
-      const template = [{'Nome':'','Status':'Ativo','Classificação':'Pontual','Atuação':'','Empresa':'','CNPJ':'','Vigência':'indeterminado','Data Início':'','Gestor':'','Renovação':'','Telefone':'','E-mail':'','Estado':'','Inglês':'','Autodeclaração Racial':'','OBS':''}];
-      const ws=XLSX.utils.json_to_sheet(template); const wb=XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb,ws,'Parceiros'); XLSX.writeFile(wb,'modelo_parceiros.xlsx');
+      const ex = {}; for (const [h] of PARC_XLS_COLS) ex[h]='';
+      ex['Status']='Ativo';
+      const ws=XLSX.utils.json_to_sheet([ex]); const wb=XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb,ws,'Parceiros');
+      XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(parcXlsInstrucoes()),'Instruções');
+      XLSX.writeFile(wb,'modelo_parceiros.xlsx');
     } catch(e) { setError('Erro: '+e.message); }
   }
 
@@ -8225,44 +8606,75 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
     setUploadingParc(true);
     try {
       const XLSX = await loadXLSX();
-      const buf = await file.arrayBuffer();
-      const wb = XLSX.read(buf);
+      const wb = XLSX.read(await file.arrayBuffer());
       const ws = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(ws);
-      const existingByName = {};
-      for (const p of parceiros) existingByName[p.Title.toLowerCase().trim()] = p;
-      let updated=0, added=0;
-      for (const row of rows) {
-        const nome = (row['Nome']||row['Title']||row['NOME']||'').trim();
-        if (!nome) continue;
-        const body = {
-          __metadata:{type:parcEntityType},
-          Status:row['Status']||null, Classificacao:row['Classificação']||row['Classificacao']||null,
-          Atuacao:row['Atuação']||row['Atuacao']||null, Empresa:row['Empresa']||null,
-          CNPJ:row['CNPJ']||null, Vigencia:row['Vigência']||row['Vigencia']||null,
-          Gestor:row['Gestor']||null, Renovacao:row['Renovação']||row['Renovacao']||null,
-          Telefone:row['Telefone']||null, Email:row['E-mail']||row['Email']||null,
-          Estado:row['Estado']||null, Ingles:row['Inglês']||row['Ingles']||null,
-          AutodeclaracaoRacial:row['Autodeclaração Racial']||row['AutodeclaracaoRacial']||null,
-          OBS:row['OBS']||null
-        };
-        const existing = existingByName[nome.toLowerCase()];
-        if (existing) {
-          await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros')/items(${existing.Id})`, {
-            method:'POST', headers:{'X-HTTP-Method':'MERGE','IF-MATCH':'*','Content-Type':'application/json;odata=verbose'},
-            body:JSON.stringify(body)
-          });
-          updated++;
-        } else {
-          body.Title = nome;
-          await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros')/items`, {
-            method:'POST', headers:{'Content-Type':'application/json;odata=verbose'},
-            body:JSON.stringify(body)
-          });
-          added++;
-        }
+      const rows = XLSX.utils.sheet_to_json(ws, {defval:''});
+      if (!rows.length) throw new Error('A planilha está vazia.');
+      const headers = new Set(Object.keys(rows[0]));
+      const colOf = k => (PARC_XLS_ALT[k]||[k]).find(h=>headers.has(h));
+      const L = `${PARC_SITE}/_api/web/lists/getbytitle('${PARC_BASE_LIST}')/items`;
+      const nowIso = new Date().toISOString();
+      // índices locais (atualizados durante a importação para não duplicar linhas repetidas na planilha)
+      const byCpf = new Map(), byName = new Map();
+      const regRow = r => {
+        const c = parcDigits(r.CPF); if (c && !r.SemPessoa) byCpf.set(c, r);
+        if (!r.SemPessoa) for (const n of [r.Title, ...parcAliases(r.NomesAnteriores)]) { const k=parcNorm(n); if(!k) continue; if(!byName.has(k)) byName.set(k,[]); if(!byName.get(k).includes(r)) byName.get(k).push(r); }
+      };
+      parceiros.forEach(regRow);
+      let criados=0, atualizados=0, semNome=0, semCpf=0, base44Rows=0; const erros=[];
+      const manualKeys = ['Telefone','Email','Estado','Ingles','AutodeclaracaoRacial','Classificacao','OBS'];
+      const otherKeys = ['Empresa','CNPJ','Status','Atuacao','Vigencia','DataInicio','Gestor','Renovacao'];
+      for (let i=0;i<rows.length;i++) {
+        const row = rows[i];
+        try {
+          const cNome = colOf('Title'); const nome = String(cNome?row[cNome]:'').trim();
+          if (!nome) { semNome++; continue; }
+          const cCpf = colOf('CPF'); const cpfRaw = String(cCpf?row[cCpf]:'').trim(); const cpf = parcDigits(cpfRaw);
+          if (cpfRaw && !parcCpfValido(cpf)) { erros.push(`Linha ${i+2} (${nome}): CPF inválido`); continue; }
+          // valores presentes na planilha
+          const vals = {};
+          for (const k of [...manualKeys, ...otherKeys]) {
+            const h = colOf(k); if (!h) continue;
+            const v = row[h];
+            vals[k] = k==='DataInicio' ? parcXlsDate(v) : (v===undefined||v===null||String(v).trim()==='' ? null : String(v).trim());
+          }
+          let target = cpf ? byCpf.get(cpf) : null;
+          if (!target) {
+            const c = (byName.get(parcNorm(nome))||[]);
+            if (!cpf) { if (c.length===1) target = c[0]; else if (c.length>1) { erros.push(`Linha ${i+2} (${nome}): nome repetido — informe o CPF`); continue; } }
+            else { const semC = c.filter(r=>!parcDigits(r.CPF)&&r.Origem!=='Base44'); if (semC.length===1) target = semC[0]; }  // completa cadastro manual sem CPF
+          }
+          if (target) {
+            const isB44 = target.Origem==='Base44';
+            if (isB44) base44Rows++;
+            const body = { __metadata:{type:parcEntityType} };
+            const keys = isB44 ? manualKeys : [...manualKeys, ...otherKeys];
+            for (const k of keys) if (k in vals) body[k] = vals[k];
+            if (!isB44) {
+              if (parcNorm(nome)!==parcNorm(target.Title)) { body.Title = nome; body.NomesAnteriores = parcAddAlias(target.NomesAnteriores, target.Title); }
+              else if (nome!==target.Title) body.Title = nome;
+              if (cpf && !parcDigits(target.CPF)) body.CPF = cpf;
+            }
+            if (Object.keys(body).length>1) {
+              await spFetch(token, `${L}(${target.Id})`, { method:'POST', headers:{'X-HTTP-Method':'MERGE','IF-MATCH':'*','Content-Type':'application/json;odata=verbose'}, body:JSON.stringify(body) });
+              Object.assign(target, body); regRow(target); atualizados++;
+            }
+          } else {
+            if (!cpf) semCpf++;
+            const body = { __metadata:{type:parcEntityType}, Title:nome, CPF:cpf||null, Origem:'Manual', SemPessoa:false, Status:(vals.Status||'Ativo'), SyncEm:nowIso };
+            for (const k of [...manualKeys, ...otherKeys]) if (k!=='Status' && k in vals) body[k] = vals[k];
+            const created = await spFetch(token, L, { method:'POST', headers:{'Content-Type':'application/json;odata=verbose'}, body:JSON.stringify(body) });
+            regRow({ ...body, Id: created && created.Id, NomesAnteriores:'' });
+            criados++;
+          }
+        } catch(rowErr) { erros.push(`Linha ${i+2}: ${rowErr.message}`); }
       }
-      alert(`Importação concluída: ${updated} atualizado(s), ${added} adicionado(s).`);
+      let msg = `Importação concluída: ${criados} nova(s) pessoa(s) como input manual, ${atualizados} atualizada(s).`;
+      if (base44Rows) msg += `\n${base44Rows} linha(s) já são do Base44 — só os campos manuais foram considerados.`;
+      if (semCpf) msg += `\n${semCpf} nova(s) sem CPF: não serão reconciliadas automaticamente com o Base44.`;
+      if (semNome) msg += `\n${semNome} linha(s) sem nome foram ignoradas.`;
+      if (erros.length) msg += `\n\nAtenção — ${erros.length} problema(s):\n${erros.slice(0,6).join('\n')}`;
+      alert(msg);
       await loadAll();
     } catch(e) { setError('Erro ao importar: '+e.message); }
     setUploadingParc(false);
@@ -8409,12 +8821,33 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
     if (!editingParc) return;
     setSavingParc(true);
     try {
-      const f=editParcForm;
-      const body={__metadata:{type:parcEntityType},Telefone:f.telefone||null,Email:f.email||null,Estado:f.estado||null,Ingles:f.ingles||null,AutodeclaracaoRacial:f.autodeclaracaoRacial||null,Status:f.status||'Inativo',Atuacao:f.atuacao||null,Empresa:f.empresa||null,CNPJ:f.cnpj||null,Vigencia:f.vigencia||null,Classificacao:f.classificacao||null,DataInicio:f.dataInicio||null,Gestor:f.gestor||null,OBS:f.obs||null,Renovacao:f.renovacao||null};
-      await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros')/items(${editingParc.Id})`, {
-        method:'POST', headers:{'X-HTTP-Method':'MERGE','IF-MATCH':'*','Content-Type':'application/json;odata=verbose'},
-        body:JSON.stringify(body)
-      });
+      const p = editingParc, f = editParcForm, isB44 = p.Origem==='Base44';
+      const L = `${PARC_SITE}/_api/web/lists/getbytitle('${PARC_BASE_LIST}')/items`;
+      const nz = v => (v===undefined||v===null||String(v).trim()==='') ? null : String(v).trim();
+      const manual = { Telefone:nz(f.telefone), Email:nz(f.email), Estado:nz(f.estado), Ingles:nz(f.ingles), AutodeclaracaoRacial:nz(f.autodeclaracaoRacial), Classificacao:nz(f.classificacao), OBS:nz(f.obs) };
+      const body = { __metadata:{type:parcEntityType}, ...manual };
+      if (!isB44) {
+        const nome = String(f.nome||'').trim();
+        if (!nome) throw new Error('Informe o nome.');
+        const cpf = parcDigits(f.cpf);
+        if (cpf && !parcCpfValido(cpf)) throw new Error('CPF inválido.');
+        const other = cpf ? parceiros.find(x=>x.Id!==p.Id && parcDigits(x.CPF)===cpf) : null;
+        if (other && other.Origem!=='Base44') throw new Error(`Este CPF já está cadastrado para "${other.Title}" (input manual).`);
+        if (other) {
+          if (!window.confirm(`Este CPF já pertence a "${other.Title}" (Base44).\n\nMesclar? Os dados manuais preenchidos aqui serão levados para o cadastro do Base44, esta linha manual será removida e o nome atual ficará como apelido (as alocações antigas continuam aparecendo normalmente).`)) { setSavingParc(false); return; }
+          const mb = { __metadata:{type:parcEntityType} };
+          for (const k of Object.keys(manual)) if (manual[k]!==null) mb[k]=manual[k];
+          let al = other.NomesAnteriores||'';
+          for (const n of [p.Title, nome, ...parcAliases(p.NomesAnteriores)]) if (parcNorm(n)!==parcNorm(other.Title)) al = parcAddAlias(al, n);
+          if (al!==(other.NomesAnteriores||'')) mb.NomesAnteriores = al;
+          await spFetch(token, `${L}(${other.Id})`, { method:'POST', headers:{'X-HTTP-Method':'MERGE','IF-MATCH':'*','Content-Type':'application/json;odata=verbose'}, body:JSON.stringify(mb) });
+          await spFetch(token, `${L}(${p.Id})`, { method:'POST', headers:{'X-HTTP-Method':'DELETE','IF-MATCH':'*','Content-Type':'application/json;odata=verbose'} });
+          setEditingParc(null); await loadAll(); setSavingParc(false); return;
+        }
+        Object.assign(body, { Title:nome, CPF:cpf||null, Empresa:nz(f.empresa), CNPJ:nz(f.cnpj), Status:f.status||'Inativo', Atuacao:nz(f.atuacao), Vigencia:nz(f.vigencia), DataInicio:f.dataInicio?f.dataInicio+'T12:00:00Z':null, Gestor:nz(f.gestor), Renovacao:nz(f.renovacao) });
+        if (parcNorm(nome)!==parcNorm(p.Title)) body.NomesAnteriores = parcAddAlias(p.NomesAnteriores, p.Title);   // renomear não perde o histórico
+      }
+      await spFetch(token, `${L}(${p.Id})`, { method:'POST', headers:{'X-HTTP-Method':'MERGE','IF-MATCH':'*','Content-Type':'application/json;odata=verbose'}, body:JSON.stringify(body) });
       setEditingParc(null); await loadAll();
     } catch(e) { setError(e.message); }
     setSavingParc(false);
@@ -8422,14 +8855,16 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
 
   function openEditParc(p) {
     setEditingParc(p);
-    setEditParcForm({telefone:p.Telefone||'',email:p.Email||'',estado:p.Estado||'',ingles:p.Ingles||'',autodeclaracaoRacial:p.AutodeclaracaoRacial||'',status:p.Status||'Inativo',atuacao:p.Atuacao||'',empresa:p.Empresa||'',cnpj:p.CNPJ||'',vigencia:p.Vigencia||'',classificacao:p.Classificacao||'',dataInicio:p.DataInicio?p.DataInicio.slice(0,10):'',gestor:p.Gestor||'',obs:p.OBS||'',renovacao:p.Renovacao||''});
+    setEditParcForm({nome:p.SemPessoa?'':(p.Title||''),cpf:parcFmtCpf(p.CPF),telefone:p.Telefone||'',email:p.Email||'',estado:p.Estado||'',ingles:p.Ingles||'',autodeclaracaoRacial:p.AutodeclaracaoRacial||'',status:p.Status||'Inativo',atuacao:p.Atuacao||'',empresa:p.Empresa||'',cnpj:p.CNPJ||'',vigencia:p.Vigencia||'',classificacao:p.Classificacao||'',dataInicio:p.DataInicio?p.DataInicio.slice(0,10):'',gestor:p.Gestor||'',obs:p.OBS||'',renovacao:p.Renovacao||''});
   }
 
   async function deleteParc(id) {
-    if (!window.confirm('Remover este parceiro? Esta ação não pode ser desfeita.')) return;
+    const row = parceiros.find(x=>x.Id===id);
+    if (row && row.Origem==='Base44') { alert('Este cadastro vem do Base44 e é recriado a cada sincronização. Para removê-lo, ajuste no Base44.'); return; }
+    if (!window.confirm('Remover este parceiro (input manual)? As alocações antigas dele continuam na Grade como "Sem cadastro". Esta ação não pode ser desfeita.')) return;
     setDeletingParcId(id);
     try {
-      await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('List_Parceiros')/items(${id})`, {
+      await spFetch(token, `${PARC_SITE}/_api/web/lists/getbytitle('${PARC_BASE_LIST}')/items(${id})`, {
         method:'POST', headers:{'X-HTTP-Method':'DELETE','IF-MATCH':'*','Content-Type':'application/json;odata=verbose'}
       });
       await loadAll();
@@ -8538,20 +8973,22 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
       if (!a.DataAtividade) continue;
       const d=new Date(a.DataAtividade+'T12:00:00');
       if (d<s||d>e) continue;
-      if (!map[a.Parceiro]) map[a.Parceiro]={};
+      // chave = nome atual do cadastro (resolve nomes antigos/apelidos); fixos e sem cadastro usam o nome gravado
+      const nm = a.ParceiroId==='FIXO' ? a.Parceiro : ((resolveParc(a.Parceiro)||{}).Title || a.Parceiro);
+      if (!map[nm]) map[nm]={};
       const k=a.DataAtividade.slice(0,10);
-      if (!map[a.Parceiro][k]) map[a.Parceiro][k]=[];
-      map[a.Parceiro][k].push(a);
+      if (!map[nm][k]) map[nm][k]=[];
+      map[nm][k].push(a);
     }
     return map;
-  }, [projAlocacoes, gradeStart, gradeEnd]);
+  }, [projAlocacoes, gradeStart, gradeEnd, parcByNorm]);
 
   const [gradeStatusFilter, setGradeStatusFilter] = React.useState('');
 
   const gradeParceiros = useMemo(() => {
     let result = [];
     if (gradeTipoFilter !== 'fixos') {
-      let ps = parceiros;
+      let ps = pessoas;
       if (gradeStatusFilter==='Inativo') ps = ps.filter(p => p.Status && p.Status!=='Ativo');
       else if (gradeStatusFilter) ps = ps.filter(p => p.Status === gradeStatusFilter);
       const sorted = [...ps].sort((a,b) => {
@@ -8560,13 +8997,20 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
         return (a.Title||'').localeCompare(b.Title||'');
       });
       result = result.concat(sorted.map(p=>({...p, tipo:'parceiro'})));
+      // Proteção da Grade: quem tem alocação no período mas não está (mais) no cadastro continua aparecendo
+      if (!gradeStatusFilter) {
+        const known = new Set(pessoas.map(p=>p.Title));
+        const fx = new Set(fixosNames);
+        const fixoAloc = new Set(projAlocacoes.filter(a=>a.ParceiroId==='FIXO').map(a=>a.Parceiro));
+        for (const nm of Object.keys(gradeData)) if (!known.has(nm) && !fx.has(nm) && !fixoAloc.has(nm)) result.push({Id:'__orf__'+nm, Title:nm, Status:'Sem cadastro', tipo:'orfao'});
+      }
     }
     if (gradeTipoFilter !== 'parceiros') {
       const fixos = fixosNames.map(name=>({Id:'__fixo__'+name, Title:name, Status:'Fixo', tipo:'fixo'}));
       result = result.concat(fixos);
     }
     return result;
-  }, [parceiros, gradeStatusFilter, gradeTipoFilter, fixosNames]);
+  }, [pessoas, gradeData, gradeStatusFilter, gradeTipoFilter, fixosNames, projAlocacoes]);
 
   function periodoBadge(periodo) {
     if (periodo==='Manhã') return {label:'M',cls:'bg-amber-100 text-amber-800 border-amber-200'};
@@ -8935,7 +9379,7 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
               )
               :CE('select',{className:inputCls,value:form.parceiroId,onChange:e=>{const p=parceiros.find(x=>String(x.Id)===e.target.value);setForm(f=>({...f,parceiroId:e.target.value,parceiro:p?p.Title:''}));}},
                 CE('option',{value:''},'Selecione...'),
-                parceiros.map(p=>CE('option',{key:p.Id,value:p.Id},`${p.Title}${p.Status!=='Ativo'?' ⚠️':''}`))
+                pessoas.map(p=>CE('option',{key:p.Id,value:p.Id},`${p.Title}${p.Status!=='Ativo'?' ⚠️':''}`))
               ),
             tipoAlocacaoForm==='parceiros'&&isSelectedInativo&&CE('div',{className:'mt-1.5 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5'},'⚠️ Este parceiro não está ativo.')
           ),
@@ -9030,7 +9474,7 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
               projAlocacoes.length===0
                 ?CE('tr',null,CE('td',{colSpan:12,className:'text-center py-12 text-slate-400'},'Nenhuma alocação encontrada.'))
                 :projAlocacoes.map(a=>{
-                  const status=parcStatusMap[a.Parceiro];
+                  const status=statusOf(a.Parceiro);
                   const isAtivo=status==='Ativo';
                   return CE('tr',{key:a.Id,className:`border-b border-slate-50 hover:bg-slate-50 transition ${selectedAlocIds.has(a.Id)?'bg-indigo-50':editingAloc&&editingAloc.Id===a.Id?'bg-amber-50':''}`},
                     CE('td',{className:'px-3 py-2.5'},
@@ -9098,7 +9542,7 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
           )
         )
       ),
-      parceiros.length===0
+      gradeParceiros.length===0
         ?CE('div',{className:'text-center py-16 text-slate-400'},'Nenhum parceiro cadastrado.')
         :CE('div',{className:'scroll-table sticky-wrap'},
             CE('table',{className:'text-xs border-collapse bg-white border border-slate-200 rounded-xl overflow-hidden'},
@@ -9148,27 +9592,71 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
           CE('div',{className:'text-xs text-amber-600'},'Verifique os contratos com vigência próxima do vencimento.')
         )
       ),
+      // Base44: status da sincronização + configuração
+      CE('div',{className:'bg-white border border-slate-200 rounded-xl px-4 py-3 space-y-2'},
+        CE('div',{className:'flex items-center gap-3 flex-wrap'},
+          CE('span',{className:'text-sm font-semibold text-slate-700'},'🔗 Base44'),
+          CE('span',{className:'text-xs text-slate-500'},`${parceiros.filter(p=>p.Origem==='Base44'&&!p.SemPessoa).length} pessoas do Base44 · ${parceiros.filter(p=>p.Origem!=='Base44').length} de input manual · ${parceiros.filter(p=>p.SemPessoa).length} empresas sem pessoa`),
+          CE('span',{className:`text-xs ${syncState.error?'text-red-600 font-medium':'text-slate-500'}`},
+            syncState.running?(syncState.msg||'Sincronizando…')
+            :syncState.error?('Erro na sincronização: '+syncState.error)
+            :(syncState.msg||(b44Cfg.lastSync?('Última sincronização: '+new Date(b44Cfg.lastSync).toLocaleString('pt-BR')):'Ainda não sincronizado'))),
+          CE('div',{className:'ml-auto flex gap-2'},
+            CE('button',{onClick:()=>runBase44Sync({rows:parceiros,cfg:b44Cfg,cfgRowId:b44CfgRowId,entityType:parcEntityType}),disabled:syncState.running||!b44Cfg.apiKey,className:'px-3 py-1.5 text-xs border border-indigo-200 text-indigo-600 rounded-lg hover:bg-indigo-50 transition disabled:opacity-40'},'🔄 Sincronizar agora'),
+            CE('button',{onClick:()=>setB44Panel(v=>!v),className:'px-3 py-1.5 text-xs border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 transition'},'⚙️ Configurar')
+          )
+        ),
+        syncState.avisos&&syncState.avisos.length>0&&CE('div',{className:'text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 space-y-0.5'},
+          ...syncState.avisos.slice(0,6).map((a,i)=>CE('div',{key:i},'• '+a))),
+        b44Panel&&CE('div',{className:'grid grid-cols-1 md:grid-cols-3 gap-3 items-end border-t border-slate-100 pt-3'},
+          CE('div',null,CE('label',{className:labelCls},'ID do app Base44'),
+            CE('input',{type:'text',className:inputCls,value:b44Draft.appId,onChange:e=>setB44Draft(d=>({...d,appId:e.target.value}))})),
+          CE('div',null,CE('label',{className:labelCls},'Chave da API (api_key)'),
+            CE('input',{type:'password',autoComplete:'off',className:inputCls,placeholder:b44Cfg.apiKey?'•••••••• salva — preencha só para trocar':'Cole a chave da API do Base44',value:b44Draft.apiKey,onChange:e=>setB44Draft(d=>({...d,apiKey:e.target.value}))})),
+          CE('div',{className:'flex gap-2'},
+            CE('button',{onClick:async()=>{
+              try {
+                const next = await saveB44Cfg({appId:(b44Draft.appId||BASE44_DEFAULT_APP_ID).trim(), apiKey:(b44Draft.apiKey||b44Cfg.apiKey||'').trim()});
+                setB44Draft(d=>({...d,apiKey:''})); setB44Panel(false);
+                await runBase44Sync({rows:parceiros,cfg:next,cfgRowId:b44CfgRowId,entityType:parcEntityType});
+              } catch(e) { setError(e.message); }
+            },className:'px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg transition'},'Salvar e sincronizar'),
+            !b44Cfg.migratedAt&&CE('button',{onClick:migrateOldParceiros,disabled:migrating,className:'px-3 py-2 text-xs border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 transition disabled:opacity-40'},migrating?'⏳ Importando…':'Importar da lista antiga')
+          ),
+          CE('div',{className:'md:col-span-3 text-xs text-slate-400'},'A chave fica salva na lista restrita do SharePoint (visível só a quem tem acesso a ela), nunca no código do app. A sincronização roda toda vez que este módulo abre; campos de input manual nunca são sobrescritos.')
+        )
+      ),
       // Edit panel
       editingParc&&CE('div',{className:'bg-indigo-50 border border-indigo-200 rounded-xl p-5 space-y-4'},
         CE('div',{className:'flex items-center justify-between'},
-          CE('h3',{className:'font-semibold text-indigo-800'},`✏️ Editando: ${editingParc.Title}`),
+          CE('h3',{className:'font-semibold text-indigo-800'},`✏️ Editando: ${editingParc.Title}`,CE('span',{className:`ml-2 text-xs px-2 py-0.5 rounded-full font-semibold ${editingParc.Origem==='Base44'?'bg-sky-100 text-sky-700':'bg-amber-100 text-amber-700'}`},parcOrigemLabel(editingParc))),
           CE('button',{onClick:()=>setEditingParc(null),className:'text-indigo-400 hover:text-indigo-700 font-bold text-lg'},'✕')
         ),
+        editingParc.Origem==='Base44'&&CE('div',{className:'text-xs text-sky-700 bg-sky-50 border border-sky-200 rounded-lg px-3 py-2'},'Cadastro vindo do Base44: nome, CPF, empresa, contrato e demais dados são atualizados automaticamente. Aqui você edita só os campos de input manual (Telefone, E-mail, Estado, Inglês, Autodeclaração, Classificação e OBS).'),
         CE('div',{className:'grid grid-cols-2 gap-3 md:grid-cols-3'},
           [
+            ['nome','Nome',null,null],['cpf','CPF',null,null],
             ['status','Status',null,['Ativo','Inativo']],['classificacao','Classificação',null,null],['atuacao','Atuação',null,null],
             ['empresa','Empresa',null,null],['cnpj','CNPJ',null,null],['dataInicio','Data Início','date',null],
             ['vigencia','Vigência',null,null],['gestor','Gestor',null,null],['telefone','Telefone',null,null],
             ['email','E-mail','email',null],['estado','Estado (UF)',null,null],['ingles','Inglês',null,null],
             ['autodeclaracaoRacial','Autodecl. Racial',null,null],['renovacao','Renovação',null,null],
-          ].map(([key,label,type,opts])=>CE('div',{key},
-            CE('label',{className:labelCls},label),
-            opts?CE('select',{className:inputCls,value:editParcForm[key]||'',onChange:e=>setEditParcForm(f=>({...f,[key]:e.target.value}))},opts.map(o=>CE('option',{key:o,value:o},o)))
-              :CE('input',{type:type||'text',className:inputCls,value:editParcForm[key]||'',onChange:e=>setEditParcForm(f=>({...f,[key]:e.target.value}))})
-          )),
+          ].map(([key,label,type,opts])=>{
+            const lock = editingParc.Origem==='Base44' && !['telefone','email','estado','ingles','autodeclaracaoRacial','classificacao','obs'].includes(key);
+            const lockCls = lock?' bg-slate-100 text-slate-500 cursor-not-allowed':'';
+            return CE('div',{key},
+              CE('label',{className:labelCls},label+(lock?' 🔒':'')),
+              opts?CE('select',{className:inputCls+lockCls,disabled:lock,value:editParcForm[key]||'',onChange:e=>setEditParcForm(f=>({...f,[key]:e.target.value}))},opts.map(o=>CE('option',{key:o,value:o},o)))
+                :CE('input',{type:type||'text',className:inputCls+lockCls,disabled:lock,value:editParcForm[key]||'',onChange:e=>setEditParcForm(f=>({...f,[key]:e.target.value}))})
+            );
+          }),
           CE('div',{className:'col-span-2 md:col-span-3'},
             CE('label',{className:labelCls},'OBS'),
             CE('textarea',{className:inputCls,rows:2,value:editParcForm.obs||'',onChange:e=>setEditParcForm(f=>({...f,obs:e.target.value}))})
+          ),
+          editingParc.ObsBase44&&CE('div',{className:'col-span-2 md:col-span-3'},
+            CE('label',{className:labelCls},'Obs. alocadores (vem do Base44 🔒)'),
+            CE('div',{className:'text-xs text-slate-600 bg-slate-100 border border-slate-200 rounded-lg px-3 py-2 whitespace-pre-wrap'},editingParc.ObsBase44)
           )
         ),
         CE('div',{className:'flex gap-2'},
@@ -9178,11 +9666,14 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
       ),
       // Filters + actions
       CE('div',{className:'flex gap-2 flex-wrap items-center'},
-        CE('input',{type:'text',placeholder:'Buscar por nome ou empresa...',className:'border border-slate-200 rounded-lg px-3 py-2 text-sm min-w-[220px]',value:parcFilter,onChange:e=>setParcFilter(e.target.value)}),
+        CE('input',{type:'text',placeholder:'Buscar por nome, CPF ou empresa...',className:'border border-slate-200 rounded-lg px-3 py-2 text-sm min-w-[220px]',value:parcFilter,onChange:e=>setParcFilter(e.target.value)}),
         CE('select',{className:'border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white',value:statusFilter,onChange:e=>setStatusFilter(e.target.value)},
           CE('option',{value:''},'Todos'),CE('option',{value:'Ativo'},'✅ Ativos'),CE('option',{value:'Inativo'},'⚪ Inativos')
         ),
-        CE('span',{className:'self-center text-xs text-slate-400'},`${filteredParceiros.length} parceiros`),
+        CE('select',{className:'border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white',value:origemFilter,onChange:e=>setOrigemFilter(e.target.value)},
+          CE('option',{value:''},'Todas as origens'),CE('option',{value:'Base44'},'🔗 Base44 (pessoas)'),CE('option',{value:'Manual'},'✍️ Input manual'),CE('option',{value:'SemPessoa'},'🏢 Empresas sem pessoa')
+        ),
+        CE('span',{className:'self-center text-xs text-slate-400'},`${filteredParceiros.length} cadastros`),
         CE('div',{className:'ml-auto flex gap-2'},
           CE('button',{onClick:exportParceirosXLSX,className:'px-3 py-1.5 text-xs border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 transition'},'⬇ Exportar Excel'),
           CE('button',{onClick:downloadParcTemplate,className:'px-3 py-1.5 text-xs border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 transition'},'⬇ Modelo Excel'),
@@ -9197,17 +9688,19 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
           CE('table',{className:'w-full text-sm'},
             CE('thead',{className:'sticky-thead'},
               CE('tr',{className:'border-b border-slate-100 bg-slate-50'},
-                ['Status','Nome','E-mail','Classificação','Atuação','Empresa','Gestor','Data Início','Vigência','Renovação','Ações'].map(h=>
+                ['Status','Nome','CPF','Origem','E-mail','Classificação','Atuação','Empresa','Gestor','Data Início','Vigência','Renovação','Ações'].map(h=>
                   CE('th',{key:h,className:'text-left px-4 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap bg-slate-50'},h)
                 )
               )
             ),
             CE('tbody',null,
               filteredParceiros.length===0
-                ?CE('tr',null,CE('td',{colSpan:11,className:'text-center py-12 text-slate-400'},'Nenhum parceiro encontrado.'))
+                ?CE('tr',null,CE('td',{colSpan:13,className:'text-center py-12 text-slate-400'},'Nenhum parceiro encontrado.'))
                 :filteredParceiros.map(p=>CE('tr',{key:p.Id,className:`border-b border-slate-50 hover:bg-slate-50 transition ${editingParc&&editingParc.Id===p.Id?'bg-indigo-50':''}`},
                     CE('td',{className:'px-4 py-2.5'},CE('span',{className:`text-xs px-2 py-0.5 rounded-full font-semibold ${p.Status==='Ativo'?'bg-green-100 text-green-700':'bg-slate-100 text-slate-500'}`},p.Status||'—')),
-                    CE('td',{className:'px-4 py-2.5 font-medium text-slate-800 whitespace-nowrap'},p.Title),
+                    CE('td',{className:'px-4 py-2.5 font-medium text-slate-800 whitespace-nowrap'},p.SemPessoa?CE('span',{className:'italic text-slate-500'},'— (só empresa)'):p.Title),
+                    CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs whitespace-nowrap font-mono'},p.CPF?parcFmtCpf(p.CPF):(p.SemPessoa?'—':CE('span',{className:'text-amber-600',title:'Sem CPF: não será reconciliado automaticamente com o Base44'},'sem CPF'))),
+                    CE('td',{className:'px-4 py-2.5 whitespace-nowrap'},CE('span',{className:`text-xs px-2 py-0.5 rounded-full font-semibold ${p.Origem==='Base44'?'bg-sky-100 text-sky-700':'bg-amber-100 text-amber-700'}`},p.SemPessoa?'Base44 · empresa':p.Origem==='Base44'?'Base44':'Input manual')),
                     CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs whitespace-nowrap'},p.Email?CE('a',{href:'mailto:'+p.Email,className:'hover:text-indigo-600 hover:underline'},p.Email):'—'),
                     CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs'},p.Classificacao||'—'),
                     CE('td',{className:'px-4 py-2.5 text-slate-600 text-xs'},p.Atuacao||'—'),
@@ -9219,7 +9712,9 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
                     CE('td',{className:'px-4 py-2.5'},
                       CE('div',{className:'flex gap-1.5'},
                         CE('button',{onClick:()=>openEditParc(p),className:'p-1 rounded hover:bg-indigo-100 text-indigo-600 transition'},'✏️'),
-                        CE('button',{onClick:()=>deleteParc(p.Id),disabled:deletingParcId===p.Id,className:'p-1 rounded hover:bg-red-100 text-red-500 transition disabled:opacity-40'},deletingParcId===p.Id?'⏳':'🗑️')
+                        p.Origem==='Base44'
+                          ?CE('span',{className:'p-1 text-slate-300',title:'Cadastro do Base44 — não pode ser excluído aqui'},'🔒')
+                          :CE('button',{onClick:()=>deleteParc(p.Id),disabled:deletingParcId===p.Id,className:'p-1 rounded hover:bg-red-100 text-red-500 transition disabled:opacity-40'},deletingParcId===p.Id?'⏳':'🗑️')
                       )
                     )
                   ))
