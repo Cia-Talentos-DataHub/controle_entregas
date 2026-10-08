@@ -7578,7 +7578,7 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
   const [syncState, setSyncState] = useState({running:false, msg:'', error:'', avisos:[]});
   const [migrating, setMigrating] = useState(false);
   const [origemFilter, setOrigemFilter] = useState('');
-  const PARC_COLS = [['Status',90],['Nome',230],['CPF',130],['Origem',130],['E-mail',230],['Classificação',130],['Atuação',130],['Empresa',230],['Gestor',150],['Data Início',100],['Vigência',110],['Renovação',110],['Ações',80]];
+  const PARC_COLS = [['Status',90],['Nome',230],['CPF',130],['Origem',130],['E-mail',230],['Telefone',130],['Estado',80],['Inglês',110],['Autodeclaração',150],['Classificação',130],['Atuação',130],['Empresa',230],['CNPJ',150],['Gestor',150],['Data Início',100],['Vigência',110],['Renovação',110],['Observação',260],['Obs. alocadores',260],['Ações',80]];
   const [parcColW, setParcColW] = useState(()=>{ try{ const s=JSON.parse(localStorage.getItem('parcColW')||'null'); return s&&typeof s==='object'?s:{}; }catch(e){ return {}; } });
   const [parcWrap, setParcWrap] = useState(()=>{ try{ return localStorage.getItem('parcWrap')==='1'; }catch(e){ return false; } });
   const parcColWidth = (h) => { const d=(PARC_COLS.find(c=>c[0]===h)||[0,120])[1]; const w=parcColW[h]; return (typeof w==='number'&&w>=50)?w:d; };
@@ -9726,20 +9726,27 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
             ),
             CE('tbody',null,
               filteredParceiros.length===0
-                ?CE('tr',null,CE('td',{colSpan:13,className:'text-center py-12 text-slate-400'},'Nenhum parceiro encontrado.'))
+                ?CE('tr',null,CE('td',{colSpan:20,className:'text-center py-12 text-slate-400'},'Nenhum parceiro encontrado.'))
                 :filteredParceiros.map(p=>CE('tr',{key:p.Id,className:`border-b border-slate-50 hover:bg-slate-50 transition ${editingParc&&editingParc.Id===p.Id?'bg-indigo-50':''}`},
                     CE('td',{className:CC+' px-3 py-2.5'},CE('span',{className:`text-xs px-2 py-0.5 rounded-full font-semibold ${p.Status==='Ativo'?'bg-green-100 text-green-700':'bg-slate-100 text-slate-500'}`},p.Status||'—')),
                     CE('td',{title:p.Title||'',className:CC+' px-3 py-2.5 font-medium text-slate-800'},p.SemPessoa?CE('span',{className:'italic text-slate-500'},'— (só empresa)'):p.Title),
                     CE('td',{className:CC+' px-3 py-2.5 text-slate-600 text-xs font-mono'},p.CPF?parcFmtCpf(p.CPF):(p.SemPessoa?'—':CE('span',{className:'text-amber-600',title:'Sem CPF: não será reconciliado automaticamente com o Base44'},'sem CPF'))),
                     CE('td',{className:CC+' px-3 py-2.5'},CE('span',{className:`text-xs px-2 py-0.5 rounded-full font-semibold ${p.Origem==='Base44'?'bg-sky-100 text-sky-700':'bg-amber-100 text-amber-700'}`},p.SemPessoa?'Base44 · empresa':p.Origem==='Base44'?'Base44':'Input manual')),
                     CE('td',{title:p.Email||'',className:CC+' px-3 py-2.5 text-slate-600 text-xs'},p.Email?CE('a',{href:'mailto:'+p.Email,className:'hover:text-indigo-600 hover:underline'},p.Email):'—'),
+                    CE('td',{className:CC+' px-3 py-2.5 text-slate-600 text-xs'},p.Telefone||'—'),
+                    CE('td',{className:CC+' px-3 py-2.5 text-slate-600 text-xs'},p.Estado||'—'),
+                    CE('td',{className:CC+' px-3 py-2.5 text-slate-600 text-xs'},p.Ingles||'—'),
+                    CE('td',{title:p.AutodeclaracaoRacial||'',className:CC+' px-3 py-2.5 text-slate-600 text-xs'},p.AutodeclaracaoRacial||'—'),
                     CE('td',{className:CC+' px-3 py-2.5 text-slate-600 text-xs'},p.Classificacao||'—'),
                     CE('td',{className:CC+' px-3 py-2.5 text-slate-600 text-xs'},p.Atuacao||'—'),
                     CE('td',{title:p.Empresa||'',className:CC+' px-3 py-2.5 text-slate-600 text-xs'},p.Empresa||'—'),
+                    CE('td',{className:CC+' px-3 py-2.5 text-slate-600 text-xs font-mono'},p.CNPJ||'—'),
                     CE('td',{className:CC+' px-3 py-2.5 text-slate-600 text-xs'},p.Gestor||'—'),
                     CE('td',{className:CC+' px-3 py-2.5 text-slate-600 text-xs'},p.DataInicio?new Date(p.DataInicio).toLocaleDateString('pt-BR'):'—'),
                     CE('td',{className:CC+' px-3 py-2.5 text-xs '+(!p.Vigencia||p.Vigencia.toLowerCase()==='indeterminado'?'text-slate-500':(function(){var v=new Date(p.Vigencia);var now=new Date();now.setHours(0,0,0,0);var diff=(v-now)/DAY_MS;return diff<=7&&diff>=0?'font-bold text-red-600':diff<0?'text-slate-400 line-through':'text-slate-600';})())},p.Vigencia||'—'),
                     CE('td',{className:CC+' px-3 py-2.5 text-slate-600 text-xs'},p.Renovacao||'—'),
+                    CE('td',{title:p.OBS||'',className:CC+' px-3 py-2.5 text-slate-600 text-xs'},p.OBS||'—'),
+                    CE('td',{title:p.ObsBase44||'',className:CC+' px-3 py-2.5 text-slate-500 text-xs'},p.ObsBase44||'—'),
                     CE('td',{className:CC+' px-3 py-2.5'},
                       CE('div',{className:'flex gap-1.5'},
                         CE('button',{onClick:()=>openEditParc(p),className:'p-1 rounded hover:bg-indigo-100 text-indigo-600 transition'},'✏️'),
