@@ -218,6 +218,12 @@ const _assessments = ['Culturama', 'Recognita', 'Solu', 'Inglês EF', 'Talkia', 
 const _etapaProc = ['Planejamento/EB', 'Inscrições', 'Ranking', 'Assessments', 'Dinâmica de Grupo', 'Painel Final', 'Entrevista', 'Entrevista com Cliente', 'Contínuo', 'Relatório Final', 'Projeto Concluído'];
 const _envioResp = ['Enviada', 'Não enviada'];
 const _respResp = ['Respondida', 'Não respondida'];
+const NPS_CICLO_ALT_KEY = 'Considerar_em_outro_ciclo';
+// true somente se a coluna existe na List_Pulse (resolvida por fetchSPChoices)
+function npsCicloAltDisponivel() {
+  const m = _spFieldMap[NPS_CICLO_ALT_KEY];
+  return !!m && m !== '__nonexistent__';
+}
 const PULSE_FIELDS = [
 // ── Identificação ──────────────────────────────────────────────────────────
 {
@@ -617,6 +623,14 @@ const PULSE_FIELDS = [
   k: 'NPS_cliente_3',
   l: 'NPS Cliente 3',
   t: 'number'
+}, {
+  // Coluna opcional na List_Pulse (criar com nome interno Considerar_em_outro_ciclo).
+  // Se a coluna não existir no SP, o app ignora o campo (leitura e gravação).
+  s: 'Pesquisas',
+  k: 'Considerar_em_outro_ciclo',
+  l: 'Considerar em outro ciclo',
+  t: 'select',
+  o: ['2025/2026', '2026/2027', '2027/2028', '2028/2029']
 },
 // ── Nicho e Perfil ────────────────────────────────────────────────────────
 {
@@ -3005,7 +3019,9 @@ async function fetchSPList(token, siteUrl, listName) {
   // (ex: NPS_x005f_cliente_x005f_1). Sem o nome correto, o $select retorna null silenciosamente.
   const NPS_KEYS = ['NPS_cliente_1', 'NPS_cliente_2', 'NPS_cliente_3', 'Etapa_Processo', 'ID_do_Programa_ATS'];
   const extraNPS = NPS_KEYS.map(k => _spFieldMap[k] || k).filter(n => n && n !== '__nonexistent__' && !SP_SELECT.includes(n)).join(',');
-  const sel = SP_SELECT + extraFN + (extraCF ? ',' + extraCF : '') + (extraNPS ? ',' + extraNPS : '');
+  // "Considerar em outro ciclo": só entra no $select se a coluna foi confirmada no SP (evita 400 que derrubaria a lista toda)
+  const extraCiclo = npsCicloAltDisponivel() && !SP_SELECT.includes(_spFieldMap[NPS_CICLO_ALT_KEY]) ? ',' + _spFieldMap[NPS_CICLO_ALT_KEY] : '';
+  const sel = SP_SELECT + extraFN + (extraCF ? ',' + extraCF : '') + (extraNPS ? ',' + extraNPS : '') + extraCiclo;
   let items = [],
     url = `${base}/items?$select=${encodeURIComponent(sel)}&$top=500`;
   while (url) {
@@ -6565,7 +6581,7 @@ function App() {
           const v = project.pulseData[f.k];
           const isEmpty = v === '' || v === null || v === undefined;
           // Campos NPS permitem envio de null para limpar o valor no SP
-          const isNpsField = f.k === 'NPS_cliente_1' || f.k === 'NPS_cliente_2' || f.k === 'NPS_cliente_3';
+          const isNpsField = f.k === 'NPS_cliente_1' || f.k === 'NPS_cliente_2' || f.k === 'NPS_cliente_3' || f.k === NPS_CICLO_ALT_KEY;
           if (isEmpty) {
             if (isNpsField) {
               payload[spKey] = null;
@@ -17582,6 +17598,19 @@ function NpsView({
     setCandProg('');
   }
 
+  // ── Exceção de ciclo do NPS (somente aba A&S + EB): campo "Considerar em outro ciclo" (seção Pesquisas da Pulse) ──
+  // Quando preenchido, o programa conta neste módulo no ciclo escolhido, sem alterar Ciclo_Orcamentario.
+  const npsExcDe = p => {
+    if (tab !== 'as_eb') return null;
+    const v = String((p.pulseData || {})[NPS_CICLO_ALT_KEY] || '').trim();
+    const m = v.match(/(\d{4})\D+(\d{4})/);
+    return m ? { ciclo: m[1] + '/' + m[2] } : null;
+  };
+  const cicloNps = p => {
+    const e = npsExcDe(p);
+    return e && e.ciclo ? e.ciclo : p.ciclo;
+  };
+
   // ── CLI: Projetos filtrados ──
   const filteredProjects = useMemo(() => {
     let ps = projects;
@@ -17603,7 +17632,7 @@ function NpsView({
       ps = ps.filter(p => (p.solucao || '').toLowerCase().includes('latam'));
     }
     // Filtros de coluna
-    if (fCiclo.length) ps = ps.filter(p => fCiclo.includes(p.ciclo));
+    if (fCiclo.length) ps = ps.filter(p => fCiclo.includes(cicloNps(p)));
     if (fSemestre.length) ps = ps.filter(p => fSemestre.includes(p.semestre));
     if (fGsc.length) ps = ps.filter(p => fGsc.includes(p.ka));
     if (fHead.length) ps = ps.filter(p => [p.head1, p.head2, p.head3].some(h => fHead.includes(h || '')));
@@ -17623,7 +17652,7 @@ function NpsView({
     const progPulse = new Set();
     for (const p of elegiveis) {
       // Ciclo 2026/2027+ (aba A&S + EB): survey tem prioridade; se houver nota, ignora a Pulse
-      const anoIni = cicloAnoInicio(p.ciclo);
+      const anoIni = cicloAnoInicio(cicloNps(p));
       const usaSM = tab === 'as_eb' && cliNpsSM && anoIni !== null && anoIni >= NPS_SM_CICLO_INICIO;
       const sm = usaSM ? cliNpsSM.byName[normColetorNome(p.title)] : null;
       if (sm && sm.notas.length) {
@@ -17687,9 +17716,11 @@ function NpsView({
       rows,
       semPesquisa,
       progSurvey: progSurvey.size,
-      progPulse: progPulse.size
+      progPulse: progPulse.size,
+      ajustados: filteredProjects.filter(p => { const e = npsExcDe(p); return e && e.ciclo && e.ciclo !== p.ciclo; })
     };
   }, [filteredProjects, tab, cliNpsSM]);
+
 
   // ── NPS SurveyMonkey: coletores com resposta recente que não batem com nenhum Nome_Programa da Pulse ──
   const coletoresSemPrograma = useMemo(() => {
@@ -18072,7 +18103,18 @@ function NpsView({
   }, "Ciclo ", NPS_SM_CICLO_INICIO, "/", NPS_SM_CICLO_INICIO + 1, " em diante: survey tem prioridade, Pulse só se o programa não tiver nota no survey"), cliNpsSM.falhas && cliNpsSM.falhas.length > 0 && /*#__PURE__*/React.createElement("span", {
     className: "text-amber-600 font-medium",
     title: cliNpsSM.falhas.join(' | ')
-  }, "⚠ ", cliNpsSM.falhas.length, " pesquisa(s) do SurveyMonkey não carregaram"))), coletoresSemPrograma.length > 0 && tab === 'as_eb' && /*#__PURE__*/React.createElement("div", {
+  }, "⚠ ", cliNpsSM.falhas.length, " pesquisa(s) do SurveyMonkey não carregaram"))), tab === 'as_eb' && /*#__PURE__*/React.createElement("div", {
+    className: "text-xs mb-4 flex flex-wrap items-center gap-x-4 gap-y-1"
+  }, !npsCicloAltDisponivel() ? /*#__PURE__*/React.createElement("span", {
+    className: "text-slate-400"
+  }, "Campo \"Considerar em outro ciclo\" ainda não existe na List_Pulse") : /*#__PURE__*/React.createElement("span", {
+    className: "text-slate-500"
+  }, "Considerar em outro ciclo: ", /*#__PURE__*/React.createElement("b", {
+    className: "text-slate-700"
+  }, cliMetrics.ajustados.length), " programa(s) contando neste filtro com ciclo diferente do da Pulse", cliMetrics.ajustados.length > 0 && /*#__PURE__*/React.createElement("span", {
+    className: "text-slate-400",
+    title: cliMetrics.ajustados.map(p => p.title + ' (Pulse: ' + p.ciclo + ' → NPS: ' + cicloNps(p) + ')').join('\n')
+  }, " — passe o mouse para ver quais"))), coletoresSemPrograma.length > 0 && tab === 'as_eb' && /*#__PURE__*/React.createElement("div", {
     className: "bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-4 text-xs text-amber-800"
   }, /*#__PURE__*/React.createElement("div", {
     className: "font-bold mb-1"
@@ -18238,7 +18280,7 @@ function NpsView({
     className: "flex items-center justify-between mb-3 flex-wrap gap-2"
   }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h3", {
     className: "text-sm font-bold text-slate-700"
-  }, "Indicadores da Pesquisa — Excel"), /*#__PURE__*/React.createElement("p", {
+  }, "Indicadores da Pesquisa — Excel + SurveyMonkey"),/*#__PURE__*/React.createElement("p", {
     className: "text-xs text-slate-400 mt-0.5"
   }, "Avaliações por questão · Base_Pesquisa_Cliente_8020.xlsx")), excelData && /*#__PURE__*/React.createElement("div", {
     className: "flex items-center gap-3 flex-wrap"
