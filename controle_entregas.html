@@ -3763,6 +3763,80 @@ async function loadUnifiedSMResponses() {
   return rows;
 }
 
+// ─── NPS de clientes via SurveyMonkey (automação ciclo 2026/2027+) ─────────────────
+// Regra: coletor (nome) == Nome_Programa da Pulse (comparação exata, ignorando caixa e espaços repetidos).
+// Existindo nota no survey para o programa → usa SOMENTE o survey; senão cai nos campos NPS_cliente_1/2/3 da Pulse.
+const SM_NPS_CLIENTE_SURVEYS = [
+  { id: '290605672', q: '517221071', label: 'Programa Customizado' },
+  { id: '515915835', q: '166426440', label: 'Vaga pontual ou E&L' },
+  { id: '527832652', q: '294662558', label: 'Unificada Seleção + EB' },
+  { id: '528240801', q: '299726992', label: 'Programa EB' }
+];
+const NPS_SM_CICLO_INICIO = 2026; // ciclos com início >= 2026 usam o survey
+function normColetorNome(s) {
+  return String(s == null ? '' : s).replace(/[ \t\r\n]+/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+// A pergunta de NPS é texto livre: aceita "10", "9 - ótimo", "8,0", "nota 7"; descarta o resto.
+function parseNpsNota(txt) {
+  const t = String(txt == null ? '' : txt).trim();
+  if (!t) return null;
+  let m = t.match(/^(\d{1,2})(?:[.,]\d+)?(?!\d)/);
+  if (m) { const n = Number(m[1]); return n >= 0 && n <= 10 ? n : null; }
+  const toks = t.match(/\d+(?:[.,]\d+)?/g);
+  if (toks && toks.length === 1) { const n = Math.floor(Number(toks[0].replace(',', '.'))); return n >= 0 && n <= 10 ? n : null; }
+  return null;
+}
+function cicloAnoInicio(ciclo) {
+  const m = String(ciclo || '').match(/(\d{4})/);
+  return m ? Number(m[1]) : null;
+}
+// Retorna { byName: { chaveNormalizada: {nome, notas:[], ultima, pesquisa} }, falhas:[...] }
+async function loadClientNpsSM() {
+  const byName = {};
+  const falhas = [];
+  for (const sv of SM_NPS_CLIENTE_SURVEYS) {
+    try {
+      const colMap = {};
+      for (let pg = 1; pg <= 10; pg++) {
+        const cr = await smFetch('/surveys/' + sv.id + '/collectors?per_page=100&page=' + pg);
+        (cr.data || []).forEach(c => { colMap[c.id] = c.name || ''; });
+        if ((cr.data || []).length < 100) break;
+      }
+      const first = await smFetch('/surveys/' + sv.id + '/responses/bulk?per_page=100&page=1');
+      const totalPages = Math.ceil((first.total || 0) / 100);
+      const all = [...(first.data || [])];
+      for (let p = 2; p <= totalPages; p++) {
+        const r = await smFetch('/surveys/' + sv.id + '/responses/bulk?per_page=100&page=' + p);
+        all.push(...(r.data || []));
+        if (p % 10 === 0 && p < totalPages) await new Promise(res => setTimeout(res, 300));
+      }
+      for (const resp of all) {
+        const nome = colMap[resp.collector_id];
+        if (!nome) continue;
+        let nota = null;
+        for (const page of (resp.pages || [])) {
+          for (const q of (page.questions || [])) {
+            if (q.id !== sv.q) continue;
+            for (const a of (q.answers || [])) {
+              const n = parseNpsNota(a.text);
+              if (n !== null) nota = n;
+            }
+          }
+        }
+        if (nota === null) continue;
+        const key = normColetorNome(nome);
+        if (!byName[key]) byName[key] = { nome: String(nome).trim(), notas: [], ultima: '', pesquisa: sv.label };
+        byName[key].notas.push(nota);
+        const d = resp.date_modified || resp.date_created || '';
+        if (d > byName[key].ultima) byName[key].ultima = d;
+      }
+    } catch (e) {
+      falhas.push(sv.label + ': ' + e.message);
+    }
+  }
+  return { byName, falhas };
+}
+
 // ─── Candidate survey helpers ──────────────────────────────────────────────────────
 // Loads candidate SM responses for survey SM_CAND_ID
 // Returns array of {programa, nps, impressao, facilidade, comentario, data, source:'SM'}
@@ -7207,7 +7281,14 @@ function AppHeader({
     className: "w-7 h-7 bg-indigo-600 rounded-lg flex items-center justify-center text-white text-xs font-bold"
   }, "CT"), /*#__PURE__*/React.createElement("span", {
     className: "text-base font-bold text-slate-800"
-  }, module === 'pulse' ? 'Pulse' : module === 'gestao' ? 'Gestão A&S' : module === 'calendar' ? 'Calendário' : module === 'analytics' ? 'Analytics' : module === 'clientes' ? 'Clientes × Frentes' : module === 'nps' ? 'NPS' : module === 'cx' ? 'CX — Analytics' : module === 'cx_atend' ? 'CX — Atendimento' : module === 'escopo' ? 'Vagas: Escopo, Requisitos e Remuneração' : module === 'inscricoes' ? 'Pessoas Inscritas' : module === 'globe_fotografia' ? 'Globe Fotografia' : module === 'parceiros' ? 'Painel de Parceiros' : MODULE_CONFIGS[module]?.label || 'Alocação'), module === 'gestao' && projectCount > 0 && /*#__PURE__*/React.createElement("span", {
+  }, module === 'pulse' ? 'Pulse' : module === 'gestao' ? 'Gestão A&S' : module === 'calendar' ? 'Calendário' : module === 'analytics' ? 'Analytics' : module === 'clientes' ? 'Clientes × Frentes' : module === 'nps' ? 'NPS' : module === 'cx' ? 'CX — Analytics' : module === 'cx_atend' ? 'CX — Atendimento' : module === 'escopo' ? 'Vagas: Escopo, Requisitos e Remuneração' : module === 'inscricoes' ? 'Pessoas Inscritas' : module === 'globe_fotografia' ? 'Globe Fotografia' : module === 'parceiros' ? 'Painel de Parceiros' : module === 'sistema_hunting' ? 'Sistema Hunting' : module === 'hub_as' ? 'Hub A&S' : MODULE_CONFIGS[module]?.label || 'Alocação'), module === 'sistema_hunting' && /*#__PURE__*/React.createElement("span", {
+    className: "text-xs text-slate-500 ml-2"
+  }, "Link para o acesso dos agentes: ", /*#__PURE__*/React.createElement("a", {
+    href: "https://companhiadetalentos.com.br/cia_hunting/hunting-agentes.html",
+    target: "_blank",
+    rel: "noopener noreferrer",
+    className: "text-indigo-600 hover:text-indigo-800 underline"
+  }, "https://companhiadetalentos.com.br/cia_hunting/hunting-agentes.html")), module === 'gestao' && projectCount > 0 && /*#__PURE__*/React.createElement("span", {
     className: "bg-indigo-100 text-indigo-700 text-xs px-2 py-0.5 rounded-full"
   }, projectCount, " proj.")), module === 'gestao' && /*#__PURE__*/React.createElement("nav", {
     className: "flex gap-1 flex-wrap flex-1 items-center"
@@ -7307,10 +7388,28 @@ function parcAddAlias(cur, name) {
   list.push(n);
   return list.join(' | ');
 }
+// Converte datas vindas do Base44/Excel/lista antiga (yyyy-mm-dd, yyyy-mm-ddThh:mm, dd/mm/yyyy, Date)
+// em ISO aceito pelo SharePoint (coluna DateTime). Valor ausente ou inválido => null (nunca derruba o PATCH).
+function parcIsoDate(v) {
+  if (v === null || v === undefined || v === '') return null;
+  let y, mo, d;
+  if (v instanceof Date) { if (isNaN(v)) return null; y = v.getFullYear(); mo = v.getMonth() + 1; d = v.getDate(); }
+  else {
+    const s = String(v).trim();
+    let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+    if (m) { y = +m[1]; mo = +m[2]; d = +m[3]; }
+    else if ((m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/))) { d = +m[1]; mo = +m[2]; y = +m[3]; }
+    else return null;
+  }
+  if (!(y >= 1900 && y <= 2200 && mo >= 1 && mo <= 12 && d >= 1 && d <= 31)) return null;
+  const dt = new Date(Date.UTC(y, mo - 1, d, 12));
+  if (isNaN(dt) || dt.getUTCMonth() !== mo - 1) return null;
+  return dt.toISOString().slice(0, 10) + 'T12:00:00Z';
+}
 function parcEmpty(v) { return v === null || v === undefined || String(v).trim() === ''; }
 function parcSame(key, a, b) {
   if (key === 'SemPessoa') return !!a === !!b;
-  if (key === 'DataInicio') return String(a || '').slice(0, 10) === String(b || '').slice(0, 10);
+  if (key === 'DataInicio') return String(parcIsoDate(a) || '').slice(0, 10) === String(parcIsoDate(b) || '').slice(0, 10);
   if (key === 'CPF') return parcDigits(a) === parcDigits(b);
   return String(a == null ? '' : a).trim() === String(b == null ? '' : b).trim();
 }
@@ -7320,8 +7419,8 @@ function parcEmpresaFields(e) {
   if (e.atuacao_eb) atu.push('EB');
   if (e.atuacao_aes) atu.push('AES');
   if (e.atuacao_ced) atu.push('CED');
-  const fim = String(e.data_fim || '').slice(0, 10);
-  const ini = String(e.data_inicio || '').slice(0, 10);
+  const fimIso = parcIsoDate(e.data_fim);
+  const fim = fimIso ? fimIso.slice(0, 10) : String(e.data_fim || '').trim().slice(0, 10);
   let vig = '';
   if (fim) vig = fim; else if (/indetermin/i.test(String(e.renovacao || ''))) vig = 'indeterminado';
   return {
@@ -7330,7 +7429,7 @@ function parcEmpresaFields(e) {
     Status: e.ativo ? 'Ativo' : 'Inativo',
     Atuacao: atu.join(', '),
     Vigencia: vig,
-    DataInicio: ini ? ini + 'T12:00:00Z' : null,
+    DataInicio: parcIsoDate(e.data_inicio),
     Gestor: String(e.gestor || '').trim(),
     Renovacao: String(e.renovacao || '').trim(),
     ObsBase44: String(e.observacao_alocadores || '').trim(),
@@ -7502,14 +7601,17 @@ function parcCleanBody(body) {
     out[k] = (v === '' || v === undefined) ? null : v;
   }
   if (out.Title === null) delete out.Title;
+  if ('DataInicio' in out) out.DataInicio = parcIsoDate(out.DataInicio);
   return out;
 }
-async function parcRunOps(token, siteUrl, entityType, ops, onProgress) {
+async function parcRunOps(token, siteUrl, entityType, ops, onProgress, continueOnError) {
   const L = `${siteUrl}/_api/web/lists/getbytitle('${PARC_BASE_LIST}')/items`;
   let i = 0;
+  const failures = [];
   for (const op of ops) {
     i++;
     if (onProgress) onProgress(i, ops.length, op);
+    try {
     if (op.op === 'create') {
       await spFetch(token, L, { method: 'POST', headers: { 'Content-Type': 'application/json;odata=verbose' }, body: JSON.stringify(Object.assign({ __metadata: { type: entityType } }, parcCleanBody(op.body))) });
     } else if (op.op === 'update') {
@@ -7517,7 +7619,14 @@ async function parcRunOps(token, siteUrl, entityType, ops, onProgress) {
     } else if (op.op === 'delete') {
       await spFetch(token, `${L}(${op.id})`, { method: 'POST', headers: { 'X-HTTP-Method': 'DELETE', 'IF-MATCH': '*', 'Content-Type': 'application/json;odata=verbose' } });
     }
+    } catch (err) {
+      if (!continueOnError) throw err;
+      let msg = String(err && err.message || err);
+      const mm = msg.match(/"value":"([^"]+)"/); if (mm) msg = mm[1];
+      failures.push((op.title || (op.body && op.body.Title) || ('item ' + (op.id || ''))) + ': ' + msg.slice(0, 160));
+    }
   }
+  return failures;
 }
 async function base44FetchEmpresas(appId, apiKey) {
   const r = await fetch(`https://base44.app/api/apps/${encodeURIComponent(appId || BASE44_DEFAULT_APP_ID)}/entities/Empresa?limit=2000`, { headers: { api_key: apiKey } });
@@ -7741,11 +7850,12 @@ function ParceirosView({ projects, token, headMembers: headMembersProp, currentU
       if (!empresas.length && ctx.rows.some(r => r.Origem === 'Base44')) throw new Error('O Base44 devolveu 0 empresas — sincronização cancelada por segurança.');
       const plan = parcBuildSyncPlan(ctx.rows, empresas, new Date().toISOString());
       const et = ctx.entityType || parcEntityType;
-      await parcRunOps(token, PARC_SITE, et, plan.ops, (i, n) => setSyncState(st => ({ ...st, msg: `Sincronizando com o Base44… ${i}/${n}` })));
+      const falhas = await parcRunOps(token, PARC_SITE, et, plan.ops, (i, n) => setSyncState(st => ({ ...st, msg: `Sincronizando com o Base44… ${i}/${n}` })), true);
       const sm = plan.sum;
       const resumo = `${sm.criados} novo(s), ${sm.atualizados} atualizado(s)` + (sm.adotados ? `, ${sm.adotados} cadastro(s) manual(is) agora vindo(s) do Base44` : '') + (sm.ausentes ? `, ${sm.ausentes} não vem(êm) mais no Base44 (mantido(s))` : '');
       await saveB44Cfg({ lastSync: new Date().toISOString() }, cfg, ctx.cfgRowId, et);
-      setSyncState({ running: false, msg: 'Base44 sincronizado: ' + resumo + '.', error: '', avisos: sm.avisos });
+      const avisosFinais = (sm.avisos || []).concat(falhas.map(f => 'Não gravado — ' + f));
+      setSyncState({ running: false, msg: (falhas.length ? 'Base44 sincronizado com ' + falhas.length + ' falha(s): ' : 'Base44 sincronizado: ') + resumo + '.', error: '', avisos: avisosFinais });
       if (plan.ops.length) await loadAll();
       return sm;
     } catch (e) {
@@ -10370,7 +10480,7 @@ function HomeScreen({
     className: "text-xl font-bold text-slate-900 mb-2"
   }, "Sistema Hunting"), /*#__PURE__*/React.createElement("p", {
     className: "text-sm text-slate-500 leading-relaxed"
-  }, "Gestão de hunting nos projetos de Avaliação e Seleção."), /*#__PURE__*/React.createElement("div", {
+  }, "Gestão de Hunting nos projetos de A&S"), /*#__PURE__*/React.createElement("div", {
     className: "mt-6 flex items-center text-sm font-semibold text-amber-600 group-hover:text-amber-700"
   }, "Abrir ", /*#__PURE__*/React.createElement("span", { className: "ml-1.5" }, "→"))),
   /*#__PURE__*/React.createElement("button", {
@@ -17176,6 +17286,8 @@ function NpsView({
   const [excelLoading, setExcelLoading] = useState(false);
   const [excelError, setExcelError] = useState(null);
   const [excelLoaded, setExcelLoaded] = useState(false);
+  // NPS clientes via SurveyMonkey (ciclo 2026/2027+): { byName, falhas } | null
+  const [cliNpsSM, setCliNpsSM] = useState(null);
 
   // ── CLI: Filtros (multi-select — arrays) ──
   const [fCiclo, setFCiclo] = useState([]);
@@ -17392,6 +17504,10 @@ function NpsView({
     setExcelLoading(true);
     setExcelError(null);
     try {
+      // NPS do survey carrega em paralelo e independente do Excel (se um falhar, o outro segue)
+      loadClientNpsSM()
+        .catch(e => ({ byName: {}, falhas: ['SurveyMonkey: ' + e.message] }))
+        .then(setCliNpsSM);
       const [data, ebRows, unifRows] = await Promise.all([
         fetchExcelSheet(clientId, tenantId, NPS_CLI_REL, null),
         loadEBSMResponses().catch(() => []),
@@ -17503,7 +17619,29 @@ function NpsView({
     const elegiveis = filteredProjects.filter(p => npsEligivel(p, tab));
     const rows = [];
     const comPesquisaSet = new Set();
+    const progSurvey = new Set();
+    const progPulse = new Set();
     for (const p of elegiveis) {
+      // Ciclo 2026/2027+ (aba A&S + EB): survey tem prioridade; se houver nota, ignora a Pulse
+      const anoIni = cicloAnoInicio(p.ciclo);
+      const usaSM = tab === 'as_eb' && cliNpsSM && anoIni !== null && anoIni >= NPS_SM_CICLO_INICIO;
+      const sm = usaSM ? cliNpsSM.byName[normColetorNome(p.title)] : null;
+      if (sm && sm.notas.length) {
+        sm.notas.forEach((num, i) => {
+          rows.push({
+            cliente: p.client,
+            programa: p.title,
+            etapa: p.status,
+            resposta: i + 1,
+            nota: num,
+            classe: num >= 9 ? 'Promotor' : num >= 7 ? 'Neutro' : 'Detrator',
+            fonte: 'Survey'
+          });
+        });
+        comPesquisaSet.add(p.id);
+        progSurvey.add(p.id);
+        continue;
+      }
       for (let n = 1; n <= 3; n++) {
         const raw = p.pulseData ? p.pulseData[`NPS_cliente_${n}`] : undefined;
         const num = raw !== '' && raw !== null && raw !== undefined ? Number(raw) : NaN;
@@ -17514,9 +17652,11 @@ function NpsView({
             etapa: p.status,
             resposta: n,
             nota: num,
-            classe: num >= 9 ? 'Promotor' : num >= 7 ? 'Neutro' : 'Detrator'
+            classe: num >= 9 ? 'Promotor' : num >= 7 ? 'Neutro' : 'Detrator',
+            fonte: 'Pulse'
           });
           comPesquisaSet.add(p.id);
+          progPulse.add(p.id);
         }
       }
     }
@@ -17545,9 +17685,21 @@ function NpsView({
       pctNeu,
       pctDet,
       rows,
-      semPesquisa
+      semPesquisa,
+      progSurvey: progSurvey.size,
+      progPulse: progPulse.size
     };
-  }, [filteredProjects, tab]);
+  }, [filteredProjects, tab, cliNpsSM]);
+
+  // ── NPS SurveyMonkey: coletores com resposta recente que não batem com nenhum Nome_Programa da Pulse ──
+  const coletoresSemPrograma = useMemo(() => {
+    if (!cliNpsSM) return [];
+    const titulos = new Set(projects.map(p => normColetorNome(p.title)));
+    return Object.entries(cliNpsSM.byName)
+      .filter(([k, v]) => !titulos.has(k) && v.ultima >= '2026-07-01')
+      .map(([k, v]) => v)
+      .sort((a, b) => a.nome.localeCompare(b.nome));
+  }, [cliNpsSM, projects]);
 
   // ── CLI: Opções de filtros (sobre todos os projetos) ──
   const cicloOpts = useMemo(() => [...new Set(projects.map(p => p.ciclo).filter(Boolean))].sort().filter(c => c !== '2024/2025'), [projects]);
@@ -17909,7 +18061,30 @@ function NpsView({
     style: {
       color: k.color
     }
-  }, k.sub)))), cliMetrics.elegiveis > 0 && /*#__PURE__*/React.createElement("div", {
+  }, k.sub)))), tab === 'as_eb' && /*#__PURE__*/React.createElement("div", {
+    className: "text-xs text-slate-500 mb-4 flex flex-wrap items-center gap-x-4 gap-y-1"
+  }, cliNpsSM === null ? /*#__PURE__*/React.createElement("span", null, excelLoading || !excelLoaded ? "⏳ Carregando NPS do SurveyMonkey…" : "NPS do SurveyMonkey indisponível — usando apenas a Pulse") : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", null, "Fonte do NPS: ", /*#__PURE__*/React.createElement("b", {
+    className: "text-slate-700"
+  }, cliMetrics.progSurvey), " programa(s) via SurveyMonkey · ", /*#__PURE__*/React.createElement("b", {
+    className: "text-slate-700"
+  }, cliMetrics.progPulse), " via Pulse"), /*#__PURE__*/React.createElement("span", {
+    className: "text-slate-400"
+  }, "Ciclo ", NPS_SM_CICLO_INICIO, "/", NPS_SM_CICLO_INICIO + 1, " em diante: survey tem prioridade, Pulse só se o programa não tiver nota no survey"), cliNpsSM.falhas && cliNpsSM.falhas.length > 0 && /*#__PURE__*/React.createElement("span", {
+    className: "text-amber-600 font-medium",
+    title: cliNpsSM.falhas.join(' | ')
+  }, "⚠ ", cliNpsSM.falhas.length, " pesquisa(s) do SurveyMonkey não carregaram"))), coletoresSemPrograma.length > 0 && tab === 'as_eb' && /*#__PURE__*/React.createElement("div", {
+    className: "bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-4 text-xs text-amber-800"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "font-bold mb-1"
+  }, "⚠ ", coletoresSemPrograma.length, " coletor(es) do SurveyMonkey com NPS recente não batem com nenhum Nome_Programa da Pulse"), /*#__PURE__*/React.createElement("div", {
+    className: "text-amber-700 mb-1"
+  }, "Ajuste o nome do coletor para ficar idêntico ao programa na Pulse:"), /*#__PURE__*/React.createElement("ul", {
+    className: "list-disc pl-5 space-y-0.5"
+  }, coletoresSemPrograma.map(c => /*#__PURE__*/React.createElement("li", {
+    key: c.nome
+  }, c.nome, " ", /*#__PURE__*/React.createElement("span", {
+    className: "text-amber-600"
+  }, "(", c.notas.length, " resposta(s) · ", c.pesquisa, ")"))))), cliMetrics.elegiveis > 0 && /*#__PURE__*/React.createElement("div", {
     className: "grid grid-cols-1 sm:grid-cols-3 gap-4 mb-5"
   }, /*#__PURE__*/React.createElement("div", {
     className: "bg-white rounded-xl border border-slate-200 p-4 flex flex-col items-center justify-center gap-3"
@@ -17983,7 +18158,7 @@ function NpsView({
     className: "text-slate-400 text-sm text-center"
   }, "Nenhuma resposta NPS encontrada", /*#__PURE__*/React.createElement("div", {
     className: "text-xs mt-1 text-slate-300"
-  }, "Verifique se NPS_cliente_1/2/3 estão preenchidos")))), cliMetrics.rows.length > 0 && /*#__PURE__*/React.createElement("div", {
+  }, tab === 'as_eb' ? "Verifique o nome do coletor no SurveyMonkey ou NPS_cliente_1/2/3 na Pulse" : "Verifique se NPS_cliente_1/2/3 estão preenchidos")))), cliMetrics.rows.length > 0 && /*#__PURE__*/React.createElement("div", {
     className: "bg-white rounded-2xl border border-slate-200 overflow-hidden mb-5"
   }, /*#__PURE__*/React.createElement("div", {
     className: "px-5 py-3 border-b border-slate-100 flex items-center justify-between"
@@ -17997,7 +18172,7 @@ function NpsView({
     className: "w-full text-sm"
   }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", {
     className: "bg-slate-50"
-  }, ['Cliente', 'Programa', 'Resposta Nº', 'Nota', 'Classificação'].map(h => /*#__PURE__*/React.createElement("th", {
+  }, ['Cliente', 'Programa', 'Resposta Nº', 'Nota', 'Classificação', 'Fonte'].map(h => /*#__PURE__*/React.createElement("th", {
     key: h,
     className: "px-3 py-2 text-left text-xs font-semibold text-slate-500 whitespace-nowrap sticky top-0 bg-slate-50"
   }, h)))), /*#__PURE__*/React.createElement("tbody", {
@@ -18022,7 +18197,9 @@ function NpsView({
       className: "px-3 py-2 w-28"
     }, /*#__PURE__*/React.createElement("span", {
       className: `text-xs px-2 py-0.5 rounded-full font-medium ${cc}`
-    }, cls)));
+    }, cls)), /*#__PURE__*/React.createElement("td", {
+      className: "px-3 py-2 text-xs text-slate-500 whitespace-nowrap"
+    }, r.fonte === 'Survey' ? "SurveyMonkey" : "Pulse"));
   }))))), cliMetrics.semPesquisa.length > 0 && /*#__PURE__*/React.createElement("div", {
     className: "bg-white rounded-2xl border border-amber-200 overflow-hidden mb-5"
   }, /*#__PURE__*/React.createElement("div", {
