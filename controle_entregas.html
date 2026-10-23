@@ -1909,6 +1909,18 @@ function AlocacaoSimplificadaView({
   const [error, setError] = useState(null);
   const [diagMsg, setDiagMsg] = useState(null);
   const [lastUpd, setLastUpd] = useState(null);
+  // Pessoas expandidas (chave = Categoria|Pessoa). Vazio = tudo recolhido (só Categoria + Pessoa).
+  const [expandidos, setExpandidos] = useState(() => new Set());
+  const pKey = r => (r.visao || '') + '|' + r.person;
+  const colapsado = r => !expandidos.has(pKey(r));
+  function toggleRecolher(r) {
+    const k = pKey(r);
+    setExpandidos(prev => {
+      const n = new Set(prev);
+      if (n.has(k)) n.delete(k);else n.add(k);
+      return n;
+    });
+  }
   useEffect(() => {
     load();
   }, []);
@@ -1971,16 +1983,24 @@ function AlocacaoSimplificadaView({
           person: row.person,
           etapa: etapaNorm,
           visao: row.visao,
-          projects: new Set(),
+          projs: {},
           months: {}
         };
         monthLabels.forEach(m => {
           groups[key].months[m] = 0;
         });
       }
-      if (row.projeto) groups[key].projects.add(row.projeto);
+      // Uma linha por projeto: soma os meses quando o mesmo projeto aparece em mais de uma linha do Excel
+      const projNome = row.projeto || '(sem projeto)';
+      if (!groups[key].projs[projNome]) {
+        groups[key].projs[projNome] = {};
+        monthLabels.forEach(m => {
+          groups[key].projs[projNome][m] = 0;
+        });
+      }
       monthLabels.forEach(m => {
         groups[key].months[m] = (groups[key].months[m] || 0) + (row.months[m] || 0);
+        groups[key].projs[projNome][m] += row.months[m] || 0;
       });
     });
 
@@ -2013,7 +2033,7 @@ function AlocacaoSimplificadaView({
         totalMonths[m] = 0;
       });
       cats.forEach(c => {
-        c.projects.forEach(p => totalProjs.add(p));
+        Object.keys(c.projs).forEach(p => totalProjs.add(p));
         monthLabels.forEach(m => {
           totalMonths[m] += c.months[m] || 0;
         });
@@ -2026,16 +2046,17 @@ function AlocacaoSimplificadaView({
         projects: [...totalProjs],
         months: totalMonths
       });
-      cats.forEach(c => consolidated.push({
+      cats.forEach(c => Object.keys(c.projs).sort((a, b) => a.localeCompare(b, 'pt-BR')).forEach(projNome => consolidated.push({
         isTotal: false,
         person,
         visao: c.visao || visao,
         etapa: c.etapa,
-        projects: [...c.projects],
+        projeto: projNome,
+        projects: [projNome],
         months: {
-          ...c.months
+          ...c.projs[projNome]
         }
-      }));
+      })));
     });
     return {
       consolidated,
@@ -2065,11 +2086,19 @@ function AlocacaoSimplificadaView({
     className: "text-lg font-bold text-slate-800"
   }, "Alocação Simplificada"), lastUpd && /*#__PURE__*/React.createElement("p", {
     className: "text-xs text-slate-400 mt-0.5"
-  }, "Atualizado às ", lastUpd.toLocaleTimeString('pt-BR'), " · leitura ao vivo do Excel")), /*#__PURE__*/React.createElement("button", {
+  }, "Atualizado às ", lastUpd.toLocaleTimeString('pt-BR'), " · leitura ao vivo do Excel")), /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center gap-2"
+  }, consolidated.length > 0 && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("button", {
+    onClick: () => setExpandidos(new Set(consolidated.filter(r => r.isTotal).map(pKey))),
+    className: "text-xs border border-slate-200 px-3 py-1.5 rounded-lg text-slate-600 hover:border-indigo-300 hover:text-indigo-600 transition"
+  }, "▾ Expandir tudo"), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setExpandidos(new Set()),
+    className: "text-xs border border-slate-200 px-3 py-1.5 rounded-lg text-slate-600 hover:border-indigo-300 hover:text-indigo-600 transition"
+  }, "▸ Recolher tudo")), /*#__PURE__*/React.createElement("button", {
     onClick: load,
     disabled: loading,
     className: "text-xs border border-slate-200 px-3 py-1.5 rounded-lg text-slate-600 hover:border-indigo-300 hover:text-indigo-600 transition disabled:opacity-40 flex items-center gap-1.5"
-  }, loading ? '⏳ Carregando…' : '🔄 Atualizar Excel')), error && /*#__PURE__*/React.createElement("div", {
+  }, loading ? '⏳ Carregando…' : '🔄 Atualizar Excel'))), error && /*#__PURE__*/React.createElement("div", {
     className: "bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3 text-sm mb-4"
   }, "⚠️ ", error), diagMsg && /*#__PURE__*/React.createElement("div", {
     className: "bg-amber-50 border border-amber-200 text-amber-800 rounded-xl px-4 py-3 text-xs mb-4"
@@ -2091,40 +2120,43 @@ function AlocacaoSimplificadaView({
     className: "bg-slate-700"
   }, /*#__PURE__*/React.createElement("th", {
     className: "text-left px-3 py-2.5 font-semibold text-white whitespace-nowrap sticky left-0 bg-slate-700 z-10 border-r border-slate-600 min-w-20"
-  }, "Visão"), /*#__PURE__*/React.createElement("th", {
+  }, "Categoria"), /*#__PURE__*/React.createElement("th", {
     className: "text-left px-3 py-2.5 font-semibold text-white whitespace-nowrap min-w-28"
   }, "Pessoa"), /*#__PURE__*/React.createElement("th", {
     className: "text-left px-3 py-2.5 font-semibold text-white whitespace-nowrap min-w-36"
-  }, "Etapa"), /*#__PURE__*/React.createElement("th", {
+  }, "Total / Etapa"), /*#__PURE__*/React.createElement("th", {
     className: "text-left px-3 py-2.5 font-semibold text-white whitespace-nowrap min-w-48"
-  }, "Projetos consolidados"), monthLabels.map(m => /*#__PURE__*/React.createElement("th", {
+  }, "Projeto"), monthLabels.map(m => /*#__PURE__*/React.createElement("th", {
     key: m,
     className: "text-center px-2 py-2.5 font-semibold text-white whitespace-nowrap min-w-14"
   }, m)))), /*#__PURE__*/React.createElement("tbody", null, consolidated.map((row, i) => {
+    if (!row.isTotal && colapsado(row)) return null;
     const border = row.isTotal ? 'border-t-2 border-emerald-200' : 'border-b border-slate-100';
     return /*#__PURE__*/React.createElement("tr", {
       key: i,
-      className: `${border} ${row.isTotal ? 'bg-emerald-50' : ''} transition-colors ${row.isTotal ? '' : 'hover:bg-slate-50'}`
+      onClick: row.isTotal ? () => toggleRecolher(row) : undefined,
+      title: row.isTotal ? (colapsado(row) ? 'Clique para expandir os projetos' : 'Clique para recolher os projetos') : undefined,
+      className: `${border} ${row.isTotal ? 'bg-emerald-50 cursor-pointer hover:bg-emerald-100' : ''} transition-colors ${row.isTotal ? '' : 'hover:bg-slate-50'}`
     }, /*#__PURE__*/React.createElement("td", {
       className: `px-3 py-2 whitespace-nowrap sticky left-0 z-10 border-r border-slate-100 ${row.isTotal ? 'bg-emerald-50 font-semibold text-slate-800' : 'bg-white text-slate-500'}`
     }, row.visao || '—'), /*#__PURE__*/React.createElement("td", {
       className: `px-3 py-2 whitespace-nowrap ${row.isTotal ? 'font-bold text-slate-900' : 'text-slate-700'}`
-    }, row.person), /*#__PURE__*/React.createElement("td", {
+    }, row.isTotal && /*#__PURE__*/React.createElement("span", {
+      className: "inline-block w-4 text-slate-500"
+    }, colapsado(row) ? '▸' : '▾'), row.person), /*#__PURE__*/React.createElement("td", {
       className: `px-3 py-2 whitespace-nowrap ${row.isTotal ? 'font-bold text-slate-900' : 'text-slate-600'}`
     }, row.etapa), /*#__PURE__*/React.createElement("td", {
-      className: `px-3 py-2 max-w-xs text-slate-600 ${row.isTotal ? 'font-semibold' : ''}`,
-      title: row.projects.join('; ')
+      className: `px-3 py-2 max-w-sm text-slate-600 ${row.isTotal ? 'font-semibold' : ''}`,
+      title: row.isTotal ? row.projects.join('; ') : row.projeto
     }, /*#__PURE__*/React.createElement("span", {
       className: "block truncate"
-    }, row.projects.length ? row.projects.join('; ') : /*#__PURE__*/React.createElement("span", {
-      className: "text-slate-300"
-    }, "—"))), monthLabels.map(m => /*#__PURE__*/React.createElement("td", {
+    }, row.isTotal ? 'Todos os projetos (' + row.projects.length + ')' : row.projeto)), monthLabels.map(m => /*#__PURE__*/React.createElement("td", {
       key: m,
       className: `px-2 py-2 text-center whitespace-nowrap ${row.isTotal ? 'bg-emerald-50' : ''}`
     }, pctBadge(row.months[m] || 0, row.isTotal))));
   })))), /*#__PURE__*/React.createElement("div", {
     className: "px-4 py-2.5 border-t border-slate-100 text-xs text-slate-400"
-  }, consolidated.filter(r => r.isTotal).length, " pessoas ·", ' ', consolidated.filter(r => !r.isTotal).length, " linhas de etapa ·", ' ', "fonte: ", ALLOC_SIMPL_REL.split('/').pop(), " → ", ALLOC_SIMPL_SHEET)));
+  }, consolidated.filter(r => r.isTotal).length, " pessoas ·", ' ', consolidated.filter(r => !r.isTotal).length, " linhas de projeto ·", ' ', "fonte: ", ALLOC_SIMPL_REL.split('/').pop(), " → ", ALLOC_SIMPL_SHEET)));
 }
 
 function calcNpsMetrics(rows, scoreCol) {
