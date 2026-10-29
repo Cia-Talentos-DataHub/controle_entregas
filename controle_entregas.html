@@ -996,6 +996,7 @@ function parseSPItem(item) {
     solucao: normFrente(item.FrenteNegocio || ''),
     // nova coluna Frente de Negócio (SP: FrenteNegocio)
     produto: item.Produto_Principal || '',
+    idMoskit: _idMoskitField && item[_idMoskitField] != null ? String(item[_idMoskitField]).trim() : '',
     farol: item.Farol_Vermelho || '',
     vagasTrab: Number(item[_spFieldMap['Vagas_Trabalhadas'] || 'Vagas_Trabalhadas']) || 0,
     vagasFech: Number(item[_spFieldMap['Vagas_Fechadas'] || 'Vagas_Fechadas']) || 0,
@@ -1035,6 +1036,14 @@ function buildSPPayload(project) {
   if (project.qtdVagas !== undefined && project.qtdVagas > 0) payload['Quantidade_Vagas_Prevista'] = project.qtdVagas;
   if (project.solucao !== undefined) payload['FrenteNegocio'] = project.solucao || null;
   if (project.produto !== undefined) payload['Produto_Principal'] = project.produto || null;
+  // ID Moskit: só grava se a coluna existir na List_Pulse (senão o SP rejeitaria o PATCH inteiro)
+  if (_idMoskitField && project.idMoskit !== undefined) {
+    const _mv = String(project.idMoskit == null ? '' : project.idMoskit).trim();
+    const _mt = _spFieldTypes[_idMoskitField];
+    if (_mv === '') payload[_idMoskitField] = null;
+    else if (_mt === 9 || _mt === 10) { const _mn = Number(_mv); if (!isNaN(_mn)) payload[_idMoskitField] = _mn; }
+    else payload[_idMoskitField] = _mv;
+  }
   if (project.head1 !== undefined) payload['Head_1'] = project.head1 || null;
   if (project.head2 !== undefined) payload['Head_2'] = project.head2 || null;
   if (project.head3 !== undefined) payload['Head_3'] = project.head3 || null;
@@ -1712,6 +1721,49 @@ const MOSKIT_COLS = [{
   fk: 'ciclo',
   type: 'select'
 }];
+// ─── ID Moskit + preenchimento a partir do Moskit (ProjectModal) ───────────────
+// Coluna opcional na List_Pulse: "ID_Moskit" (texto ou número). Detectada em fetchSPChoices.
+// Enquanto a coluna não existir, o app NÃO lê nem grava o ID (nenhum efeito no restante).
+let _idMoskitField = null;
+function _mskNorm(s) {
+  return String(s == null ? '' : s).replace(/^\uFEFF/, '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+}
+// Descobre, pelos cabeçalhos do CSV do Moskit, qual coluna usar para cada campo (retorna o nome ORIGINAL da coluna ou '')
+function moskitDetectCols(keys) {
+  const list = (keys || []).map(k => ({ k, n: _mskNorm(k) }));
+  const pick = (equals, includes) => {
+    for (const e of equals) { const h = list.find(x => x.n === e); if (h) return h.k; }
+    for (const i of includes || []) { const h = list.find(x => x.n.includes(i)); if (h) return h.k; }
+    return '';
+  };
+  return {
+    id: pick(['id', 'id do negocio', 'id negocio', 'id moskit']),
+    nome: pick(['nome', 'nome do negocio']),
+    empresa: pick([], ['empresa']),
+    produto: pick(['produto principal'], ['produto principal', 'produto']),
+    frente: pick([], ['frente']),
+    ciclo: pick([], ['ciclo orcamentario']),
+    codigo: pick(['codigo proposta', 'codigo da proposta', 'cod proposta', 'codigo do projeto', 'codigo projeto', 'numero da proposta', 'numero proposta', 'ct'], ['codigo proposta', 'codigo da proposta']),
+    publico: pick(['publico', 'publico alvo', 'publico do programa'], []),
+    tipo: pick(['tipo de programa', 'tipo programa', 'tipo do programa'], ['tipo de programa'])
+  };
+}
+// Garante que o valor atual (ex.: vindo do Moskit) apareça na lista de opções de um select
+function withCurrentOption(opts, cur) {
+  const list = Array.isArray(opts) ? opts : [];
+  const c = String(cur == null ? '' : cur).trim();
+  return c && !list.includes(c) ? [...list, c] : list;
+}
+// Casa um valor do Moskit com as opções de um select (ignora caixa/acentos/pontuação). Retorna a opção ou ''.
+function moskitPickChoice(val, options) {
+  const v = _mskNorm(val);
+  if (!v) return '';
+  const opts = (options || []).filter(o => o && String(o).trim() && String(o).trim() !== '-');
+  let m = opts.find(o => _mskNorm(o) === v);
+  if (m) return m;
+  const cont = opts.filter(o => { const n = _mskNorm(o); return n && (n.includes(v) || v.includes(n)); });
+  return cont.length === 1 ? cont[0] : '';
+}
 async function acquireTokenForResource(clientId, tenantId, scope) {
   const app = getMsalApp(clientId, tenantId);
   await app.initialize();
@@ -1837,6 +1889,9 @@ function parseViaoProjetos(raw) {
   const etapaIdx    = hdrRow.findIndex(v => /^etapa|^fase|^categ|^status/i.test(v));
   const headIdx     = hdrRow.findIndex(v => /^head$/i.test(v));
   const analistaIdx = hdrRow.findIndex(v => /^analista$/i.test(v));
+  // GSC não tem colunas de mês: tem um % fixo (coluna "% alocação GSC") aplicado a todo o período do Head
+  const gscIdx      = hdrRow.findIndex(v => /^gsc$/i.test(v));
+  const gscPctIdx   = hdrRow.findIndex(v => /^%.*(gsc|aloca)/i.test(v) || /^(gsc).*%/i.test(v));
 
   // ── Colunas de mês para Head e para Analista (por posição) ──
   const headMonthCols = [];
@@ -1883,7 +1938,9 @@ function parseViaoProjetos(raw) {
 
     const headName     = headIdx >= 0     ? norm(row[headIdx])     : '';
     const analistaName = analistaIdx >= 0 ? norm(row[analistaIdx]) : '';
-    if (!headName && !analistaName) continue;
+    const gscName      = gscIdx >= 0 ? norm(row[gscIdx]) : '';
+    const gscPct       = gscName && gscPctIdx >= 0 ? parsePct(row[gscPctIdx]) : 0;
+    if (!headName && !analistaName && !(gscName && gscPct > 0)) continue;
 
     const makeMonths = (colDefs) => {
       const m = {};
@@ -1894,6 +1951,17 @@ function parseViaoProjetos(raw) {
 
     if (headName)     rows.push({projeto:lastProjeto, etapa:lastEtapa, person:headName,     visao:'Head',     months:makeMonths(headMonthCols)});
     if (analistaName) rows.push({projeto:lastProjeto, etapa:lastEtapa, person:analistaName, visao:'Analista', months:makeMonths(analistaMonthCols)});
+    if (gscName && gscPct > 0) {
+      // Do 1º ao último mês com alocação de Head nesta linha, repete o mesmo % do GSC (meses intermediários sem Head também recebem)
+      const gm = {};
+      monthLabels.forEach(ml => { gm[ml] = 0; });
+      let first = -1, last = -1;
+      headMonthCols.forEach(({idx}, k) => {
+        if (parsePct(row[idx]) > 0) { if (first < 0) first = k; last = k; }
+      });
+      if (first >= 0) for (let k = first; k <= last; k++) gm[headMonthCols[k].label] = gscPct;
+      rows.push({projeto:lastProjeto, etapa:lastEtapa, person:gscName, visao:'GSC', months:gm});
+    }
   }
 
   return {rows, monthLabels};
@@ -1954,6 +2022,9 @@ function AlocacaoSimplificadaView({
       rows,
       monthLabels
     } = data;
+    function visaoRank(v) {
+      return v === 'Head' ? 0 : v === 'GSC' ? 1 : 2;
+    }
     function catRank(etapa) {
       if (etapa === 'Em trabalho') return 0;
       if (etapa === 'Altíssima Chance') return 1;
@@ -1977,7 +2048,7 @@ function AlocacaoSimplificadaView({
     const groups = {};
     rows.forEach(row => {
       const etapaNorm = normalizeEtapa(row.etapa);
-      const key = `${row.person}|||${etapaNorm}`;
+      const key = `${row.visao}|||${row.person}|||${etapaNorm}`;
       if (!groups[key]) {
         groups[key] = {
           person: row.person,
@@ -2007,17 +2078,18 @@ function AlocacaoSimplificadaView({
     // Agrupar por pessoa
     const byPerson = {};
     Object.values(groups).forEach(g => {
-      if (!byPerson[g.person]) byPerson[g.person] = {
+      const pk = `${g.visao}|||${g.person}`;
+      if (!byPerson[pk]) byPerson[pk] = {
         person: g.person,
         visao: g.visao,
         cats: []
       };
-      byPerson[g.person].cats.push(g);
+      byPerson[pk].cats.push(g);
     });
 
-    // Ordenar pessoas: Head primeiro, depois alpha
+    // Ordenar pessoas: Head, GSC, Analista; dentro de cada categoria, ordem alfabética
     const sortedPeople = Object.values(byPerson).sort((a, b) => {
-      if (a.visao !== b.visao) return a.visao === 'Head' ? -1 : 1;
+      if (a.visao !== b.visao) return visaoRank(a.visao) - visaoRank(b.visao);
       return a.person.localeCompare(b.person, 'pt-BR');
     });
     const consolidated = [];
@@ -3053,7 +3125,9 @@ async function fetchSPList(token, siteUrl, listName) {
   const extraNPS = NPS_KEYS.map(k => _spFieldMap[k] || k).filter(n => n && n !== '__nonexistent__' && !SP_SELECT.includes(n)).join(',');
   // "Considerar em outro ciclo": só entra no $select se a coluna foi confirmada no SP (evita 400 que derrubaria a lista toda)
   const extraCiclo = npsCicloAltDisponivel() && !SP_SELECT.includes(_spFieldMap[NPS_CICLO_ALT_KEY]) ? ',' + _spFieldMap[NPS_CICLO_ALT_KEY] : '';
-  const sel = SP_SELECT + extraFN + (extraCF ? ',' + extraCF : '') + (extraNPS ? ',' + extraNPS : '') + extraCiclo;
+  // ID Moskit: só entra no $select se a coluna foi confirmada no SP (evita 400 que derrubaria a lista toda)
+  const extraMsk = _idMoskitField && !SP_SELECT.includes(_idMoskitField) ? ',' + _idMoskitField : '';
+  const sel = SP_SELECT + extraFN + (extraCF ? ',' + extraCF : '') + (extraNPS ? ',' + extraNPS : '') + extraCiclo + extraMsk;
   let items = [],
     url = `${base}/items?$select=${encodeURIComponent(sel)}&$top=500`;
   while (url) {
@@ -3633,6 +3707,10 @@ async function fetchSPChoices(token, siteUrl, listName) {
 
     // Separa campos graváveis
     const writable = allFields.filter(f => !f.ReadOnlyField && SP_WRITABLE_TYPES.has(f.FieldTypeKind));
+    // Coluna "ID Moskit" (opcional): só passa a ser usada se existir e for gravável
+    _idMoskitField = null;
+    const _idm = writable.find(sf => _normMatch(sf.InternalName) === 'idmoskit' || _normMatch(sf.StaticName) === 'idmoskit' || _normMatch(sf.Title) === 'idmoskit');
+    if (_idm) _idMoskitField = _idm.InternalName || _idm.StaticName;
     writable.forEach(f => {
       if (f.InternalName) _spValidFields.add(f.InternalName);
       if (f.StaticName) _spValidFields.add(f.StaticName);
@@ -7121,7 +7199,7 @@ function App() {
     );
   }
 
-  // ── Hub A&S (modelos e materiais) module ──
+  // ── Modelos e Materiais A&S (hub_as) module ──
   const HUB_AS_URL = 'https://companhiadetalentos.com.br/ferramentas_as/';
   if (module === 'hub_as') {
     return React.createElement("div", { style:{display:'flex',flexDirection:'column',height:'100vh',overflow:'hidden'} },
@@ -7329,7 +7407,7 @@ function AppHeader({
     className: "w-7 h-7 bg-indigo-600 rounded-lg flex items-center justify-center text-white text-xs font-bold"
   }, "CT"), /*#__PURE__*/React.createElement("span", {
     className: "text-base font-bold text-slate-800"
-  }, module === 'pulse' ? 'Pulse' : module === 'gestao' ? 'Gestão A&S' : module === 'calendar' ? 'Calendário' : module === 'analytics' ? 'Analytics' : module === 'clientes' ? 'Clientes × Frentes' : module === 'nps' ? 'NPS' : module === 'cx' ? 'CX — Analytics' : module === 'cx_atend' ? 'CX — Atendimento' : module === 'escopo' ? 'Vagas: Escopo, Requisitos e Remuneração' : module === 'inscricoes' ? 'Pessoas Inscritas' : module === 'globe_fotografia' ? 'Globe Fotografia' : module === 'parceiros' ? 'Painel de Parceiros' : module === 'sistema_hunting' ? 'Sistema Hunting' : module === 'hub_as' ? 'Hub A&S' : MODULE_CONFIGS[module]?.label || 'Alocação'), module === 'sistema_hunting' && /*#__PURE__*/React.createElement("span", {
+  }, module === 'pulse' ? 'Pulse' : module === 'gestao' ? 'Gestão A&S' : module === 'calendar' ? 'Calendário' : module === 'analytics' ? 'Analytics' : module === 'clientes' ? 'Clientes × Frentes' : module === 'nps' ? 'NPS' : module === 'cx' ? 'CX — Analytics' : module === 'cx_atend' ? 'CX — Atendimento' : module === 'escopo' ? 'Vagas: Escopo, Requisitos e Remuneração' : module === 'inscricoes' ? 'Pessoas Inscritas' : module === 'globe_fotografia' ? 'Globe Fotografia' : module === 'parceiros' ? 'Painel de Parceiros' : module === 'sistema_hunting' ? 'Sistema Hunting' : module === 'hub_as' ? 'Modelos e Materiais A&S' : MODULE_CONFIGS[module]?.label || 'Alocação'), module === 'sistema_hunting' && /*#__PURE__*/React.createElement("span", {
     className: "text-xs text-slate-500 ml-2"
   }, "Link para o acesso dos agentes: ", /*#__PURE__*/React.createElement("a", {
     href: "https://companhiadetalentos.com.br/cia_hunting/hunting-agentes.html",
@@ -10508,7 +10586,7 @@ function HomeScreen({
     d: "M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25"
   }))), /*#__PURE__*/React.createElement("h2", {
     className: "text-xl font-bold text-slate-900 mb-2"
-  }, "Hub A&S (modelos e materiais)"), /*#__PURE__*/React.createElement("p", {
+  }, "Modelos e Materiais A&S"), /*#__PURE__*/React.createElement("p", {
     className: "text-sm text-slate-500 leading-relaxed"
   }, "Modelos, templates e materiais de apoio para os processos de Avaliação e Seleção."), /*#__PURE__*/React.createElement("div", {
     className: "mt-6 flex items-center text-sm font-semibold text-rose-600 group-hover:text-rose-700"
@@ -11546,6 +11624,13 @@ function ProjectModal({
   const [qtdVagas, setQtdVagas] = useState(project?.qtdVagas || '');
   const [solucao, setSolucao] = useState(project?.solucao || moduleConfig?.frente || '');
   const [produto, setProduto] = useState(project?.produto || '');
+  // ID Moskit + preenchimento automático a partir do Moskit (todos os campos continuam editáveis)
+  const [idMoskit, setIdMoskit] = useState(project?.idMoskit || '');
+  const [moskitRows, setMoskitRows] = useState([]);
+  const [moskitInfo, setMoskitInfo] = useState(null); // {ok, msg}
+  const [moskitHints, setMoskitHints] = useState({}); // valor do Moskit que não casou com as opções do select
+  const [formError, setFormError] = useState('');
+  const moskitAutoRef = React.useRef(false);
   // Moskit clients + frentes (lazy-loaded)
   const [moskitClients, setMoskitClients] = useState([]);
   const [moskitFrentes, setMoskitFrentes] = useState([]);
@@ -11557,6 +11642,7 @@ function ProjectModal({
         skipEmptyLines: true
       });
       if (!parsed?.data || !parsed.data.length) return;
+      setMoskitRows(parsed.data);
       const keys = Object.keys(parsed.data[0] || {});
       // Empresas (clientes)
       const empCol = keys.find(k => k.toLowerCase().includes('empresa'));
@@ -11706,8 +11792,76 @@ function ProjectModal({
       };
     });
   }
+  const mskCols = React.useMemo(() => moskitDetectCols(moskitRows.length ? Object.keys(moskitRows[0]) : []), [moskitRows]);
+  const moskitProdutos = React.useMemo(() => mskCols.produto ? [...new Set(moskitRows.map(r => String(r[mskCols.produto] || '').trim()).filter(Boolean))].sort() : [], [moskitRows, mskCols]);
+  // Aplica uma linha do Moskit no formulário.
+  // overwrite=true (novo projeto, via "Buscar no Moskit"): substitui; false: só preenche campos VAZIOS (nunca sobrescreve o que já está salvo).
+  function applyMoskitRow(row, overwrite) {
+    const c = moskitDetectCols(Object.keys(row || {}));
+    const get = k => k ? String(row[k] == null ? '' : row[k]).trim() : '';
+    const hints = {};
+    const fill = (cur, setter, val) => {
+      if (val && (overwrite || !String(cur || '').trim())) setter(val);
+    };
+    const idv = get(c.id);
+    if (idv) setIdMoskit(idv);
+    if (overwrite) {
+      setTitle(get(c.nome) || '');
+      setCiclo(get(c.ciclo) || '');
+    } else {
+      fill(title, setTitle, get(c.nome));
+      fill(ciclo, setCiclo, get(c.ciclo));
+    }
+    fill(solucao, setSolucao, get(c.frente));
+    if (overwrite) {
+      // Novo projeto escolhendo um negócio do Moskit: o que o Moskit não informa fica vazio (preenchimento manual),
+      // para não carregar valores de uma escolha anterior.
+      setProduto(get(c.produto));
+      setCodigoProposta(get(c.codigo));
+    } else {
+      fill(produto, setProduto, get(c.produto));
+      fill(codigoProposta, setCodigoProposta, get(c.codigo));
+    }
+    const pubV = get(c.publico);
+    // O Moskit tem prioridade: se o valor casa com uma opção da lista, usa a opção; senão usa o valor do Moskit como está (e ele entra na lista).
+    const _pubOpts = spChoices?.Publico || _publico;
+    const pubM = pubV ? (moskitPickChoice(pubV, _pubOpts) || pubV) : '';
+    if (overwrite) setPublico(pubM);else if (pubM && !publico) setPublico(pubM);
+    if (pubM && !_pubOpts.includes(pubM)) hints.publico = pubM;
+    const tipV = get(c.tipo);
+    const _tipOpts = spChoices?.Tipo_Programa || _tipoProg;
+    const tipM = tipV ? (moskitPickChoice(tipV, _tipOpts) || tipV) : '';
+    if (overwrite) setTipoProg(tipM);else if (tipM && !tipoProg) setTipoProg(tipM);
+    if (tipM && !_tipOpts.includes(tipM)) hints.tipo = tipM;
+    setMoskitHints(hints);
+    setMoskitInfo({ ok: true, msg: 'Vinculado ao Moskit' + (get(c.nome) ? ': ' + get(c.nome) : '') + (idv ? ' (ID ' + idv + ')' : '') });
+  }
+  function lookupMoskitId() {
+    const id = String(idMoskit || '').trim();
+    if (!id) { setMoskitInfo(null); return; }
+    if (!moskitRows.length) { setMoskitInfo({ ok: false, msg: 'Base do Moskit ainda não carregada.' }); return; }
+    const row = moskitRows.find(r => String(r[mskCols.id] || '').trim() === id);
+    if (!row) { setMoskitHints({}); setMoskitInfo({ ok: false, msg: 'ID não encontrado na base do Moskit — preencha os campos manualmente.' }); return; }
+    applyMoskitRow(row, false);
+  }
+  // Projeto já vinculado (tem ID Moskit): ao abrir, completa só os campos vazios com os dados do Moskit
+  useEffect(() => {
+    if (moskitAutoRef.current || !moskitRows.length) return;
+    moskitAutoRef.current = true;
+    if (project?.idMoskit && String(project.idMoskit).trim()) {
+      const row = moskitRows.find(r => String(r[mskCols.id] || '').trim() === String(project.idMoskit).trim());
+      if (row) applyMoskitRow(row, false);else setMoskitInfo({ ok: false, msg: 'ID ' + project.idMoskit + ' não encontrado na base do Moskit.' });
+    }
+  }, [moskitRows]);
   function handleSave() {
     if (!title.trim()) return;
+    if (!codigoProposta.trim()) {
+      setFormError('Código Proposta é obrigatório.');
+      const el = document.getElementById('pj-codigo-proposta');
+      if (el) { el.scrollIntoView({ block: 'center' }); el.focus(); }
+      return;
+    }
+    setFormError('');
     const filteredA = analysts.filter(a => a.trim());
     const filteredH = heads.filter(h => h.trim());
     const filteredPhases = {};
@@ -11746,6 +11900,8 @@ function ProjectModal({
       qtdVagas: Number(qtdVagas) || 0,
       solucao: normFrente(solucao),
       produto,
+      idMoskit: String(idMoskit || '').trim(),
+      pulseData: project?.pulseData,
       source,
       analysts: filteredA,
       phases: filteredPhases,
@@ -11776,7 +11932,7 @@ function ProjectModal({
     className: "flex items-center justify-between mb-3"
   }, /*#__PURE__*/React.createElement("h3", {
     className: "text-xs font-bold text-slate-400 uppercase tracking-widest"
-  }, "Informações Gerais"), !project && /*#__PURE__*/React.createElement("button", {
+  }, "Informações Gerais"), /*#__PURE__*/React.createElement("button", {
     type: "button",
     onClick: () => setShowMoskit(true),
     className: "text-xs text-indigo-600 hover:text-indigo-800 font-semibold border border-indigo-200 px-2.5 py-1 rounded-lg hover:bg-indigo-50 transition flex items-center gap-1"
@@ -11850,11 +12006,42 @@ function ProjectModal({
     value: o
   }, o)))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
     className: "block text-xs font-medium text-slate-600 mb-1"
-  }, "Código Proposta"), /*#__PURE__*/React.createElement("input", {
+  }, "ID Moskit"), /*#__PURE__*/React.createElement("input", {
+    value: idMoskit,
+    onChange: e => {
+      setIdMoskit(e.target.value);
+      setMoskitInfo(null);
+    },
+    onBlur: lookupMoskitId,
+    onKeyDown: e => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        lookupMoskitId();
+      }
+    },
+    inputMode: "numeric",
+    className: "w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-200",
+    placeholder: "ID do negócio no Moskit"
+  }), moskitInfo && /*#__PURE__*/React.createElement("p", {
+    className: `text-xs mt-1 ${moskitInfo.ok ? 'text-emerald-600' : 'text-amber-600'}`
+  }, moskitInfo.msg), !_idMoskitField && /*#__PURE__*/React.createElement("p", {
+    className: "text-xs mt-1 text-amber-600"
+  }, "A coluna ID_Moskit ainda não existe na List_Pulse — o ID não será gravado até ela ser criada.")), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    className: "block text-xs font-medium text-slate-600 mb-1"
+  }, "Código Proposta ", /*#__PURE__*/React.createElement("span", {
+    className: "text-red-500"
+  }, "*")), /*#__PURE__*/React.createElement("input", {
+    id: "pj-codigo-proposta",
     value: codigoProposta,
-    onChange: e => setCodigoProposta(e.target.value),
-    className: "w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-200"
-  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    onChange: e => {
+      setCodigoProposta(e.target.value);
+      if (formError) setFormError('');
+    },
+    className: `w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-200 ${formError ? 'border-red-400 bg-red-50' : 'border-slate-300'}`,
+    placeholder: "Obrigatório"
+  }), formError && /*#__PURE__*/React.createElement("p", {
+    className: "text-xs mt-1 text-red-600"
+  }, formError)), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
     className: "block text-xs font-medium text-slate-600 mb-1"
   }, "Público"), /*#__PURE__*/React.createElement("select", {
     value: publico,
@@ -11862,10 +12049,12 @@ function ProjectModal({
     className: "w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-200"
   }, /*#__PURE__*/React.createElement("option", {
     value: ""
-  }, "—"), (spChoices?.Publico || _publico).map(o => /*#__PURE__*/React.createElement("option", {
+  }, "—"), withCurrentOption(spChoices?.Publico || _publico, publico).map(o => /*#__PURE__*/React.createElement("option", {
     key: o,
     value: o
-  }, o)))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+  }, o))), moskitHints.publico && publico === moskitHints.publico && /*#__PURE__*/React.createElement("p", {
+    className: "text-xs mt-1 text-amber-600"
+  }, "Valor do Moskit: \u201c", moskitHints.publico, "\u201d (fora da lista atual do SharePoint; será gravado como está).")), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
     className: "block text-xs font-medium text-slate-600 mb-1"
   }, "Pedra"), /*#__PURE__*/React.createElement("select", {
     value: pedra,
@@ -11905,10 +12094,12 @@ function ProjectModal({
     className: "w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-200"
   }, /*#__PURE__*/React.createElement("option", {
     value: ""
-  }, "—"), (spChoices?.Tipo_Programa || _tipoProg).map(o => /*#__PURE__*/React.createElement("option", {
+  }, "—"), withCurrentOption(spChoices?.Tipo_Programa || _tipoProg, tipoProg).map(o => /*#__PURE__*/React.createElement("option", {
     key: o,
     value: o
-  }, o)))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+  }, o))), moskitHints.tipo && tipoProg === moskitHints.tipo && /*#__PURE__*/React.createElement("p", {
+    className: "text-xs mt-1 text-amber-600"
+  }, "Valor do Moskit: \u201c", moskitHints.tipo, "\u201d — (fora da lista atual do SharePoint; será gravado como está).")), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
     className: "block text-xs font-medium text-slate-600 mb-1"
   }, "Qtd. Vagas Previstas"), /*#__PURE__*/React.createElement("input", {
     type: "number",
@@ -11934,9 +12125,15 @@ function ProjectModal({
   }, "Produto Principal"), /*#__PURE__*/React.createElement("input", {
     value: produto,
     onChange: e => setProduto(e.target.value),
+    list: "produtoDatalist",
     className: "w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-200",
-    placeholder: "Buscar no Moskit"
-  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    placeholder: "Vem do Moskit — editável"
+  }), /*#__PURE__*/React.createElement("datalist", {
+    id: "produtoDatalist"
+  }, moskitProdutos.map(v => /*#__PURE__*/React.createElement("option", {
+    key: v,
+    value: v
+  })))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
     className: "block text-xs font-medium text-slate-600 mb-1"
   }, "GSC"), /*#__PURE__*/React.createElement("input", {
     value: ka,
@@ -11954,10 +12151,8 @@ function ProjectModal({
     tenantId: tenantId,
     onClose: () => setShowMoskit(false),
     onSelect: row => {
-      setTitle(row['Nome'] || '');
-      setCiclo(row['Ciclo Or\u00e7ament\u00e1rio'] || '');
-      if (row['Frente de Neg\u00f3cio']) setSolucao(row['Frente de Neg\u00f3cio']);
-      if (row['Produto Principal']) setProduto(row['Produto Principal']);
+      // Novo projeto: preenche tudo; projeto existente: só vincula o ID e completa campos vazios
+      applyMoskitRow(row, !project);
       setShowMoskit(false);
     }
   }), /*#__PURE__*/React.createElement("section", null, /*#__PURE__*/React.createElement("div", {
@@ -12118,7 +12313,9 @@ function ProjectModal({
     className: "text-xs text-slate-600"
   }, syncToSP ? '📋 Adicionar ao SharePoint (List_Pulse)' : '🗂️ Salvar apenas na ferramenta')) : /*#__PURE__*/React.createElement("p", {
     className: "text-xs text-slate-400"
-  }, isExistingSP ? '💾 Salva no SharePoint + distribução no arquivo' : isExistingLocal ? '🗂️ Salva no arquivo compartilhado (alocacao_dist.json)' : '⚠️ Sem conexão — visível só nesta sessão'), /*#__PURE__*/React.createElement("div", {
+  }, isExistingSP ? '💾 Salva no SharePoint + distribução no arquivo' : isExistingLocal ? '🗂️ Salva no arquivo compartilhado (alocacao_dist.json)' : '⚠️ Sem conexão — visível só nesta sessão'), formError && /*#__PURE__*/React.createElement("p", {
+    className: "text-xs text-red-600 font-semibold"
+  }, "⚠ ", formError), /*#__PURE__*/React.createElement("div", {
     className: "flex gap-2 ml-auto"
   }, /*#__PURE__*/React.createElement("button", {
     onClick: onClose,
@@ -15569,6 +15766,14 @@ function ModuleProjectModal({
   const [codigoProposta, setCodigoProposta] = useState(project?.codigoProposta || '');
   const [pedra, setPedra] = useState(project?.pedra || '');
   const [respPedra, setRespPedra] = useState(project?.respPedra || '');
+  const [publico, setPublico] = useState(project?.publico || '');
+  const [tipoProg, setTipoProg] = useState(project?.tipoProg || '');
+  // ID Moskit + preenchimento automático (todos os campos continuam editáveis)
+  const [idMoskit, setIdMoskit] = useState(project?.idMoskit || '');
+  const [moskitRows, setMoskitRows] = useState([]);
+  const [moskitInfo, setMoskitInfo] = useState(null);
+  const [formError, setFormError] = useState('');
+  const moskitAutoRef = React.useRef(false);
   // FI extras
   const [qtdVagas, setQtdVagas] = useState(project?.qtdVagas || '');
   const [ka, setKa] = useState(project?.ka || '');
@@ -15593,14 +15798,70 @@ function ModuleProjectModal({
         skipEmptyLines: true
       });
       if (!parsed?.data?.length) return;
+      setMoskitRows(parsed.data);
       const keys = Object.keys(parsed.data[0]);
       const empCol = keys.find(k => k.toLowerCase().includes('empresa'));
       if (empCol) setMoskitClients([...new Set(parsed.data.map(r => (r[empCol] || '').trim()).filter(Boolean))].sort());
     }).catch(() => {});
   }, [clientId, tenantId]);
+  const mskCols = React.useMemo(() => moskitDetectCols(moskitRows.length ? Object.keys(moskitRows[0]) : []), [moskitRows]);
+  const moskitProdutos = React.useMemo(() => mskCols.produto ? [...new Set(moskitRows.map(r => String(r[mskCols.produto] || '').trim()).filter(Boolean))].sort() : [], [moskitRows, mskCols]);
+  // overwrite=true (novo projeto via "Buscar no Moskit"): substitui; false: só preenche campos VAZIOS (nunca sobrescreve o que já está salvo)
+  function applyMoskitRow(row, overwrite) {
+    const c = moskitDetectCols(Object.keys(row || {}));
+    const get = k => k ? String(row[k] == null ? '' : row[k]).trim() : '';
+    const fill = (cur, setter, val) => { if (val && (overwrite || !String(cur || '').trim())) setter(val); };
+    const idv = get(c.id);
+    if (idv) setIdMoskit(idv);
+    if (overwrite) {
+      setTitle(get(c.nome) || '');
+      setCiclo(get(c.ciclo) || '');
+      setProduto(get(c.produto));
+      setCodigoProposta(get(c.codigo));
+    } else {
+      fill(title, setTitle, get(c.nome));
+      fill(ciclo, setCiclo, get(c.ciclo));
+      fill(produto, setProduto, get(c.produto));
+      fill(codigoProposta, setCodigoProposta, get(c.codigo));
+    }
+    const fr = get(c.frente);
+    if (fr && (overwrite || !String(solucao || '').trim())) setSolucao(fr);
+    // O Moskit tem prioridade: usa a opção da lista quando casa; senão usa o valor do Moskit como está
+    const pubV = get(c.publico);
+    const pubM = pubV ? (moskitPickChoice(pubV, spChoices?.Publico || _publico) || pubV) : '';
+    if (overwrite) setPublico(pubM);else if (pubM && !publico) setPublico(pubM);
+    const tipV = get(c.tipo);
+    const tipM = tipV ? (moskitPickChoice(tipV, spChoices?.Tipo_Programa || _tipoProg) || tipV) : '';
+    if (overwrite) setTipoProg(tipM);else if (tipM && !tipoProg) setTipoProg(tipM);
+    setMoskitInfo({ ok: true, msg: 'Vinculado ao Moskit' + (get(c.nome) ? ': ' + get(c.nome) : '') + (idv ? ' (ID ' + idv + ')' : '') });
+  }
+  function lookupMoskitId() {
+    const id = String(idMoskit || '').trim();
+    if (!id) { setMoskitInfo(null); return; }
+    if (!moskitRows.length) { setMoskitInfo({ ok: false, msg: 'Base do Moskit ainda não carregada.' }); return; }
+    const row = moskitRows.find(r => String(r[mskCols.id] || '').trim() === id);
+    if (!row) { setMoskitInfo({ ok: false, msg: 'ID não encontrado na base do Moskit — preencha os campos manualmente.' }); return; }
+    applyMoskitRow(row, false);
+  }
+  // Projeto já vinculado: ao abrir, completa só os campos vazios com os dados do Moskit
+  useEffect(() => {
+    if (moskitAutoRef.current || !moskitRows.length) return;
+    moskitAutoRef.current = true;
+    if (project?.idMoskit && String(project.idMoskit).trim()) {
+      const row = moskitRows.find(r => String(r[mskCols.id] || '').trim() === String(project.idMoskit).trim());
+      if (row) applyMoskitRow(row, false);else setMoskitInfo({ ok: false, msg: 'ID ' + project.idMoskit + ' não encontrado na base do Moskit.' });
+    }
+  }, [moskitRows]);
   const [syncToSP, setSyncToSP] = useState(!project || !!project?.spId || isSpConnected && !project?.id);
   function handleSave() {
     if (!title.trim()) return;
+    if (!codigoProposta.trim()) {
+      setFormError('Código Proposta é obrigatório.');
+      const el = document.getElementById('mod-codigo-proposta');
+      if (el) { el.scrollIntoView({ block: 'center' }); el.focus(); }
+      return;
+    }
+    setFormError('');
     const filteredPhases = {};
     PHASES.forEach(ph => {
       filteredPhases[ph.key] = {
@@ -15623,6 +15884,9 @@ function ModuleProjectModal({
       trimestre,
       semestre,
       codigoProposta: codigoProposta.trim(),
+      idMoskit: String(idMoskit || '').trim(),
+      publico,
+      tipoProg,
       pedra,
       respPedra,
       qtdVagas: Number(qtdVagas) || 0,
@@ -15649,7 +15913,7 @@ function ModuleProjectModal({
     className: "text-lg font-bold text-slate-800"
   }, t(isNew ? 'modalNew' : 'modalEdit'), " — ", moduleConfig?.label)), /*#__PURE__*/React.createElement("div", {
     className: "flex items-center gap-2"
-  }, isNew && /*#__PURE__*/React.createElement("button", {
+  }, /*#__PURE__*/React.createElement("button", {
     type: "button",
     onClick: () => setShowMoskit(true),
     className: "text-xs text-indigo-600 hover:text-indigo-800 font-semibold border border-indigo-200 px-2.5 py-1 rounded-lg hover:bg-indigo-50 transition flex items-center gap-1"
@@ -15661,10 +15925,7 @@ function ModuleProjectModal({
     tenantId: tenantId,
     onClose: () => setShowMoskit(false),
     onSelect: row => {
-      setTitle(row['Nome'] || '');
-      setCiclo(row['Ciclo Orçamentário'] || '');
-      if (row['Frente de Negócio']) setSolucao(row['Frente de Negócio']);
-      if (row['Produto Principal']) setProduto(row['Produto Principal']);
+      applyMoskitRow(row, isNew);
       setShowMoskit(false);
     }
   }), /*#__PURE__*/React.createElement("div", {
@@ -15713,8 +15974,15 @@ function ModuleProjectModal({
   }, t('produto')), /*#__PURE__*/React.createElement("input", {
     value: produto,
     onChange: e => setProduto(e.target.value),
-    className: cls
-  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    list: "modProdutoDL",
+    className: cls,
+    placeholder: "Vem do Moskit — editável"
+  }), /*#__PURE__*/React.createElement("datalist", {
+    id: "modProdutoDL"
+  }, moskitProdutos.map(v => /*#__PURE__*/React.createElement("option", {
+    key: v,
+    value: v
+  })))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
     className: "block text-xs font-medium text-slate-600 mb-1"
   }, t('status')), /*#__PURE__*/React.createElement("select", {
     value: status,
@@ -15760,11 +16028,64 @@ function ModuleProjectModal({
     value: o
   }, o)))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
     className: "block text-xs font-medium text-slate-600 mb-1"
-  }, t('codigo')), /*#__PURE__*/React.createElement("input", {
+  }, t('codigo'), " ", /*#__PURE__*/React.createElement("span", {
+    className: "text-red-500"
+  }, "*")), /*#__PURE__*/React.createElement("input", {
+    id: "mod-codigo-proposta",
     value: codigoProposta,
-    onChange: e => setCodigoProposta(e.target.value),
+    onChange: e => {
+      setCodigoProposta(e.target.value);
+      if (formError) setFormError('');
+    },
+    className: formError ? 'w-full border border-red-400 bg-red-50 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-200' : cls,
+    placeholder: "Obrigatório"
+  }), formError && /*#__PURE__*/React.createElement("p", {
+    className: "text-xs mt-1 text-red-600"
+  }, formError)), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    className: "block text-xs font-medium text-slate-600 mb-1"
+  }, "ID Moskit"), /*#__PURE__*/React.createElement("input", {
+    value: idMoskit,
+    onChange: e => {
+      setIdMoskit(e.target.value);
+      setMoskitInfo(null);
+    },
+    onBlur: lookupMoskitId,
+    onKeyDown: e => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        lookupMoskitId();
+      }
+    },
+    inputMode: "numeric",
+    className: cls,
+    placeholder: "ID do negócio no Moskit"
+  }), moskitInfo && /*#__PURE__*/React.createElement("p", {
+    className: `text-xs mt-1 ${moskitInfo.ok ? 'text-emerald-600' : 'text-amber-600'}`
+  }, moskitInfo.msg), !_idMoskitField && /*#__PURE__*/React.createElement("p", {
+    className: "text-xs mt-1 text-amber-600"
+  }, "A coluna ID_Moskit ainda não existe na List_Pulse — o ID não será gravado até ela ser criada.")), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    className: "block text-xs font-medium text-slate-600 mb-1"
+  }, "Público"), /*#__PURE__*/React.createElement("select", {
+    value: publico,
+    onChange: e => setPublico(e.target.value),
     className: cls
-  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+  }, /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "—"), withCurrentOption(spChoices?.Publico || _publico, publico).map(o => /*#__PURE__*/React.createElement("option", {
+    key: o,
+    value: o
+  }, o)))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    className: "block text-xs font-medium text-slate-600 mb-1"
+  }, "Tipo de Programa"), /*#__PURE__*/React.createElement("select", {
+    value: tipoProg,
+    onChange: e => setTipoProg(e.target.value),
+    className: cls
+  }, /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "—"), withCurrentOption(spChoices?.Tipo_Programa || _tipoProg, tipoProg).map(o => /*#__PURE__*/React.createElement("option", {
+    key: o,
+    value: o
+  }, o)))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
     className: "block text-xs font-medium text-slate-600 mb-1"
   }, t('pedra')), /*#__PURE__*/React.createElement("select", {
     value: pedra,
